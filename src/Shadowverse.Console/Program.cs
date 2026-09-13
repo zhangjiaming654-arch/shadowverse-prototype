@@ -133,6 +133,14 @@ if (neuralWeightsFile is not null)
     Console.WriteLine($"已载入神经网络叶子评估：{neuralWeightsFile}");
 }
 
+// 按对局切换权重：同一套特征、按（我方卡组 × 对手卡组）各用一份拟合权重。
+// 实测这件事值 7.5 ~ 27.5 个 BO10 分，见 AGENT-STRENGTH-REPORT.md 第 14.8 节。
+var matchupWeightsFile = ConsoleTools.ReadOptionValue(args, "--matchup-weights");
+if (matchupWeightsFile is not null)
+{
+    ConsoleTools.LoadMatchupWeights(matchupWeightsFile);
+}
+
 // 集成用的第二套评估权重。给了就开启"评估函数集成"，否则保持单一评估函数。
 var altWeightsFile = ConsoleTools.ReadOptionValue(args, "--alt-weights-file");
 if (altWeightsFile is not null)

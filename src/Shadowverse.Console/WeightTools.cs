@@ -342,6 +342,18 @@ public static class WeightTools
     public static void LoadWeights(string path, Action<string> report)
     {
         ArgumentNullException.ThrowIfNull(report);
+        var (weights, scoreScale) = ReadWeights(path);
+        LookaheadPlayerAgent.ConfigureWeights(weights, scoreScale);
+        report($"已从 {path} 载入评估权重（尺度 {scoreScale:R}，{weights.Length} 项）。");
+    }
+
+    /// <summary>
+    /// 读一份权重文件，**不改变全局状态**。
+    /// 按对局切换权重时要一次读好几份，不能每读一份就把全局权重覆盖一次。
+    /// 文件格式：第一行是分数尺度，之后每行一个特征权重。
+    /// </summary>
+    public static (double[] Weights, double ScoreScale) ReadWeights(string path)
+    {
         var numbers = File.ReadAllLines(path)
             .Select(line => line.Trim())
             .Where(line => line.Length > 0 && !line.StartsWith('#'))
@@ -356,8 +368,7 @@ public static class WeightTools
                 $"实际 {numbers.Length} 个。");
         }
 
-        LookaheadPlayerAgent.ConfigureWeights(numbers[1..], numbers[0]);
-        report($"已从 {path} 载入评估权重（尺度 {numbers[0]:R}，{featureCount} 项）。");
+        return (numbers[1..], numbers[0]);
     }
 
     /// <summary>

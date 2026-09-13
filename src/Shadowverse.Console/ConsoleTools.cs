@@ -88,6 +88,7 @@ internal static void PrintHelp()
     Console.WriteLine("  --collect-deck <卡组编号>  把采样限定在该卡组的镜像局上（做某套牌专精用）");
     Console.WriteLine("  --fit-weights <样本文件>   对样本做 L2 正则 logistic 回归，输出拟合权重");
     Console.WriteLine("  --weights-file <权重文件>  用拟合权重跑基准（在跑批前生效，用于 A/B）");
+    Console.WriteLine("  --matchup-weights <文件>  按对局切换权重：每行「我方卡组 对手卡组 权重文件路径」");
     Console.WriteLine("  --epochs / --learning-rate / --l2 / --out  拟合参数与输出路径");
     Console.WriteLine();
     Console.WriteLine("数据查询：");
@@ -493,6 +494,46 @@ private static IEnumerable<CardEffect> EffectsOf(CardDefinition card)
             yield return effect;
         }
     }
+}
+
+/// <summary>
+/// 载入"按对局切换"的权重表。
+/// <para>
+/// 文件每行一条：<c>我方卡组编号 对手卡组编号 权重文件路径</c>，<c>#</c> 开头是注释，
+/// 路径相对于仓库根目录（和 outputs/ 一致）。
+/// </para>
+/// <para>
+/// 存在的理由：实测同一套 21 项特征、**只换"权重是在哪种对局的数据上拟合的"**，
+/// 交叉对局上的 BO10 从 37.5 跳到 65.0，镜像上从 57.5 跳到 65.0 ——
+/// **每一列都是"在本对局上拟合的那一套"赢**。所以按对局选一份是有价值的。
+/// 没配到的对局回退全局默认权重。
+/// </para>
+/// </summary>
+internal static void LoadMatchupWeights(string path)
+{
+    var map = new Dictionary<(string Own, string Opponent), (double[] Weights, double Scale)>();
+    foreach (var rawLine in File.ReadAllLines(path))
+    {
+        var line = rawLine.Trim();
+        if (line.Length == 0 || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3)
+        {
+            throw new InvalidOperationException(
+                $"对局权重文件 {path} 的每一行应为「我方卡组 对手卡组 权重文件路径」，收到：{line}");
+        }
+
+        var weightsPath = Path.IsPathRooted(parts[2]) ? parts[2] : Path.Combine(ProjectRoot(), parts[2]);
+        var (weights, scale) = WeightTools.ReadWeights(weightsPath);
+        map[(parts[0], parts[1])] = (weights, scale);
+    }
+
+    LookaheadPlayerAgent.ConfigureMatchupWeights(map);
+    Console.WriteLine($"已按对局载入 {map.Count} 份评估权重（来自 {path}）；没配到的对局回退默认权重。");
 }
 
 internal static void RunSelfPlayCollection(    string[] args,

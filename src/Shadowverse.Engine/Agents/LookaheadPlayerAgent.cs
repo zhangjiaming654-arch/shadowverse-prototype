@@ -358,6 +358,9 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             throw new InvalidOperationException("An agent was asked to act without any legal actions.");
         }
 
+        // 按对局选权重。放在最前面：这一手的所有推演都要用选中的那一份。
+        ResolveMatchupWeights(observation);
+
         // 换牌也走搜索，不再直接交给规则牌手。
         //
         // 换牌决定整局的规划和前期节奏，而且"要不要全换去赌某张关键牌"是**卡组相关**的判断，
@@ -800,8 +803,102 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         ScoreScale = scoreScale;
     }
 
-    private static double EvaluatePosition(GameState state, int perspectivePlayer) =>
-        EvaluatePosition(state, perspectivePlayer, PositionWeights, ScoreScale);
+    // ───────────────────────── 按对局切换权重 ─────────────────────────
+    //
+    // 实测（各 40 个 BO10，同一批牌局、只换"权重是在哪种对局的数据上拟合的"）：
+    //   权重来源        中速梦镜像    交叉对局
+    //   镜像数据拟合    65.0 分      37.5 分
+    //   交叉数据拟合    57.5 分      65.0 分
+    // **每一列都是"在本对局上拟合的那一套"赢** —— 用对的一份值 7.5 ~ 27.5 个 BO10 分。
+    // 而且镜像那一列里交叉拟合的输给镜像拟合的，排除了"交叉权重只是普遍更好"这个解释。
+    //
+    // 所以：同一套 21 项特征、按对局各拟合一份权重、开局选一份。
+    // 键用**卡组编号**（稳定、可读，拟合本来就是按卡组分组的），不用特征。
+
+    private static IReadOnlyDictionary<(string Own, string Opponent), (double[] Weights, double Scale)>?
+        _matchupWeights;
+
+    /// <summary>本局当前生效的权重。null = 用全局默认 <see cref="PositionWeights"/>。</summary>
+    private double[]? _activeWeights;
+    private double _activeScale = 1.0;
+    private bool _matchupResolved;
+
+    /// <summary>上一次看到的自己牌库长度，用来识别"新的一局"。</summary>
+    private int _lastOwnDeckCount;
+
+    public static void ConfigureMatchupWeights(
+        IReadOnlyDictionary<(string Own, string Opponent), (double[] Weights, double Scale)>? matchupWeights) =>
+        _matchupWeights = matchupWeights;
+
+    /// <summary>
+    /// 分辨本局双方各是哪套牌，并在权重表里选一份。
+    /// <para>
+    /// **只选一次。** 卡组在一局里不会变，而 <c>OwnDeckCardIds</c> 会随着抽牌缩短 ——
+    /// 每手重算会让选中的权重中途跳变，那比不切换还糟。
+    /// 对手要等第一张牌亮出来才认得出，所以认不出来就先用默认权重，下一手再试。
+    /// </para>
+    /// <para>
+    /// <b>认不唯一就返回 null（不猜）</b>：猜错对局比不切换更糟。
+    /// </para>
+    /// </summary>
+    private void ResolveMatchupWeights(GameObservation observation)
+    {
+        if (_matchupWeights is null)
+        {
+            return;
+        }
+
+        // 自己牌库突然变长 = 换了一局（牌手实例可能被多局复用）。
+        // 阈值取 3：局内牌库只会因为抽牌变短，只有"洗回牌库"会小幅增加，不会一下多出 3 张以上。
+        var ownDeckCount = observation.OwnDeckCardIds?.Count ?? 0;
+        if (ownDeckCount > _lastOwnDeckCount + 3)
+        {
+            _matchupResolved = false;
+            _activeWeights = null;
+        }
+
+        _lastOwnDeckCount = ownDeckCount;
+
+        if (_matchupResolved)
+        {
+            return;
+        }
+
+        var own = IdentifySingleDeck(observation.OwnDeckCardIds);
+        var opponent = IdentifySingleDeck(observation.Opponent.RevealedCardIds);
+        if (own is null || opponent is null)
+        {
+            return;
+        }
+
+        _matchupResolved = true;
+        if (_matchupWeights.TryGetValue((own, opponent), out var found))
+        {
+            _activeWeights = found.Weights;
+            _activeScale = found.Scale;
+        }
+    }
+
+    /// <summary>把一组卡牌编号认成牌库里的一副。候选不唯一就返回 null。</summary>
+    public static string? IdentifySingleDeck(IReadOnlyList<string>? cardIds)
+    {
+        if (cardIds is null || cardIds.Count == 0)
+        {
+            return null;
+        }
+
+        var candidates = OpponentDeckInference.Identify(cardIds);
+        return candidates.Count == 1 ? candidates[0].DeckId : null;
+    }
+
+    /// <summary>
+    /// 叶子评估。<b>用这一局当前生效的权重</b>：默认是全局 <see cref="PositionWeights"/>，
+    /// 按对局切换之后就是那一份（<c>EvaluatePosition</c> 本来就有一个接收 weights 的重载）。
+    /// </summary>
+    private double EvaluatePosition(GameState state, int perspectivePlayer) =>
+        _activeWeights is null
+            ? EvaluatePosition(state, perspectivePlayer, PositionWeights, ScoreScale)
+            : EvaluatePosition(state, perspectivePlayer, _activeWeights, _activeScale);
 
     private static double EvaluatePosition(
         GameState state,
