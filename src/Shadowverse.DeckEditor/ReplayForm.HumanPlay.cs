@@ -111,7 +111,11 @@ public sealed partial class ReplayForm
     private readonly HashSet<int> _mulliganMarks = [];
 
     /// <summary>
-    /// 已经挂过鼠标处理器的格子。**这是防重复挂的**：格子是每次重画新建的（所以重画后要清空），
+    /// 整个窗体复用的一个弹出菜单。**不要每次新建再 Dispose** —— 见 <see cref="ShowMenu"/>。
+    /// </summary>
+    private ContextMenuStrip? _actionMenu;
+
+    /// <summary>已经挂过鼠标处理器的格子。**这是防重复挂的**：格子是每次重画新建的（所以重画后要清空），
     /// 但如果在同一次渲染里对同一个格子挂两遍，一次点击就会触发两次 ——
     /// 换牌标记会点了等于没点。这种 bug 在界面上表现为"没反应"，极难查。
     /// </summary>
@@ -167,6 +171,8 @@ public sealed partial class ReplayForm
         _humanChoice = null;
         _pendingActions = null;
         _pendingObservation = null;
+        _actionMenu?.Dispose();
+        _actionMenu = null;
     }
 
     /// <summary>开一局人机对战。真人坐 Player 0，对手用 P2 下拉里选的牌手。</summary>
@@ -275,7 +281,18 @@ public sealed partial class ReplayForm
                 return;
             }
 
-            PresentChoices(observation, legalActions, completion);
+            try
+            {
+                PresentChoices(observation, legalActions, completion);
+            }
+            catch (Exception exception)
+            {
+                // 界面出问题时**绝不能把对局线程永远挂住** —— 它正阻塞在 completion 上，
+                // 而用户看到的现象只是"卡死了"，连原因都看不到。
+                // 宁可让这一局干净地报错结束。
+                _humanStatus.Text = "界面出错，对局已中断：" + exception.Message;
+                completion.TrySetException(exception);
+            }
         });
 
         return completion.Task.GetAwaiter().GetResult();
@@ -420,14 +437,38 @@ public sealed partial class ReplayForm
         _humanChoice?.TrySetResult(action);
     }
 
+    /// <summary>
+    /// 清空动作列表。
+    /// <para>
+    /// **释放必须延后一拍**：这个方法经常是从某个按钮自己的 Click 处理器里调用的
+    /// （点一下 → 提交动作 → 清空列表）。当场 Dispose 掉正在执行事件的那个控件，
+    /// WinForms 处理完事件之后还会去碰它。
+    /// </para>
+    /// </summary>
     private void ClearHumanActions()
     {
-        foreach (Control control in _humanActions.Controls)
+        var stale = _humanActions.Controls.Cast<Control>().ToArray();
+        _humanActions.Controls.Clear();
+        if (stale.Length == 0)
         {
-            control.Dispose();
+            return;
         }
 
-        _humanActions.Controls.Clear();
+        void Release()
+        {
+            foreach (var control in stale)
+            {
+                control.Dispose();
+            }
+        }
+
+        if (IsDisposed || Disposing || !IsHandleCreated)
+        {
+            Release();
+            return;
+        }
+
+        BeginInvoke(Release);
     }
 
     // ───────────────────────────── 换牌：点击标记 ─────────────────────────────
@@ -462,7 +503,7 @@ public sealed partial class ReplayForm
         AttachToTile(tile, Toggle, null, null);
     }
 
-    /// <summary>把标记状态画到已有的手牌格子上：换掉的牌变暗并挂一个"换掉"角标。</summary>
+    /// <summary>把标记状态画到已有的手牌格子上：换掉的牌变暗、边框变 3D、牌名前加一个 ✕。</summary>
     private void ApplyMulliganMarks()
     {
         foreach (Panel tile in _selfHand.Controls.OfType<Panel>())
@@ -475,7 +516,17 @@ public sealed partial class ReplayForm
             var marked = _mulliganMarks.Contains(card.InstanceId);
             tile.BackColor = marked ? Color.FromArgb(120, 46, 52) : TypeColor(card.Definition.Type);
             tile.BorderStyle = marked ? BorderStyle.Fixed3D : BorderStyle.FixedSingle;
-            SetCornerBadge(tile, "MulliganBadge", marked ? "✕ 换掉" : null, Color.Firebrick, rightAligned: false);
+
+            // 标记画在**卡牌自己的文字标签**上，而不是加一个覆盖用的子标签。
+            // 子标签会挡住宿主的鼠标事件 —— 鼠标点在角标上就"没反应"了，
+            // 而角标正好压在卡牌上，用户很容易点到。原文存在标签的 Tag 里以便还原。
+            var body = tile.Controls.OfType<Label>().FirstOrDefault();
+            if (body is not null)
+            {
+                var original = body.Tag as string ?? body.Text;
+                body.Tag = original;
+                body.Text = marked ? "✕ " + original : original;
+            }
         }
     }
 
@@ -486,6 +537,11 @@ public sealed partial class ReplayForm
     /// 依据<b>完全是引擎给的 legalActions</b>，不复制任何规则判断 ——
     /// 所以不会出现"看起来能打、点下去却没反应"这种界面和引擎不一致的情况。
     /// 打不出的牌变暗是炉石的做法，一眼就能看出这一手哪些牌真能用。
+    /// </para>
+    /// <para>
+    /// <b>调用顺序有要求</b>：必须在挂鼠标处理器<b>之前</b>调用。角标是子控件、会挡住宿主格子的鼠标事件，
+    /// 只有在这一刻就存在，后面的 <c>AttachToTile</c> 递归才会连角标一起挂上处理器。
+    /// 决策期间 legalActions 是固定的、角标不会中途新建，所以这个顺序是够的。
     /// </para>
     /// </summary>
     private void ApplyAvailabilityVisuals()
@@ -617,11 +673,11 @@ public sealed partial class ReplayForm
             // 菜单里**永远**同时列出【进化】和【超进化】，不能用的一项灰掉并写明原因。
             // 之前是"不可用就干脆不显示"，结果用户点了没反应，也分不清是缺 EP、
             // 缺 SEP、还是这只随从已经进化过了 —— 那就是"点不动"。
-            var menu = new ContextMenuStrip();
-            menu.Items.Add(BuildEvolveItem("进化", "EP", observation.Self.EvolutionPoints, isSuper: false));
-            menu.Items.Add(BuildEvolveItem("超进化", "SEP", observation.Self.SuperEvolutionPoints, isSuper: true));
-            menu.Closed += (_, _) => menu.Dispose();
-            menu.Show(this, PointToClient(Cursor.Position));
+            ShowMenu(menu =>
+            {
+                menu.Items.Add(BuildEvolveItem("进化", "EP", observation.Self.EvolutionPoints, isSuper: false));
+                menu.Items.Add(BuildEvolveItem("超进化", "SEP", observation.Self.SuperEvolutionPoints, isSuper: true));
+            });
 
             ToolStripMenuItem BuildEvolveItem(string title, string pointName, int points, bool isSuper)
             {
@@ -686,17 +742,47 @@ public sealed partial class ReplayForm
     /// <summary>一个手势对应多个合法变体时，把引擎给的变体原样列出来让用户选 —— 不猜。</summary>
     private void ShowActionMenu(IReadOnlyList<GameAction> candidates)
     {
-        var menu = new ContextMenuStrip();
-        foreach (var candidate in candidates)
+        if (_pendingObservation is not { } observation)
         {
-            var item = new ToolStripMenuItem(DescribeAction(_pendingObservation!, candidate));
-            var captured = candidate;
-            item.Click += (_, _) => CommitHumanAction(captured);
-            menu.Items.Add(item);
+            return;
         }
 
-        // 菜单用完就释放；挂在窗体上不释放会一直攒原生句柄。
-        menu.Closed += (_, _) => menu.Dispose();
+        ShowMenu(menu =>
+        {
+            foreach (var candidate in candidates)
+            {
+                var item = new ToolStripMenuItem(DescribeAction(observation, candidate));
+                var captured = candidate;
+                item.Click += (_, _) => CommitHumanAction(captured);
+                menu.Items.Add(item);
+            }
+        });
+    }
+
+    /// <summary>
+    /// 弹出菜单。**整个窗体复用一个 ContextMenuStrip**，不要每次新建。
+    /// <para>
+    /// 之前是"新建 + 在 Closed 里 Dispose 自己"，结果 WinForms 处理关菜单的后续代码
+    /// 又去碰这个已经释放的菜单，抛 <c>ObjectDisposedException</c>；
+    /// 而异常一抛，用户那一次点击就没提交，后台对局线程永远等在
+    /// <c>TaskCompletionSource</c> 上 —— 表现就是"对战卡死"。
+    /// </para>
+    /// <para>
+    /// 复用一个既不会释放到自己头上，也不会一直攒原生句柄；菜单本身随窗体一起释放。
+    /// </para>
+    /// </summary>
+    private void ShowMenu(Action<ContextMenuStrip> build)
+    {
+        var menu = _actionMenu ??= new ContextMenuStrip { ShowImageMargin = false };
+
+        // 上一次的菜单项要释放，否则每开一次菜单攒一批原生句柄。
+        foreach (ToolStripItem item in menu.Items)
+        {
+            item.Dispose();
+        }
+
+        menu.Items.Clear();
+        build(menu);
         menu.Show(this, PointToClient(Cursor.Position));
     }
 
