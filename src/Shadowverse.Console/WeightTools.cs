@@ -73,7 +73,7 @@ public static class WeightTools
             throw new ArgumentException("采样至少需要一副卡组。", nameof(decks));
         }
 
-        var perMatch = new List<(double[] Features, int Label)>[matchCount];
+        var perMatch = new List<(double[] Features, int Label, double SearchValue)>[matchCount];
         var completed = 0;
         var progressGate = new object();
         var progressEvery = Math.Max(1, matchCount / 20);
@@ -98,7 +98,9 @@ public static class WeightTools
                     rollouts,
                     horizon);
 
-                var samples = new List<(double[] Features, int ActingPlayer)>();
+                // 除了局面特征，还记"搜索自己给这个局面的估值"。
+                // 迭代回路需要它当老师 —— 只拟合"最终胜负"是这个项目失败过 9 次的目标。
+                var samples = new List<(double[] Features, int ActingPlayer, double SearchValue)>();
                 var result = MatchRunner.PlayToEnd(
                     GameEngine.CreateGame(deckA.Definition, deckB.Definition, seed),
                     firstAgent,
@@ -120,12 +122,16 @@ public static class WeightTools
 
                         samples.Add((
                             LookaheadPlayerAgent.PositionFeatures(step.BeforeState, step.ActingPlayer),
-                            step.ActingPlayer));
+                            step.ActingPlayer,
+                            SearchValueOf(step.ActingPlayer == 0 ? firstAgent : secondAgent)));
                     });
 
                 // The winner is only known once the match ends, so the labels are attached here.
                 perMatch[index] = samples
-                    .Select(sample => (sample.Features, sample.ActingPlayer == result.Winner ? 1 : 0))
+                    .Select(sample => (
+                        sample.Features,
+                        sample.ActingPlayer == result.Winner ? 1 : 0,
+                        sample.SearchValue))
                     .ToList();
 
                 var finished = Interlocked.Increment(ref completed);
@@ -147,9 +153,50 @@ public static class WeightTools
         return WriteSamples(outputPath, perMatch);
     }
 
+    /// <summary>搜索估值的旁路文件路径：与样本文件同目录同名，后缀加 .search。</summary>
+    public static string SearchValuePath(string samplePath) =>
+        Path.Combine(
+            Path.GetDirectoryName(samplePath) ?? ".",
+            Path.GetFileNameWithoutExtension(samplePath) + ".search.csv");
+
+    /// <summary>
+    /// 取这个牌手最近一次决策里"最看好的那个候选"的估值 —— 也就是**搜索对这个局面本身的判断**。
+    /// 规则牌手不搜索，返回 NaN（写盘时留空行，保持与样本逐行对齐）。
+    /// <para>
+    /// 为什么要它：只拟合"最终胜负"是这个项目失败过 9 次的目标（预测更准、打法没变）。
+    /// 搜索的估值里含有 rollout 向前推进的信息，是**比当前评估函数更强的老师** ——
+    /// 蒸馏它才可能真正改进打法。这也正是前沿方法在做的事（搜索当老师 + 迭代）。
+    /// </para>
+    /// </summary>
+    public static double SearchValueOf(IPlayerAgent agent)
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+        var decision = agent switch
+        {
+            LookaheadPlayerAgent lookahead => lookahead.LastDecision,
+            LookaheadPlayerAgentV1 lookaheadV1 => lookaheadV1.LastDecision,
+            LookaheadPlayerAgentV2 lookaheadV2 => lookaheadV2.LastDecision,
+            BaselineLookaheadPlayerAgent baseline => baseline.LastDecision,
+            _ => null
+        };
+
+        if (decision is null || decision.Evaluations.Count == 0)
+        {
+            return double.NaN;
+        }
+
+        var best = double.NegativeInfinity;
+        foreach (var evaluation in decision.Evaluations)
+        {
+            best = Math.Max(best, evaluation.EstimatedWinChance);
+        }
+
+        return best;
+    }
+
     private static int WriteSamples(
         string outputPath,
-        List<(double[] Features, int Label)>[] perMatch)
+        List<(double[] Features, int Label, double SearchValue)>[] perMatch)
     {
         var directory = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(directory))
@@ -159,6 +206,12 @@ public static class WeightTools
 
         var featureCount = LookaheadPlayerAgent.PositionWeights.Length;
         var rows = 0;
+
+        // 搜索估值另存一个**逐行对齐的旁路文件**。
+        // 为什么不直接加一列：主文件的行格式被 --fit-weights / --train-neural 依赖，
+        // 加列会同时破坏它们对特征数的校验。旁路文件最省事，也不动任何既有读取器。
+        using var valueWriter = new StreamWriter(SearchValuePath(outputPath), append: false, Encoding.UTF8);
+
         using var writer = new StreamWriter(outputPath, append: false, Encoding.UTF8);
         writer.WriteLine(
             $"# label,{string.Join(',', Enumerable.Range(0, featureCount).Select(i => $"f{i}"))}");
@@ -169,7 +222,7 @@ public static class WeightTools
                 continue;
             }
 
-            foreach (var (features, label) in samples)
+            foreach (var (features, label, searchValue) in samples)
             {
                 writer.Write(label.ToString(CultureInfo.InvariantCulture));
                 foreach (var value in features)
@@ -179,6 +232,10 @@ public static class WeightTools
                 }
 
                 writer.WriteLine();
+                valueWriter.WriteLine(
+                    double.IsNaN(searchValue)
+                        ? string.Empty
+                        : searchValue.ToString("R", CultureInfo.InvariantCulture));
                 rows++;
             }
         }
