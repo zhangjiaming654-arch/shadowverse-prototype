@@ -319,6 +319,13 @@ if (ConsoleTools.HasOption(args, "--sensitivity"))
     return;
 }
 
+// 【决策质量分层】裕度小时搜索的判断是不是接近抛硬币？几分钟，不跑 BO10。
+if (ConsoleTools.HasOption(args, "--quality"))
+{
+    ConsoleTools.RunDecisionQuality(args);
+    return;
+}
+
 // 采样分支放在**所有牌手参数解析完之后**：采样要和 --bo10 用同一套 rollout 配置，
 // 否则"采样的牌手"和"报告的配置"会不是同一个东西。
 if (args.Contains("--collect-selfplay", StringComparer.OrdinalIgnoreCase))

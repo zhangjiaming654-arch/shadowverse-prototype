@@ -730,6 +730,60 @@ internal static AgentBenchmark.SideConfig BuildSideConfig(
         evaluatorEnsemble);
 
 /// <summary>
+/// 【决策质量分层】按决策裕度分层，看搜索的判断正确率怎么随裕度变化。
+/// 用途见 <see cref="DecisionQualityProbe"/>：判别"裕度小时搜索是不是接近抛硬币"。
+/// </summary>
+internal static void RunDecisionQuality(string[] args)
+{
+    var gameCount = ParseIntegerOption(args, "--quality-games", defaultValue: 200, minimum: 5, maximum: 5000);
+    var seed = (ulong)ParseIntegerOption(args, "--quality-seed", defaultValue: 20_260_925, minimum: 1, maximum: int.MaxValue);
+    var rollouts = ParseIntegerOption(args, "--quality-rollouts", defaultValue: 10, minimum: 1, maximum: 500);
+    var horizon = ParseIntegerOption(args, "--quality-horizon", defaultValue: 1, minimum: 1, maximum: 10);
+
+    var decks = new List<DeckDefinition>
+    {
+        AgentSelfTests.CreateMatchDeck("DECK-003", "quality-a"),
+        AgentSelfTests.CreateMatchDeck("DECK-002", "quality-b")
+    };
+
+    Console.WriteLine($"决策质量分层：{gameCount} 局（{rollouts} 次推演 × 视野 {horizon}），种子 {seed}");
+    Console.WriteLine("标签 = 这一局最终谁赢；只统计搜索与规则牌手**分歧**的决策。");
+    Console.WriteLine();
+    var report = DecisionQualityProbe.Run(
+        decks, gameCount, seed, rollouts, horizon, Console.WriteLine);
+
+    Console.WriteLine();
+    Console.WriteLine("==================== 分层结果 ====================");
+    Console.WriteLine($"总决策 {report.Decisions} 个 ｜ 与规则牌手分歧 {report.OverallDisagreementShare:P1}");
+    Console.WriteLine(
+        $"分歧决策的「搜索那一方最终赢」比例 = **{report.OverallDisagreementWinShare:P1}**" +
+        "（0.5 = 抛硬币；自对弈基线注意这个数不是 0.5 本身，见下）");
+    Console.WriteLine($"对照：双方一致的那些决策里，搜索那一方赢的比例 = {report.AgreementWinShare:P1}");
+    Console.WriteLine();
+    Console.WriteLine("裕度区间          分歧决策数   占分歧比   实际胜率   搜索预测   预测−实际");
+    foreach (var stratum in report.Strata)
+    {
+        var upper = double.IsPositiveInfinity(stratum.MarginUpper) || stratum.MarginUpper > 1e6
+            ? "∞"
+            : stratum.MarginUpper.ToString("F2", CultureInfo.InvariantCulture);
+        Console.WriteLine(
+            $"  [{stratum.MarginLower:F2},{upper,-4})   {stratum.Decisions,7}   " +
+            $"{stratum.DisagreementShare,8:P1}   {stratum.DisagreementWinShare,8:P1}   " +
+            $"{stratum.MeanEstimate,8:P1}   {stratum.MeanEstimate - stratum.DisagreementWinShare,+9:P1}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(
+        "**关键看最后两列**：\"搜索预测\"是搜索自己给被选动作的估值均值。");
+    Console.WriteLine(
+        "如果\"预测−实际\"在各层都接近 0，说明搜索**校准良好、而且和裕度无关** —— " +
+        "那加算力/降噪都不会有用，必须改结构。");
+    Console.WriteLine(
+        "如果只在**小裕度**那几层出现大的正偏差，说明搜索在没把握时系统性地高估自己" +
+        "（那才是可以靠降噪或校准去修的）。");
+}
+
+/// <summary>
 /// 【决策敏感度】把一批固定局面喂给同一族牌手的不同配置，数"选的动作变了多少次"。
 /// <para>
 /// 用途见 <see cref="DecisionSensitivityProbe"/> 的注释：这个项目试过十几个方向全都不产生强度，
