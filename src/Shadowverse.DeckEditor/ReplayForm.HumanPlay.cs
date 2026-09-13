@@ -990,28 +990,33 @@ public sealed partial class ReplayForm
     }
 
     /// <summary>
-    /// 弹出菜单。**整个窗体复用一个 ContextMenuStrip**，不要每次新建。
+    /// 弹出菜单。<b>每次都整体换一个新菜单，把上一次的丢掉。</b>
     /// <para>
-    /// 之前是"新建 + 在 Closed 里 Dispose 自己"，结果 WinForms 处理关菜单的后续代码
-    /// 又去碰这个已经释放的菜单，抛 <c>ObjectDisposedException</c>；
-    /// 而异常一抛，用户那一次点击就没提交，后台对局线程永远等在
-    /// <c>TaskCompletionSource</c> 上 —— 表现就是"对战卡死"。
+    /// 这个写法是被两次实测事故逼出来的，两个坑都要绕开：
     /// </para>
+    /// <list type="number">
+    /// <item>
+    /// <b>不能在菜单自己的 <c>Closed</c> 里 Dispose 它</b> —— WinForms 关菜单的后续代码
+    /// 还会去碰它，直接抛 <c>ObjectDisposedException</c>，而用户那次点击就没提交，对战卡死。
+    /// </item>
+    /// <item>
+    /// <b>也不能复用一个菜单再遍历着 Dispose 它的 Items</b> —— Dispose 一个 ToolStripItem
+    /// 会顺手把它从 <c>Items</c> 里摘掉，边遍历边 Dispose 就是
+    /// "Collection was modified"。而且菜单第一次打开时 Items 是空的，
+    /// **这个错只在第二次打开菜单时才炸**，很难一次就试出来。
+    /// </item>
+    /// </list>
     /// <para>
-    /// 复用一个既不会释放到自己头上，也不会一直攒原生句柄；菜单本身随窗体一起释放。
+    /// 整体换新则完全没有遍历，两个坑都不存在；同时原生句柄也始终只有一个。
     /// </para>
     /// </summary>
     private void ShowMenu(Action<ContextMenuStrip> build)
     {
-        var menu = _actionMenu ??= new ContextMenuStrip { ShowImageMargin = false };
+        // 此刻上一个菜单早就关掉了（它必须先关闭，用户才可能触发下一次操作），所以释放它是安全的。
+        _actionMenu?.Dispose();
 
-        // 上一次的菜单项要释放，否则每开一次菜单攒一批原生句柄。
-        foreach (ToolStripItem item in menu.Items)
-        {
-            item.Dispose();
-        }
-
-        menu.Items.Clear();
+        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        _actionMenu = menu;
         build(menu);
         menu.Show(this, PointToClient(Cursor.Position));
     }
