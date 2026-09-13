@@ -70,6 +70,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunLookaheadMatchRunnerTest();
     // 人机对战：守"每个合法动作都能被某个拖拽/点击手势选中"，界面没法自动化验证，只能在这里守。
     AgentSelfTests.RunHumanActionResolverTest();
+    // 人机对战：对手思考面板绝不能泄露对手手牌，否则体感判断强弱就没有意义了。
+    AgentSelfTests.RunOpponentThinkingPrivacyTest();
     return;
 }
 

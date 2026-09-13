@@ -41,6 +41,12 @@ public sealed partial class ReplayForm
 
     private readonly record struct HumanHit(HumanZone Zone, int? InstanceId);
 
+    /// <summary>真人固定坐 Player 0（界面下方）。对手是 Player 1。</summary>
+    private const int HumanPlayerIndex = 0;
+
+    /// <summary>思考面板最多列几个候选。列表太长会把面板撑满，反而不想看。</summary>
+    private const int ThinkingRows = 6;
+
     private readonly Panel _humanPanel = new()
     {
         Dock = DockStyle.Right,
@@ -96,6 +102,53 @@ public sealed partial class ReplayForm
         WrapContents = false,
         AutoScroll = true
     };
+
+    private readonly Panel _thinkingPanel = new()
+    {
+        Dock = DockStyle.Bottom,
+        Height = 190,
+        BackColor = Color.FromArgb(18, 27, 38),
+        Padding = new Padding(6)
+    };
+
+    private readonly Label _thinkingTitle = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 18,
+        Text = "对手的思考（只看得到公开信息）",
+        ForeColor = Color.FromArgb(255, 214, 130),
+        Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold)
+    };
+
+    /// <summary>
+    /// 用只读多行文本框而不是 Panel+Label：这里要能滚。Dock/AutoScroll 和自动高度的组合
+    /// 在 WinForms 里很容易出怪样子，而界面我没法自动化验证 —— 文本框自带滚动，最省风险。
+    /// </summary>
+    private readonly TextBox _thinkingBody = new()
+    {
+        Dock = DockStyle.Fill,
+        Multiline = true,
+        ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical,
+        BackColor = Color.FromArgb(18, 27, 38),
+        ForeColor = Color.FromArgb(198, 214, 232),
+        BorderStyle = BorderStyle.None,
+        Font = new Font("Consolas", 8.5F),
+        TabStop = false,
+        WordWrap = false
+    };
+
+    /// <summary>
+    /// 对手每一次决策的思考（步骤下标 → 决策），供界面按当前步回看。
+    /// <para>
+    /// <b>必须在后台线程上同步抓取</b>：<c>onStep</c> 是在对局线程里同步调用的，而界面更新是排队执行的。
+    /// 等界面轮到那一步时，牌手早就做完后面好几个决策了，<c>LastDecision</c> 已经不是这一次的。
+    /// </para>
+    /// </summary>
+    private readonly List<(int StepIndex, LookaheadDecision Decision)> _opponentDecisions = [];
+
+    private IPlayerAgent? _opponentAgentInstance;
+    private bool _opponentSupportsThinking;
 
     private readonly object _liveGate = new();
     private List<MatchStep>? _liveSteps;
@@ -163,7 +216,13 @@ public sealed partial class ReplayForm
         StyleToolbarButton(_humanPlayButton, isPrimary: true);
         _humanPlayButton.Click += (_, _) => StartHumanMatch();
 
+        _thinkingPanel.Controls.Add(_thinkingBody);
+        _thinkingPanel.Controls.Add(_thinkingTitle);
+
         _humanPanel.Controls.Add(_humanActions);
+        // 顺序有讲究：WinForms 的 Dock 布局是"后加进去的先排"。
+        // Fill 必须最先加（最后排、吃掉剩下的空间），Bottom 要排在 Fill 之后、各个 Top 之前。
+        _humanPanel.Controls.Add(_thinkingPanel);
         _humanPanel.Controls.Add(_humanHint);
         _humanPanel.Controls.Add(_humanStatus);
         _humanPanel.Controls.Add(_agentLegend);
@@ -223,6 +282,8 @@ public sealed partial class ReplayForm
             _liveMatchRunning = true;
             _mulliganMarks.Clear();
             _humanShowAllActions = false;
+            _modeSelection = null;
+            _opponentDecisions.Clear();
             _humanPlayButton.Enabled = false;
             _humanOpponentSummary = $"{opponentAgent}（{rollouts} 次推演）";
             _humanStatus.Text = $"对手：{_humanOpponentSummary}\n对局进行中…";
@@ -231,6 +292,12 @@ public sealed partial class ReplayForm
 
             var human = new HumanPlayerAgent(AskHuman);
             var opponent = CreateAgent(opponentAgent, seed + 2, rollouts);
+            _opponentAgentInstance = opponent;
+            // 规则牌手不做搜索，没有估值可看 —— 这时面板要说清楚，而不是一直空着。
+            _opponentSupportsThinking = opponent is LookaheadPlayerAgent
+                or LookaheadPlayerAgentV1
+                or LookaheadPlayerAgentV2
+                or BaselineLookaheadPlayerAgent;
 
             Task.Run(() =>
             {
@@ -1365,15 +1432,19 @@ public sealed partial class ReplayForm
     /// </summary>
     private void RefreshHumanInteraction(bool tilesAreFresh = false)
     {
-        if (!_liveMatchRunning)
-        {
-            return;
-        }
-
         // 每次重画造出来的都是全新的格子，旧的"已挂处理器"记录一并丢掉。
         if (tilesAreFresh)
         {
             _interactionAttached.Clear();
+        }
+
+        // 思考面板**放在实时对局的判断之前**更新：打完之后一样能翻页回看对手每一步在想什么 ——
+        // 那正是"复盘牌手决策"最有价值的时候。
+        UpdateOpponentThinking();
+
+        if (!_liveMatchRunning)
+        {
+            return;
         }
 
         // 等真人决定时不允许翻页：否则看到的是旧的场面，拖拽却按最新一手结算，会出意外。
@@ -1431,6 +1502,118 @@ public sealed partial class ReplayForm
         }
     }
 
+    /// <summary>读出对手牌手"刚刚那一次"的决策。只有前瞻牌手有；规则牌手不搜索，没有估值。</summary>
+    private LookaheadDecision? CurrentOpponentDecision() => _opponentAgentInstance switch
+    {
+        LookaheadPlayerAgent lookahead => lookahead.LastDecision,
+        LookaheadPlayerAgentV1 lookaheadV1 => lookaheadV1.LastDecision,
+        LookaheadPlayerAgentV2 lookaheadV2 => lookaheadV2.LastDecision,
+        BaselineLookaheadPlayerAgent baseline => baseline.LastDecision,
+        _ => null
+    };
+
+    /// <summary>
+    /// 把对手最近一次决策的思考过程写进面板。
+    /// <para>
+    /// 显示原则是<b>只显示公开信息</b>：涉及对手手牌的候选只报类型
+    /// （见 <see cref="HumanActionText.DescribeOpponentAction"/>）。
+    /// 但这个面板真正的价值在于<b>形状</b> —— 他在几个动作之间选、各自估多少、差距多小、
+    /// 是不是让位给了规则牌手。这些全都不依赖对手手牌，所以可以放心显示。
+    /// </para>
+    /// </summary>
+    private void UpdateOpponentThinking()
+    {
+        // 只有"正在看这一局人机对战"时才显示。用步骤列表的**实例同一性**判断：
+        // 重新生成一批机器对局会把 _steps 换成另一个列表，那时的步骤下标和这里的记录毫无关系，
+        // 照着显示就会张冠李戴。
+        if (_liveSteps is not { } liveSteps || !ReferenceEquals(_steps, liveSteps))
+        {
+            _thinkingBody.Text = string.Empty;
+            return;
+        }
+
+        if (!_opponentSupportsThinking)
+        {
+            _thinkingBody.Text = "对手是规则牌手，没有搜索估值可看。";
+            return;
+        }
+
+        // 找"当前这一步之前最近的一次对手决策"，这样往回翻页时文字和画面是对上的。
+        (int StepIndex, LookaheadDecision Decision)? match = null;
+        lock (_liveGate)
+        {
+            foreach (var entry in _opponentDecisions)
+            {
+                if (entry.StepIndex > _currentStepIndex)
+                {
+                    break;
+                }
+
+                match = entry;
+            }
+        }
+
+        if (match is not { } record)
+        {
+            _thinkingBody.Text = "等对手行动…";
+            return;
+        }
+
+        var decision = record.Decision;
+        var evaluations = decision.Evaluations;
+        if (evaluations.Count == 0)
+        {
+            _thinkingBody.Text = "这一次他没有可供比较的候选动作。";
+            return;
+        }
+
+        // 用"那一步开始前"的局面对**你**做观测来渲染文字 —— 用当前局面会让回看时文字和画面对不上。
+        var state = record.StepIndex >= 0 && record.StepIndex < _steps.Count
+            ? _steps[record.StepIndex].BeforeState
+            : _initialState;
+        if (state is null)
+        {
+            _thinkingBody.Text = string.Empty;
+            return;
+        }
+
+        var observation = GameEngine.ToObservation(state, HumanPlayerIndex);
+        string Describe(GameAction action) => HumanActionText.DescribeOpponentAction(observation, action);
+
+        var plannerTop = evaluations[0];
+        var deferred = !ReferenceEquals(decision.SelectedAction, plannerTop.Action);
+        var lines = new List<string>
+        {
+            $"第 {decision.TurnNumber} 回合 · {(deferred ? "让位给规则牌手" : "他自己判断")}",
+            "实际打出：" + DescribeStep(_steps[record.StepIndex]),
+            $"考虑了 {evaluations.Count} 个动作，最看好的前 {Math.Min(ThinkingRows, evaluations.Count)} 个："
+        };
+
+        for (var index = 0; index < Math.Min(ThinkingRows, evaluations.Count); index++)
+        {
+            var evaluation = evaluations[index];
+            var mark = ReferenceEquals(evaluation.Action, decision.SelectedAction) ? "  ← 选中" : string.Empty;
+            lines.Add(
+                $"  {index + 1}. {Describe(evaluation.Action)}" +
+                $"  {evaluation.EstimatedWinChance * 100:F1}%{mark}");
+        }
+
+        if (evaluations.Count > ThinkingRows)
+        {
+            lines.Add($"  …还有 {evaluations.Count - ThinkingRows} 个");
+        }
+
+        lines.Add($"第 1 名领先第 2 名 {(evaluations[0].EstimatedWinChance - evaluations[1].EstimatedWinChance) * 100:F1} 个百分点");
+
+        if (deferred)
+        {
+            lines.Add("他自己的首选：" + Describe(plannerTop.Action));
+            lines.Add("（领先幅度没超过判定线，所以这一手让位给规则牌手）");
+        }
+
+        _thinkingBody.Text = string.Join(Environment.NewLine, lines);
+    }
+
     /// <summary>后台线程每走完一步就追加一次，并让界面跳到最新一步。</summary>
     private void AppendLiveStep(MatchStep step)
     {
@@ -1444,6 +1627,14 @@ public sealed partial class ReplayForm
 
             _liveSteps.Add(step);
             count = _liveSteps.Count;
+
+            // 对手刚走完一步 —— 趁现在把这次决策的思考抓下来。
+            // **必须在这里同步抓**：读的是牌手的 LastDecision，那个属性会被下一次决策覆盖，
+            // 而界面更新是排队执行的，等界面跑到这一步时它早就变了。
+            if (step.ActingPlayer == 1 && CurrentOpponentDecision() is { } decision)
+            {
+                _opponentDecisions.Add((count - 1, decision));
+            }
         }
 
         RunOnUi(() =>

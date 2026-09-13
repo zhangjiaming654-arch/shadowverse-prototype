@@ -169,4 +169,112 @@ public static class HumanActionText
 
         return name;
     }
+
+    /// <summary>
+    /// 从<b>你的</b>视角描述<b>对手</b>的一个动作，并且<b>不泄露对手手牌</b>。
+    /// <para>
+    /// 人机对战是靠<b>体感</b>判断牌手强弱的。一旦能看到对手手牌，"我赢了他"就说明不了任何事，
+    /// 整个对战的意义就没了。所以涉及对手手牌的候选一律只报类型
+    /// （"打出一张随从牌（未公开）"）；攻击、进化这类只涉及场上随从的候选照常显示卡名 ——
+    /// 场上是公开信息。
+    /// </para>
+    /// <para>
+    /// 注意：<b>不要</b>拿 <see cref="Describe"/> 来描述对手的动作。那个方法是按"手牌是我自己的"
+    /// 来解析实例号的，对手的实例号在你自己手里查不到，会退化成 <c>#123</c>：既没用，又难看。
+    /// </para>
+    /// </summary>
+    public static string DescribeOpponentAction(GameObservation observation, GameAction action)
+    {
+        string MyName(int instanceId) => observation.Self.Board
+            .FirstOrDefault(follower => follower.InstanceId == instanceId) is { } mine
+            ? Numbered(
+                observation.Self.Board.Where(other => other.CardId == mine.CardId).ToList(),
+                entry => entry.InstanceId == instanceId,
+                CardCatalog.Get(mine.CardId).Name)
+            : $"#{instanceId}";
+
+        string TheirName(int instanceId) => observation.Opponent.Board
+            .FirstOrDefault(follower => follower.InstanceId == instanceId) is { } theirs
+            ? Numbered(
+                observation.Opponent.Board.Where(other => other.CardId == theirs.CardId).ToList(),
+                entry => entry.InstanceId == instanceId,
+                CardCatalog.Get(theirs.CardId).Name)
+            : $"#{instanceId}";
+
+        return action switch
+        {
+            AttackLeaderAction attack => $"{TheirName(attack.AttackerInstanceId)} 攻击你的主战者",
+            AttackFollowerAction attack =>
+                $"{TheirName(attack.AttackerInstanceId)} 攻击 {MyName(attack.DefenderInstanceId)}",
+            EvolveAction evolve => $"进化 {TheirName(evolve.FollowerInstanceId)}" + TheirEvolveDetail(evolve),
+            SuperEvolveAction superEvolve =>
+                $"超进化 {TheirName(superEvolve.FollowerInstanceId)}" + TheirEvolveDetail(superEvolve),
+            EndTurnAction => "结束回合",
+            UseExtraPlayPointAction => "使用额外 PP",
+            MulliganAction => "换牌",
+
+            // 以下都涉及对手手牌 —— 只报类型，绝不报是哪张。
+            PlayFollowerAction => "打出一张随从牌（未公开）",
+            PlayAmuletAction => "打出一张护符牌（未公开）",
+            PlaySpellAction => "打出一张法术牌（未公开）",
+            PlayCrystallizeAction => "结晶一张手牌（未公开）",
+            PlayAccelerateAction => "加速一张手牌（未公开）",
+            _ => "一个动作"
+        };
+
+        // 进化指定的目标（以及超进化指定的己方随从）都站在场上，是公开信息；
+        // 模式名同样公开 —— 那只随从就摆在场上，模式是印在卡面上的。
+        string TheirEvolveDetail(GameAction candidate)
+        {
+            var parts = new List<string>();
+
+            var enemyTarget = candidate switch
+            {
+                EvolveAction { EnemyFollowerTargetInstanceId: int id } => id,
+                SuperEvolveAction { EnemyFollowerTargetInstanceId: int id } => id,
+                _ => (int?)null
+            };
+            if (enemyTarget is int targetId)
+            {
+                parts.Add($"指定 {MyName(targetId)}");
+            }
+
+            if (candidate is SuperEvolveAction { OtherFollowerTargetInstanceId: int allyId })
+            {
+                parts.Add($"指定己方 {TheirName(allyId)}");
+            }
+
+            if (TheirModeName(candidate) is { } modeName)
+            {
+                parts.Add($"模式：{modeName}");
+            }
+
+            return parts.Count == 0 ? string.Empty : "（" + string.Join("；", parts) + "）";
+        }
+
+        string? TheirModeName(GameAction candidate)
+        {
+            var (followerInstanceId, modeIndex) = candidate switch
+            {
+                EvolveAction evolve => (evolve.FollowerInstanceId, evolve.ModeChoiceIndex),
+                SuperEvolveAction superEvolve => (superEvolve.FollowerInstanceId, superEvolve.ModeChoiceIndex),
+                _ => (0, null)
+            };
+
+            if (modeIndex is not int index || index < 0)
+            {
+                return null;
+            }
+
+            var follower = observation.Opponent.Board
+                .FirstOrDefault(board => board.InstanceId == followerInstanceId);
+            if (follower is null)
+            {
+                return null;
+            }
+
+            var options = CardCatalog.Get(follower.CardId).EvolutionModeChoices;
+            return options is not null && index < options.Count ? options[index].Name : null;
+        }
+    }
 }
