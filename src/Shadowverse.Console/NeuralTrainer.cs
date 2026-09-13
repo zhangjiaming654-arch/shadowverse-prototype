@@ -376,8 +376,12 @@ public static class NeuralTrainer
 
     private static double Linear(double[] weights, double scale, double[] features)
     {
+        // 特征数可能**多于**权重数：例如数据里多了一列"对局上下文"（对手是哪套牌）。
+        // 手调线性值在这里只是给拟合结果当参照物，让它因为多了一列就崩掉没有意义。
+        // 所以按**公共长度**算 —— 多出来的列，手调权重本来就没有对应系数。
+        var count = Math.Min(weights.Length, features.Length);
         var sum = 0.0;
-        for (var index = 0; index < features.Length; index++)
+        for (var index = 0; index < count; index++)
         {
             sum += features[index] * weights[index];
         }
