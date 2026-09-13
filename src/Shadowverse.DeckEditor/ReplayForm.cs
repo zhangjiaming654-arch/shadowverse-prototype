@@ -14,7 +14,7 @@ namespace Shadowverse.DeckEditor;
 /// A compact, full-information replay viewer. It deliberately favours readable board changes
 /// over card art: hands, the two leaders, five follower slots per side, and one action at a time.
 /// </summary>
-public sealed class ReplayForm : Form
+public sealed partial class ReplayForm : Form
 {
     private static readonly Color BoardBackground = Color.FromArgb(26, 42, 61);
     private static readonly Color SurfaceBackground = Color.FromArgb(36, 55, 76);
@@ -113,6 +113,9 @@ public sealed class ReplayForm : Form
         KeyPreview = true;
 
         BuildLayout();
+        // 人机对战面板挂在右侧。逻辑全在 ReplayForm.HumanPlay.cs 里，
+        // 这里只加一行，把改动面压到最小 —— 界面没法自动化验证，改布局的风险最高。
+        BuildHumanPlayPanel();
         LoadDeckChoices();
         _firstAgent.Items.AddRange([
             "前瞻牌手", "前瞻牌手 1.0（冻结）",
