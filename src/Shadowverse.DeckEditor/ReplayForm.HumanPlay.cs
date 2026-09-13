@@ -401,8 +401,9 @@ public sealed partial class ReplayForm
                 $"对手：{_humanOpponentSummary}\n你的回合（第 {observation.TurnNumber} 回合） ｜ {DescribeOwnState(observation)}";
             _humanHint.Text =
                 "拖动自己的手牌到己方场上出牌；\n" +
-                "拖动自己的随从到敌方随从/主战者上攻击；\n" +
-                "右键自己的随从 → 在弹出的菜单里选【进化】或【超进化】\n（左键点一下随从也能打开这个菜单）。";
+                "拖动自己的随从到敌方随从 / 主战者上 → 攻击，\n或指定【进化时】的目标；\n" +
+                "拖到己方另一个随从上 → 超进化时带动它；\n" +
+                "点一下自己的随从 → 菜单里选【进化】/【超进化】。";
         }
 
         _humanChoice = completion;
@@ -1090,20 +1091,7 @@ public sealed partial class ReplayForm
         }
 
         var hit = HitTestHuman(screenPoint);
-        var valid = false;
-
-        if (_dragIsHandCard)
-        {
-            valid = HumanActionResolver
-                .FromHand(actions, _dragInstanceId, TargetFollowerOf(hit), hit.Zone == HumanZone.OpponentLeader)
-                .Count > 0;
-        }
-        else
-        {
-            valid = HumanActionResolver
-                .Attack(actions, _dragInstanceId, TargetFollowerOf(hit), hit.Zone == HumanZone.OpponentLeader)
-                .Count > 0;
-        }
+        var valid = DragCandidates(actions, hit).Count > 0;
 
         HighlightDropTarget(hit, valid);
         UpdateDragArrow(hit);
@@ -1114,8 +1102,32 @@ public sealed partial class ReplayForm
         }
     }
 
-    private static int? TargetFollowerOf(HumanHit hit) =>
-        hit.Zone == HumanZone.OpponentBoard ? hit.InstanceId : null;
+    /// <summary>
+    /// 当前这个拖拽手势落在 <paramref name="hit"/> 上时，所有匹配的合法动作。
+    /// <para>
+    /// 手牌和场上随从的语义不同，所以分开走：
+    /// 手牌的落点决定"打出后指定谁"；随从的落点决定"指向谁" ——
+    /// 那不只是攻击，还包括【进化时】指定敌方随从、超进化指定己方随从。
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<GameAction> DragCandidates(IReadOnlyList<GameAction> actions, HumanHit hit)
+    {
+        if (_dragIsHandCard)
+        {
+            return HumanActionResolver.FromHand(
+                actions,
+                _dragInstanceId,
+                hit.Zone == HumanZone.OpponentBoard ? hit.InstanceId : null,
+                hit.Zone == HumanZone.OpponentLeader);
+        }
+
+        return HumanActionResolver.FromFollower(
+            actions,
+            _dragInstanceId,
+            enemyFollowerTargetInstanceId: hit.Zone == HumanZone.OpponentBoard ? hit.InstanceId : null,
+            enemyLeaderTarget: hit.Zone == HumanZone.OpponentLeader,
+            allyFollowerTargetInstanceId: hit.Zone == HumanZone.OwnBoard ? hit.InstanceId : null);
+    }
 
     /// <summary>攻击时用回放里已有的那根箭头指一下打谁 —— 和真实游戏的手感一致。</summary>
     private void UpdateDragArrow(HumanHit hit)
@@ -1274,9 +1286,7 @@ public sealed partial class ReplayForm
         }
 
         var hit = HitTestHuman(screenPoint);
-        var candidates = _dragIsHandCard
-            ? HumanActionResolver.FromHand(actions, _dragInstanceId, TargetFollowerOf(hit), hit.Zone == HumanZone.OpponentLeader)
-            : HumanActionResolver.Attack(actions, _dragInstanceId, TargetFollowerOf(hit), hit.Zone == HumanZone.OpponentLeader);
+        var candidates = DragCandidates(actions, hit);
 
         if (candidates.Count == 0)
         {
@@ -1402,25 +1412,27 @@ public sealed partial class ReplayForm
         }
     }
 
-    /// <summary>拖拽时在动作栏里写清楚"松手会发生什么"。</summary>
+    /// <summary>
+    /// 拖拽时在动作栏里写清楚"松手会发生什么"。
+    /// 直接把筛出来的候选动作原样描述出来 —— 用的和菜单、"全部动作"列表是同一个描述器，
+    /// 所以不会出现"提示说一套、实际做另一套"。
+    /// </summary>
     private string DescribeDragIntent(HumanHit hit, bool valid)
     {
-        var what = _dragIsHandCard
-            ? $"手牌 #{_dragInstanceId}"
-            : $"随从 #{_dragInstanceId}";
-
         if (!valid)
         {
-            return $"不能把 {what} 放在这里";
+            return _dragIsHandCard ? "这张牌不能放在这里" : "这个随从不能指向那个目标";
         }
 
-        return _dragIsHandCard
-            ? hit.Zone == HumanZone.OwnBoard
-                ? "松手：打出这张牌"
-                : "松手：打出这张牌并指定这个目标"
-            : hit.Zone == HumanZone.OpponentLeader
-                ? "松手：攻击对方主战者"
-                : "松手：攻击这个随从";
+        if (_pendingActions is not { } actions || _pendingObservation is not { } observation)
+        {
+            return string.Empty;
+        }
+
+        var candidates = DragCandidates(actions, hit);
+        return candidates.Count == 1
+            ? "松手：" + HumanActionText.Describe(observation, candidates[0])
+            : $"松手：有 {candidates.Count} 个可选动作，会让你选一个";
     }
 
     // ───────────────────────────── 每步之后重挂交互 ─────────────────────────────

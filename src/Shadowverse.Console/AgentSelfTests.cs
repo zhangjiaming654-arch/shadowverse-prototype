@@ -367,17 +367,33 @@ private static void CollectGestureReach(
             // 拖到敌方主战者上
             Take(
                 "随从→敌方主战者",
-                HumanActionResolver.Attack(legalActions, follower.InstanceId, null, targetLeader: true));
-            // 拖到每一个敌方随从上
+                HumanActionResolver.FromFollower(
+                    legalActions, follower.InstanceId, enemyLeaderTarget: true));
+            // 拖到每一个敌方随从上：攻击，或【进化时】指定它
             foreach (var enemy in observation.Opponent.Board)
             {
                 Take(
                     "随从→敌方随从",
-                    HumanActionResolver.Attack(legalActions, follower.InstanceId, enemy.InstanceId));
+                    HumanActionResolver.FromFollower(
+                        legalActions,
+                        follower.InstanceId,
+                        enemyFollowerTargetInstanceId: enemy.InstanceId));
             }
 
-            // 右键：进化 / 超进化
-            Take("右键进化", HumanActionResolver.Evolve(legalActions, follower.InstanceId));
+            // 拖到另一个己方随从上：超进化时带动它
+            foreach (var ally in observation.Self.Board
+                         .Where(board => board.InstanceId != follower.InstanceId))
+            {
+                Take(
+                    "随从→己方随从",
+                    HumanActionResolver.FromFollower(
+                        legalActions,
+                        follower.InstanceId,
+                        allyFollowerTargetInstanceId: ally.InstanceId));
+            }
+
+            // 点一下 / 右键：进化 / 超进化
+            Take("点随从进化", HumanActionResolver.Evolve(legalActions, follower.InstanceId));
         }
     }
 

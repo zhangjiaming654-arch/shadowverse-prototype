@@ -96,33 +96,65 @@ public static class HumanActionResolver
         return preferred.Count > 0 ? preferred : played;
     }
 
-    /// <summary>把自己的随从拖到某个落点后的候选攻击动作。</summary>
-    public static IReadOnlyList<GameAction> Attack(
+    /// <summary>
+    /// 把自己的随从拖到某个落点后的候选动作。
+    /// <para>
+    /// <b>不只是攻击</b>。【进化时】指定敌方随从的效果（例如恶魔鼓手·拉兹的"对1个敌方随从造成伤害"）
+    /// 本质也是"把这个随从指向那个目标"，所以拖动它才是自然的操作方式；
+    /// 超进化指定己方随从（"另一个未进化的己方随从也进化"）同理，落点是自己的随从。
+    /// </para>
+    /// <para>
+    /// 落点同时满足多种动作时（既能攻击、又能指定它进化）返回多个候选，
+    /// 由界面弹菜单让用户选 —— 不替用户猜。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<GameAction> FromFollower(
         IReadOnlyList<GameAction> legalActions,
-        int attackerInstanceId,
-        int? defenderInstanceId = null,
-        bool targetLeader = false)
+        int followerInstanceId,
+        int? enemyFollowerTargetInstanceId = null,
+        bool enemyLeaderTarget = false,
+        int? allyFollowerTargetInstanceId = null)
     {
-        if (targetLeader)
+        var candidates = new List<GameAction>();
+
+        // 能指向敌方主战者的只有攻击。
+        if (enemyLeaderTarget)
         {
-            return legalActions
+            candidates.AddRange(legalActions
                 .OfType<AttackLeaderAction>()
-                .Where(action => action.AttackerInstanceId == attackerInstanceId)
-                .Cast<GameAction>()
-                .ToList();
+                .Where(action => action.AttackerInstanceId == followerInstanceId));
+            return candidates;
         }
 
-        if (defenderInstanceId is not int defenderId)
+        if (enemyFollowerTargetInstanceId is int enemyId)
         {
-            return [];
+            candidates.AddRange(legalActions
+                .OfType<AttackFollowerAction>()
+                .Where(action => action.AttackerInstanceId == followerInstanceId
+                                 && action.DefenderInstanceId == enemyId));
+
+            // 【进化时】指定这个敌方随从。
+            candidates.AddRange(legalActions
+                .OfType<EvolveAction>()
+                .Where(action => action.FollowerInstanceId == followerInstanceId
+                                 && action.EnemyFollowerTargetInstanceId == enemyId));
+
+            candidates.AddRange(legalActions
+                .OfType<SuperEvolveAction>()
+                .Where(action => action.FollowerInstanceId == followerInstanceId
+                                 && action.EnemyFollowerTargetInstanceId == enemyId));
         }
 
-        return legalActions
-            .OfType<AttackFollowerAction>()
-            .Where(action => action.AttackerInstanceId == attackerInstanceId
-                             && action.DefenderInstanceId == defenderId)
-            .Cast<GameAction>()
-            .ToList();
+        // 超进化指定"另一个未进化的己方随从"，落点是自己的随从。
+        if (allyFollowerTargetInstanceId is int allyId && allyId != followerInstanceId)
+        {
+            candidates.AddRange(legalActions
+                .OfType<SuperEvolveAction>()
+                .Where(action => action.FollowerInstanceId == followerInstanceId
+                                 && action.OtherFollowerTargetInstanceId == allyId));
+        }
+
+        return candidates;
     }
 
     /// <summary>右键自己的随从：进化 / 超进化的所有变体（可能带目标或模式选择，交给菜单）。</summary>
