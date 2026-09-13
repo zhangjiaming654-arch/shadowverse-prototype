@@ -350,7 +350,7 @@ public sealed partial class ReplayForm
             TaskCreationOptions.RunContinuationsAsynchronously);
         _humanChoice = completion;
 
-        RunOnUi(() =>
+        var scheduled = RunOnUi(() =>
         {
             if (!_liveMatchRunning)
             {
@@ -371,6 +371,13 @@ public sealed partial class ReplayForm
                 completion.TrySetException(exception);
             }
         });
+
+        if (!scheduled)
+        {
+            // 窗体已经关掉，这次询问永远送不到界面上。不在这里解开的话，
+            // 对局线程会一直等下去，连进程都退不掉。
+            completion.TrySetCanceled();
+        }
 
         return completion.Task.GetAwaiter().GetResult();
     }
@@ -1450,6 +1457,18 @@ public sealed partial class ReplayForm
             _interactionAttached.Clear();
         }
 
+        // 等真人决定时不允许翻页：否则看到的是旧的场面，拖拽却按最新一手结算，会出意外。
+        // **这一步必须排在 UpdateOpponentThinking 之前** —— 思考面板是按 _currentStepIndex
+        // 去找"当前这一步之前最近的一次决策"的，先更新面板再跳步，面板就会短暂地
+        // 显示另一手的内容，和画面上的场面不一致。
+        if (_liveMatchRunning && _pendingActions is not null && _steps.Count > 0)
+        {
+            _previousButton.Enabled = false;
+            _nextButton.Enabled = false;
+            _autoPlayButton.Enabled = false;
+            _currentStepIndex = _steps.Count - 1;
+        }
+
         // 思考面板**放在实时对局的判断之前**更新：打完之后一样能翻页回看对手每一步在想什么 ——
         // 那正是"复盘牌手决策"最有价值的时候。
         UpdateOpponentThinking();
@@ -1459,25 +1478,9 @@ public sealed partial class ReplayForm
             return;
         }
 
-        // 等真人决定时不允许翻页：否则看到的是旧的场面，拖拽却按最新一手结算，会出意外。
-        if (_pendingActions is not null)
-        {
-            _previousButton.Enabled = false;
-            _nextButton.Enabled = false;
-            _autoPlayButton.Enabled = false;
-            if (_currentStepIndex != _steps.Count - 1)
-            {
-                _currentStepIndex = _steps.Count - 1;
-            }
-        }
-
         if (_pendingActions is null || _pendingObservation is null)
         {
-            if (_liveMatchRunning)
-            {
-                _humanStatus.Text = $"对手：{_humanOpponentSummary}\n对手行动中…";
-            }
-
+            _humanStatus.Text = $"对手：{_humanOpponentSummary}\n对手行动中…";
             return;
         }
 
@@ -1572,58 +1575,31 @@ public sealed partial class ReplayForm
         }
 
         var decision = record.Decision;
-        var evaluations = decision.Evaluations;
-        if (evaluations.Count == 0)
-        {
-            _thinkingBody.Text = "这一次他没有可供比较的候选动作。";
-            return;
-        }
 
         // 用"那一步开始前"的局面对**你**做观测来渲染文字 —— 用当前局面会让回看时文字和画面对不上。
-        var state = record.StepIndex >= 0 && record.StepIndex < _steps.Count
-            ? _steps[record.StepIndex].BeforeState
-            : _initialState;
-        if (state is null)
+        // **步子和局面一起取**：之前是这里做了边界检查、下面取 DescribeStep 时又没做，
+        // 两处不一致 —— 边界真越了就是 IndexOutOfRange，而不是干净地什么都不显示。
+        var step = record.StepIndex >= 0 && record.StepIndex < _steps.Count
+            ? _steps[record.StepIndex]
+            : null;
+        if (step is null)
         {
             _thinkingBody.Text = string.Empty;
             return;
         }
 
-        var observation = GameEngine.ToObservation(state, HumanPlayerIndex);
-        string Describe(GameAction action) => HumanActionText.DescribeOpponentAction(observation, action);
+        var observation = GameEngine.ToObservation(step.BeforeState, HumanPlayerIndex);
 
-        var plannerTop = evaluations[0];
-        var deferred = !ReferenceEquals(decision.SelectedAction, plannerTop.Action);
-        var lines = new List<string>
-        {
-            $"第 {decision.TurnNumber} 回合 · {(deferred ? "让位给规则牌手" : "他自己判断")}",
-            "实际打出：" + DescribeStep(_steps[record.StepIndex]),
-            $"考虑了 {evaluations.Count} 个动作，最看好的前 {Math.Min(ThinkingRows, evaluations.Count)} 个："
-        };
-
-        for (var index = 0; index < Math.Min(ThinkingRows, evaluations.Count); index++)
-        {
-            var evaluation = evaluations[index];
-            var mark = ReferenceEquals(evaluation.Action, decision.SelectedAction) ? "  ← 选中" : string.Empty;
-            lines.Add(
-                $"  {index + 1}. {Describe(evaluation.Action)}" +
-                $"  {evaluation.EstimatedWinChance * 100:F1}%{mark}");
-        }
-
-        if (evaluations.Count > ThinkingRows)
-        {
-            lines.Add($"  …还有 {evaluations.Count - ThinkingRows} 个");
-        }
-
-        lines.Add($"第 1 名领先第 2 名 {(evaluations[0].EstimatedWinChance - evaluations[1].EstimatedWinChance) * 100:F1} 个百分点");
-
-        if (deferred)
-        {
-            lines.Add("他自己的首选：" + Describe(plannerTop.Action));
-            lines.Add("（领先幅度没超过判定线，所以这一手让位给规则牌手）");
-        }
-
-        _thinkingBody.Text = string.Join(Environment.NewLine, lines);
+        // 文字拼装在引擎层（OpponentThinkingReport）—— 里面有真逻辑
+        // （几个候选、第 2 名存不存在、要不要提回退闸），放在界面里自检就够不着。
+        // 之前就是在这里对只有一个候选的决策索引了 [1]，直接越界把整局对战卡死。
+        _thinkingBody.Text = string.Join(
+            Environment.NewLine,
+            OpponentThinkingReport.Build(
+                observation,
+                decision,
+                DescribeStep(step),
+                ThinkingRows));
     }
 
     /// <summary>后台线程每走完一步就追加一次，并让界面跳到最新一步。</summary>
@@ -1656,21 +1632,80 @@ public sealed partial class ReplayForm
         });
     }
 
-    private void RunOnUi(Action action)
+    /// <summary>
+    /// 把一段要在 UI 线程上跑的代码排进去。返回值表示"到底排进去了没有"。
+    /// <para>
+    /// <b>两件事都必须做：</b>
+    /// </para>
+    /// <para>
+    /// 一是<b>把异常兜住</b>。界面更新里出任何错，在 WinForms 里都会变成未处理异常：
+    /// 调试时弹对话框、发布时直接崩，而且界面被留在半死状态 ——
+    /// 用户看到的只是"卡住了"，连原因都没有。这个项目已经因此吃过一次亏
+    /// （思考面板对只有一个候选的决策越界索引）。
+    /// </para>
+    /// <para>
+    /// 二是<b>告诉调用方有没有排进去</b>。窗体已经关掉时它排不进去，
+    /// 而 <see cref="AskHuman"/> 正阻塞在一个 <see cref="TaskCompletionSource{T}"/> 上 ——
+    /// 不告诉它，对局线程就永远醒不来，连进程都退不掉。
+    /// </para>
+    /// </summary>
+    private bool RunOnUi(Action action)
     {
         if (IsDisposed || Disposing)
         {
-            return;
+            return false;
         }
 
-        if (InvokeRequired)
+        void Guarded()
         {
-            BeginInvoke(action);
+            try
+            {
+                action();
+            }
+            catch (Exception exception)
+            {
+                ReportUiFailure(exception);
+            }
         }
-        else
+
+        if (!InvokeRequired)
         {
-            action();
+            Guarded();
+            return true;
         }
+
+        try
+        {
+            BeginInvoke(Guarded);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            // 窗体正在被销毁时 BeginInvoke 会抛。调用方要靠这个返回值去解开阻塞。
+            ReportUiFailure(exception);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 界面出错时把原因显示出来并写进调试输出，**绝不 rethrow**。
+    /// 这里自己也要能被安全地调用 —— 连显示都失败就只能放弃，但绝不能再抛出去。
+    /// </summary>
+    private void ReportUiFailure(Exception exception)
+    {
+        try
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                _humanStatus.Text = "界面出错：" + exception.Message;
+            }
+        }
+        catch
+        {
+            // 刻意吞掉：报错的过程中再出错，就只能放弃显示。
+        }
+
+        System.Diagnostics.Debug.WriteLine("[人机对战] 界面出错：" + exception);
     }
 
     private static string DescribeOwnState(GameObservation observation)

@@ -416,19 +416,31 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         if (_selectionMode == LookaheadSelectionMode.RuleAgentFallback)
         {
             plannerPreferred = ranked[0];
-            var ruleAgentEvaluation = evaluations.Single(evaluation =>
-                ReferenceEquals(evaluation.Action, ruleAgentAction));
 
-            // Every candidate is evaluated on the same sampled hidden worlds, so the decision rests on
-            // the standard error of the *paired* per-rollout difference, on top of a floor below which
-            // an edge is not worth acting on however consistent the samples happen to look.
-            var requiredAdvantage = Math.Max(
-                _minimumPracticalAdvantage,
-                _statisticalConfidence * PairedStandardError(plannerPreferred, ruleAgentEvaluation));
-            selected = plannerPreferred.EstimatedWinChance - ruleAgentEvaluation.EstimatedWinChance
-                       <= requiredAdvantage
-                ? ruleAgentEvaluation
-                : plannerPreferred;
+            // 规则牌手选的动作**可能压根不在候选里**：--extra-pp never / rule 会把"使用额外PP"
+            // 从候选里剔掉，而规则牌手恰好想用它。这时 evaluations.Single 会抛
+            // InvalidOperationException，整局对战直接崩。
+            // 没有可比的基准就只能退回"用搜索的首选"—— 那本来就是剔除额外PP 之后最好的动作，
+            // 和 --extra-pp never 的语义一致。
+            var ruleAgentEvaluation = evaluations.FirstOrDefault(evaluation =>
+                ReferenceEquals(evaluation.Action, ruleAgentAction));
+            if (ruleAgentEvaluation is null)
+            {
+                selected = plannerPreferred;
+            }
+            else
+            {
+                // Every candidate is evaluated on the same sampled hidden worlds, so the decision rests on
+                // the standard error of the *paired* per-rollout difference, on top of a floor below which
+                // an edge is not worth acting on however consistent the samples happen to look.
+                var requiredAdvantage = Math.Max(
+                    _minimumPracticalAdvantage,
+                    _statisticalConfidence * PairedStandardError(plannerPreferred, ruleAgentEvaluation));
+                selected = plannerPreferred.EstimatedWinChance - ruleAgentEvaluation.EstimatedWinChance
+                           <= requiredAdvantage
+                    ? ruleAgentEvaluation
+                    : plannerPreferred;
+            }
 
             if (!ReferenceEquals(plannerPreferred.Action, ruleAgentAction) &&
                 ReferenceEquals(selected.Action, ruleAgentAction))

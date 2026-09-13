@@ -160,29 +160,30 @@ private sealed class GestureTally
 }
 
 /// <summary>
-/// 【对手思考面板】隐私自检。
+/// 【对手思考面板】自检：隐私 + 渲染健壮性。
 /// <para>
-/// 人机对战是靠<b>体感</b>判断牌手强弱的。一旦能看到对手手牌，"我赢了他"就说明不了任何事，
-/// 整个对战的意义就没了。所以这个自检守住一条：
-/// <see cref="HumanActionText.DescribeOpponentAction"/> 渲染出来的文字里，
-/// <b>绝不能出现只存在于对手手牌、而场上看不到的卡名</b>。
+/// <b>隐私</b>：人机对战是靠体感判断牌手强弱的。一旦能看到对手手牌，"我赢了他"就说明不了任何事。
+/// 所以文字里<b>绝不能出现只存在于对手手牌、而场上看不到的卡名</b>。
+/// 允许的例外：同一张卡如果对手场上也有一只（打出一张、手里还留一张），那它的名字本来就是公开的。
 /// </para>
 /// <para>
-/// 允许的例外：同一张卡如果对手场上也有一只（打出一张、手里还留一张），
-/// 那它的名字本来就是公开的，出现在文字里不算泄露。
+/// <b>渲染健壮性</b>：这段文字里有真逻辑（几个候选、第 2 名存不存在、要不要提回退闸），
+/// 而这些地方一旦越界，在 WinForms 里就是未处理异常 —— 界面半死，用户只看到"卡住了"。
+/// 所以每个决策都要在多个 maxRows 下真渲染一遍。它原先写在界面层，自检够不着，就是这么出的事。
 /// </para>
 /// </summary>
-internal static void RunOpponentThinkingPrivacyTest()
+internal static void RunOpponentThinkingReportTest()
 {
     var firstDeck = CreateMatchDeck("DECK-003", "我");
     var secondDeck = CreateMatchDeck("DECK-002", "对手");
     var opponentAgent = new LookaheadPlayerAgent(rolloutsPerAction: 4, seed: 4_242UL);
 
-    var leaks = new List<string>();
+    var failures = new List<string>();
     var described = 0;
     var redacted = 0;
     var publicOnly = 0;
     var decisions = 0;
+    var singleCandidateDecisions = 0;
 
     MatchRunner.PlayToEnd(
         GameEngine.CreateGame(firstDeck, secondDeck, seed: 8_800),
@@ -227,31 +228,62 @@ internal static void RunOpponentThinkingPrivacyTest()
                 {
                     if (text.Contains(hidden, StringComparison.Ordinal))
                     {
-                        leaks.Add(
+                        failures.Add(
                             $"第 {decision.TurnNumber} 回合：文字里出现了只在他手牌里的「{hidden}」—— {text}");
                     }
                 }
             }
+
+            // 顺带把思考面板的文字也真渲染一遍。这段拼装里有真逻辑
+            // （几个候选、第 2 名存不存在、要不要提回退闸），而它原先写在界面层，自检够不着 ——
+            // 结果对"只有一个合法动作"的决策索引了 [1]，越界直接把整局对战卡死。
+            // maxRows 取几个值一起试，是为了同时覆盖"上限比候选数小 / 相等 / 大"这些分支。
+            if (decision.Evaluations.Count <= 1)
+            {
+                singleCandidateDecisions++;
+            }
+
+            foreach (var rows in new[] { 1, 2, 6, 999 })
+            {
+                try
+                {
+                    var report = OpponentThinkingReport.Build(
+                        observation, decision, "（自检用）", rows);
+                    if (report.Count == 0)
+                    {
+                        failures.Add(
+                            $"第 {decision.TurnNumber} 回合：思考面板渲染出空内容（maxRows={rows}）");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    failures.Add(
+                        $"第 {decision.TurnNumber} 回合：思考面板渲染抛异常（maxRows={rows}）：{exception.Message}");
+                }
+            }
         });
 
-    if (leaks.Count > 0)
+    if (failures.Count > 0)
     {
-        foreach (var leak in leaks.Take(5))
+        foreach (var failure in failures.Take(5))
         {
-            Console.WriteLine("  ✗ " + leak);
+            Console.WriteLine("  ✗ " + failure);
         }
 
         throw new InvalidOperationException(
-            $"对手思考面板泄露了手牌信息（{leaks.Count} 处）：这样打人机对战，" +
-            "赢了也说明不了牌手强弱。");
+            $"对手思考面板自检失败（{failures.Count} 项）：要么泄露了对手手牌，" +
+            "要么渲染本身会抛异常 —— 后者会直接把整局对战卡死。");
     }
 
-    Console.WriteLine("Opponent thinking privacy test passed.");
+    Console.WriteLine("Opponent thinking report test passed.");
     Console.WriteLine(
         $"  检查了 {decisions} 次对手决策、{described} 条候选描述，没有一条泄露只在他手牌里的卡名。");
     Console.WriteLine(
         $"  其中 {publicOnly} 条给出具体卡名（攻击/进化等只涉及场上随从的动作），" +
         $"{redacted} 条只报类型（涉及他的手牌）。");
+    Console.WriteLine(
+        $"  思考面板文字在 maxRows = 1 / 2 / 6 / 999 下都渲染成功；" +
+        $"其中只有 1 个合法动作的决策 {singleCandidateDecisions} 次（就是原先越界那种）。");
 }
 
 /// <summary>
