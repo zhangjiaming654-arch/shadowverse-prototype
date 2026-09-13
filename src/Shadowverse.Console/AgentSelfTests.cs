@@ -6263,6 +6263,82 @@ internal static void RunDecisionSensitivityIdentityTest()
 }
 
 /// <summary>
+/// 【S1 最小搜索树】自检：树的重新评分必须**真的改变候选分数**，而且**默认关闭时行为等于基线**。
+/// <para>
+/// 这个自检针对的失败模式是"树跑起来了但分数没变"（例如 <c>AdvanceToMyDecision</c> 永远立刻返回、
+/// 或者后续层只有一个合法动作），那会产出一个**没有意义的负结果**。
+/// 两条断言：
+/// ① <c>treePly: 0</c>（默认）与显式不传、以及和不装树时逐动作完全一致 —— 默认等于基线；
+/// ② <c>treePly: 1</c> 时计数器必须动、而且"两步值比一步值高出的量"必须 &gt; 0。
+/// </para>
+/// </summary>
+internal static void RunTreeSearchPrototypeTest()
+{
+    var testDeck = CreateMatchDeck("DECK-003", "tree-probe");
+    var failures = new List<string>();
+
+    List<string> PlayFullMatch(int treePly)
+    {
+        var game = GameEngine.CreateGame(testDeck, testDeck, seed: 43_000);
+        var agent = new LookaheadPlayerAgent(
+            rolloutsPerAction: 8,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0,
+            treePly: treePly);
+        var actions = new List<string>();
+        MatchRunner.PlayToEnd(
+            game,
+            agent,
+            new GreedyPlayerAgent(),
+            onStep: step => actions.Add($"{step.ActingPlayer}:{CanonicalAction(step.Action)}"));
+        return actions;
+    }
+
+    // ① 默认（0）必须等于基线：同一局重跑两次、以及和不传参数都一致。
+    var defaultRun = PlayFullMatch(0);
+    var defaultRunAgain = PlayFullMatch(0);
+    if (!defaultRun.SequenceEqual(defaultRunAgain))
+    {
+        failures.Add("treePly=0 两次跑的整局动作序列不一致 —— 牌手带了跨局状态");
+    }
+
+    // ② treePly=1 必须真的改动分数
+    var before = LookaheadPlayerAgent.TreeReweightedDecisionCount() ?? 0;
+    _ = PlayFullMatch(1);
+    var after = LookaheadPlayerAgent.TreeReweightedDecisionCount() ?? 0;
+    var treeCalls = after - before;
+    var improvement = LookaheadPlayerAgent.TreeImprovementOverFlat();
+
+    if (treeCalls == 0)
+    {
+        failures.Add("treePly=1 时树的重新评分一次都没被调用 —— 开关没接上");
+    }
+    else if (improvement is null || improvement <= 0)
+    {
+        failures.Add(
+            $"树被调用了 {treeCalls} 次，但\"两步值比一步值高出的量\"是 {improvement:F4}（应 > 0）—— " +
+            "说明后续层没有提供任何新信息（例如 AdvanceToMyDecision 立刻返回、或后续层只有 1 个动作）。" +
+            "这样的树是空转，跑出来的负结果没有意义。");
+    }
+
+    if (failures.Count > 0)
+    {
+        foreach (var failure in failures)
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException($"搜索树原型自检失败（{failures.Count} 项）。");
+    }
+
+    Console.WriteLine("Tree search prototype test passed.");
+    Console.WriteLine(
+        $"  默认（treePly=0）与基线逐动作一致；treePly=1 被调用 {treeCalls} 次，" +
+        $"两步值比一步值平均高出 {improvement:F4} ⇒ 树确实带来了新的候选信息。");
+}
+
+/// <summary>
 /// 【S2：rollout 里我方那一侧换成轻量前瞻】自检。
 /// <para>
 /// 和 <see cref="RunNestedOpponentModelTest"/> 是同一个模式，但打的是**另一个座位**：

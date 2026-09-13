@@ -707,6 +707,7 @@ internal static AgentBenchmark.SideConfig BuildSideConfig(
     bool opponentFirstActionOnly,
     int ownNestedRollouts,
     int ownNestedHorizon,
+    int treePly,
     bool evaluatorEnsemble) => new(
         AgentKind.Lookahead,
         rollouts,
@@ -727,6 +728,7 @@ internal static AgentBenchmark.SideConfig BuildSideConfig(
         opponentFirstActionOnly,
         ownNestedRollouts,
         ownNestedHorizon,
+        treePly,
         evaluatorEnsemble);
 
 /// <summary>
@@ -937,7 +939,23 @@ internal static void RunDecisionSensitivity(string[] args)
             futureTurnHorizon: 1,
             alternateHorizon: 3,
             opponentRolloutPolicy: LookaheadRolloutPolicy.EvaluatorGreedy,
-            minimumPracticalAdvantage: 0.0))
+            minimumPracticalAdvantage: 0.0)),
+
+        // ---- 以下是【S1 最小搜索树】原型。依据 §19.8 的机理诊断：瓶颈在候选集太窄。----
+        // 注意：这是本轮唯一"改变候选"而不是"改善判断"的轴。
+        new("【S1 树】候选评分深度 1（两步计划）", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0,
+            treePly: 1)),
+
+        new("【S1 树】候选评分深度 2（三步计划）", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0,
+            treePly: 2))
     };
 
     // 注意：**没有"换权重文件"这条轴**。3.0 的权重是**静态全局**的

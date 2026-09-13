@@ -90,6 +90,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunRolloutPolicyAffectsScoresProbe();
     // 敏感度恒等式：决策不变 ⇒ 整局逐动作相同 ⇒ 强度必然不变（本轮最硬的结论）。
     AgentSelfTests.RunDecisionSensitivityIdentityTest();
+    // S1 搜索树原型：默认必须等于基线，且树的重新评分必须真的改变分数。
+    AgentSelfTests.RunTreeSearchPrototypeTest();
     return;
 }
 
@@ -256,6 +258,11 @@ var ownNestedHorizon = ConsoleTools.ParseIntegerOption(
     args, "--own-horizon", defaultValue: 0, minimum: 0, maximum: 10);
 var secondOwnNestedHorizon = ConsoleTools.ParseIntegerOption(
     args, "--p2-own-horizon", defaultValue: 0, minimum: 0, maximum: 10);
+// 【S1 最小搜索树】候选评分深度。0 = 关闭（= 基线行为）。依据报告 §19.8。
+var treePly = ConsoleTools.ParseIntegerOption(
+    args, "--tree-ply", defaultValue: 0, minimum: 0, maximum: 3);
+var secondTreePly = ConsoleTools.ParseIntegerOption(
+    args, "--p2-tree-ply", defaultValue: 0, minimum: 0, maximum: 3);
 if (opponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent ||
     secondOpponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent)
 {
@@ -349,6 +356,7 @@ if (args.Contains("--collect-selfplay", StringComparer.OrdinalIgnoreCase))
         opponentFirstActionOnly,
         ownNestedRollouts,
         ownNestedHorizon,
+        treePly,
         evaluatorEnsemble);
     ConsoleTools.RunSelfPlayCollection(
         args, lookaheadRollouts, lookaheadHorizon, maxDegreeOfParallelism, collectionConfig);
@@ -424,6 +432,8 @@ if (args.Contains("--stats", StringComparer.OrdinalIgnoreCase) ||
             secondOwnNestedRollouts,
             ownNestedHorizon,
             secondOwnNestedHorizon,
+            treePly,
+            secondTreePly,
             evaluatorEnsemble,
             secondEvaluatorEnsemble),
         benchmarkDecks);

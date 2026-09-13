@@ -308,6 +308,16 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     private readonly int? _ownNestedHorizon;
 
     /// <summary>
+    /// 【S1 最小搜索树】候选动作的评分深度。0 = 关闭（默认 = 基线行为）；
+    /// 1 = 把候选的分数换成"走出它之后我最好能做什么"（两步计划）。
+    /// <para>
+    /// 依据：报告 §19.8 实测搜索的判断已经校准、且校准与裕度无关 ⇒
+    /// 瓶颈不在判断质量，在候选集太窄。
+    /// </para>
+    /// </summary>
+    private readonly int _treePly;
+
+    /// <summary>
     /// 只让嵌套搜索负责"对手回应我这个候选动作"的第一手，对手随后的走子仍交给规则牌手。
     /// <para>
     /// 为什么要这个开关注释在 <see cref="LookaheadRolloutPolicy.NestedLookahead"/> 上：
@@ -347,7 +357,8 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         int opponentHorizon = 0,
         bool opponentFirstActionOnly = false,
         int ownNestedRollouts = DefaultNestedOpponentRollouts,
-        int ownNestedHorizon = 0)
+        int ownNestedHorizon = 0,
+        int treePly = 0)
     {
         if (rolloutsPerAction is < 1 or > 500)
         {
@@ -410,6 +421,11 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             throw new ArgumentOutOfRangeException(nameof(ownNestedHorizon), "嵌套我方的视野必须是 0 到 10；0 表示跟随主视野。");
         }
 
+        if (treePly is < 0 or > 3)
+        {
+            throw new ArgumentOutOfRangeException(nameof(treePly), "搜索树深度必须是 0 到 3；0 = 关闭（基线行为）。");
+        }
+
         _rolloutsPerAction = rolloutsPerAction;
         _futureTurnHorizon = futureTurnHorizon;
         _seed = seed == 0 ? 1UL : seed;
@@ -451,6 +467,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         _opponentFirstActionOnly = opponentFirstActionOnly;
         _ownNestedRollouts = ownNestedRollouts;
         _ownNestedHorizon = ownNestedHorizon > 0 ? ownNestedHorizon : null;
+        _treePly = treePly;
         _useEvaluatorEnsemble = useEvaluatorEnsemble;
     }
 
@@ -540,6 +557,166 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     /// <summary>The latest main-phase comparison, exposed for reports and later advisor UI.</summary>
     public LookaheadDecision? LastDecision { get; private set; }
 
+    /// <summary>
+    /// 【S1 最小搜索树】把一个候选动作的分数换成
+    /// "走出它、让对手回应、推进到我下一个决策点之后，**我最好的后续动作**值多少"。
+    /// <para>
+    /// <b>为什么取"最好"而不是"平均"</b>：搜索评估的是**我的候选**，那么"这一步值多少"的正确口径
+    /// 就是"走出它之后我最好能做到多少"（我是最大化者）。取平均等于假设我后续随便下 ——
+    /// 那正是旧的"平坦 1 层 + 规则牌手代打"。
+    /// </para>
+    /// <para>
+    /// <b>为什么它可能是突破口</b>：`AGENT-STRENGTH-REPORT.md` §19.8 实测搜索的价值估计
+    /// **已经校准、且校准与裕度无关**，所以瓶颈不在判断质量，而在**候选集太窄**
+    /// （平坦 1 层、只有单步合法动作）。这一档把"两步计划"放进候选集 ——
+    /// 是**改变候选**，不是改善判断。
+    /// </para>
+    /// </summary>
+    private LookaheadActionEvaluation[] ReweightWithFollowUp(
+        GameState liveState,
+        int perspectivePlayer,
+        LookaheadActionEvaluation[] evaluations,
+        long decisionNumber)
+    {
+        var reweighted = new LookaheadActionEvaluation[evaluations.Length];
+        var bestValue = double.NegativeInfinity;
+        for (var index = 0; index < evaluations.Length; index++)
+        {
+            var value = FollowUpValue(
+                liveState, perspectivePlayer, evaluations[index].Action, decisionNumber, _treePly);
+            reweighted[index] = evaluations[index] with { EstimatedWinChance = value };
+            if (value > bestValue)
+            {
+                bestValue = value;
+            }
+        }
+
+        // 只换分数，数组顺序（= 原始合法动作顺序）不变，下游的排序/选择逻辑不用改。
+        Interlocked.Increment(ref _treeReweightedDecisions);
+        Interlocked.Add(
+            ref _treeBetterThanFlatMilli,
+            (long)Math.Round(1000.0 * Math.Max(0.0, bestValue - evaluations[0].EstimatedWinChance)));
+        return reweighted;
+    }
+
+    /// <summary>
+    /// 走出 <paramref name="candidate"/>，用 rollout 策略推进到我下一个决策点，
+    /// 返回那一层最好的后续动作值；再深的层由 <paramref name="ply"/> 控制。
+    /// </summary>
+    private double FollowUpValue(
+        GameState liveState,
+        int perspectivePlayer,
+        GameAction candidate,
+        long decisionNumber,
+        int ply)
+    {
+        var simulation = GameEngine.CreateDeterminization(
+            liveState, perspectivePlayer, SimulationSeed(decisionNumber, 0));
+        simulation = GameEngine.Apply(simulation, candidate);
+        simulation = AdvanceToMyDecision(simulation, perspectivePlayer);
+
+        if (simulation is null)
+        {
+            // 推进不到我的下一个决策点，退回**当前局面的叶值**（注意不是候选之后的叶值 ——
+            // 调用方已经把候选之后的一层值算过了，这里只是兜底）。
+            return EvaluatePosition(liveState, perspectivePlayer);
+        }
+
+        if (simulation.IsGameOver)
+        {
+            return simulation.Winner == perspectivePlayer ? 1.0 : 0.0;
+        }
+
+        var legal = GameEngine.GetLegalActions(simulation);
+        if (legal.Count == 0)
+        {
+            return EvaluatePosition(simulation, perspectivePlayer);
+        }
+
+        var best = double.NegativeInfinity;
+        foreach (var action in legal)
+        {
+            var value = ply <= 1
+                ? OnePlyLeafValue(simulation, perspectivePlayer, action)
+                : FollowUpValue(simulation, perspectivePlayer, action, decisionNumber, ply - 1);
+            if (value > best)
+            {
+                best = value;
+            }
+
+            if (best >= 1.0)
+            {
+                // 剪枝：已经到 1.0 就不可能更好。
+                break;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>走一步之后的叶值（不做 rollout）。树的叶层用这个，刻意便宜。</summary>
+    private double OnePlyLeafValue(GameState state, int perspectivePlayer, GameAction action)
+    {
+        var next = GameEngine.Apply(state, action);
+        return next.IsGameOver
+            ? next.Winner == perspectivePlayer ? 1.0 : 0.0
+            : EvaluatePosition(next, perspectivePlayer);
+    }
+
+    /// <summary>
+    /// 用 rollout 策略把推演推进到"轮到我做决策"的下一个点。
+    /// 返回 null 表示推进不了（对局结束但没轮到我 / 超过步数上限）。
+    /// </summary>
+    private GameState? AdvanceToMyDecision(GameState simulation, int perspectivePlayer)
+    {
+        var steps = 0;
+        while (!simulation.IsGameOver && steps < 60)
+        {
+            if (simulation.Phase == GamePhase.Main && simulation.ActivePlayer == perspectivePlayer)
+            {
+                return simulation;
+            }
+
+            var legal = GameEngine.GetLegalActions(simulation);
+            if (legal.Count == 0)
+            {
+                return null;
+            }
+
+            // 推进阶段一律用规则牌手（= 基线行为），避免把 rollout 策略的影响混进树里。
+            var action = ChooseRolloutAction(
+                simulation,
+                simulation.ActivePlayer,
+                legal,
+                LookaheadRolloutPolicy.RuleAgent,
+                simulation.ActivePlayer == perspectivePlayer);
+            simulation = GameEngine.Apply(simulation, action);
+            steps++;
+        }
+
+        // 循环因对局结束而退出时把终局交回去（调用方会从 Winner 取 1/0）。
+        return simulation.IsGameOver ? simulation : null;
+    }
+
+    private static long _treeReweightedDecisions;
+    private static long _treeBetterThanFlatMilli;
+
+    /// <summary>搜索树原型被调用的决策数（可观测性；不参与决策）。</summary>
+    public static long? TreeReweightedDecisionCount()
+    {
+        var count = Interlocked.Read(ref _treeReweightedDecisions);
+        return count == 0 ? null : count;
+    }
+
+    /// <summary>
+    /// 两步值比一步值平均高出多少（可观测性）。**必须非 0**，否则说明树根本没改变分数。
+    /// </summary>
+    public static double? TreeImprovementOverFlat()
+    {
+        var count = Interlocked.Read(ref _treeReweightedDecisions);
+        return count == 0 ? null : Interlocked.Read(ref _treeBetterThanFlatMilli) / 1000.0 / count;
+    }
+
     public GameAction ChooseAction(GameObservation observation, IReadOnlyList<GameAction> legalActions) =>
         throw new InvalidOperationException("LookaheadPlayerAgent must be run by MatchRunner so it can create safe determinizations.");
 
@@ -604,6 +781,13 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
                 decisionNumber,
                 cycle))
             .ToArray();
+
+        // 【S1 最小搜索树】可选：把候选动作的分数换成"走出它之后**我下一步最好能做什么**"。
+        if (_treePly > 0)
+        {
+            evaluations = ReweightWithFollowUp(
+                state, observation.PerspectivePlayer, evaluations, decisionNumber);
+        }
 
         // Reporting order is always "best average first", whatever the selection rule is.
         var ranked = evaluations

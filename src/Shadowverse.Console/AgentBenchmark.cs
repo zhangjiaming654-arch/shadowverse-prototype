@@ -147,6 +147,12 @@ public static class AgentBenchmark
         int SecondOwnNestedRollouts = LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
         int OwnNestedHorizon = 0,
         int SecondOwnNestedHorizon = 0,
+        /// <summary>
+        /// 【S1 最小搜索树】候选评分深度。0 = 关闭（默认 = 基线行为）。
+        /// 依据见报告 §19.8：瓶颈在候选集太窄，不在判断质量。
+        /// </summary>
+        int TreePly = 0,
+        int SecondTreePly = 0,
         /// <summary>评估函数集成：一半推演用 --alt-weights-file 的第二套权重。两边独立才能对照。</summary>
         bool EvaluatorEnsemble = false,
         bool SecondEvaluatorEnsemble = false);
@@ -1150,6 +1156,7 @@ public static class AgentBenchmark
         bool OpponentFirstActionOnly,
         int OwnNestedRollouts,
         int OwnNestedHorizon,
+        int TreePly,
         bool EvaluatorEnsemble);
 
     private static SideConfig ResolveSide(Options options, bool first) => new(
@@ -1190,6 +1197,7 @@ public static class AgentBenchmark
         first
             ? options.OwnNestedHorizon
             : options.SecondOwnNestedHorizon > 0 ? options.SecondOwnNestedHorizon : options.OwnNestedHorizon,
+        first ? options.TreePly : options.SecondTreePly,
         first ? options.EvaluatorEnsemble : options.SecondEvaluatorEnsemble);
 
     public static IPlayerAgent CreateAgent(SideConfig config, ulong seed)
@@ -1221,7 +1229,8 @@ public static class AgentBenchmark
                 config.OpponentHorizon,
                 config.OpponentFirstActionOnly,
                 config.OwnNestedRollouts,
-                config.OwnNestedHorizon),
+                config.OwnNestedHorizon,
+                config.TreePly),
             AgentKind.LookaheadV2 => new LookaheadPlayerAgentV2(seed, config.RolloutsPerAction),
             AgentKind.LookaheadV1 => new LookaheadPlayerAgentV1(
                 config.RolloutsPerAction, config.FutureTurnHorizon, seed, rail),
