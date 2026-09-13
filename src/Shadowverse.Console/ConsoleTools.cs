@@ -741,6 +741,7 @@ internal static void RunDecisionQuality(string[] args)
     var seed = (ulong)ParseIntegerOption(args, "--quality-seed", defaultValue: 20_260_925, minimum: 1, maximum: int.MaxValue);
     var rollouts = ParseIntegerOption(args, "--quality-rollouts", defaultValue: 10, minimum: 1, maximum: 500);
     var horizon = ParseIntegerOption(args, "--quality-horizon", defaultValue: 1, minimum: 1, maximum: 10);
+    var qualityTreePly = ParseIntegerOption(args, "--quality-tree-ply", defaultValue: 0, minimum: 0, maximum: 3);
 
     var decks = new List<DeckDefinition>
     {
@@ -752,7 +753,7 @@ internal static void RunDecisionQuality(string[] args)
     Console.WriteLine("标签 = 这一局最终谁赢；只统计搜索与规则牌手**分歧**的决策。");
     Console.WriteLine();
     var report = DecisionQualityProbe.Run(
-        decks, gameCount, seed, rollouts, horizon, Console.WriteLine);
+        decks, gameCount, seed, rollouts, horizon, Console.WriteLine, qualityTreePly);
 
     Console.WriteLine();
     Console.WriteLine("==================== 分层结果 ====================");

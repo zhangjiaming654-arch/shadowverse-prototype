@@ -59,7 +59,8 @@ public static class DecisionQualityProbe
         ulong seedBase,
         int rollouts,
         int horizon,
-        Action<string> report)
+        Action<string> report,
+        int treePly = 0)
     {
         ArgumentNullException.ThrowIfNull(decks);
         ArgumentNullException.ThrowIfNull(report);
@@ -83,7 +84,8 @@ public static class DecisionQualityProbe
                 rolloutsPerAction: rollouts,
                 futureTurnHorizon: horizon,
                 seed: seed ^ 0x5DEECE66DUL,
-                minimumPracticalAdvantage: 0.0);
+                minimumPracticalAdvantage: 0.0,
+                treePly: treePly);
             var rule = new GreedyPlayerAgent();
             var samples = new List<(double Margin, bool Disagreed, double Estimate)>();
 
