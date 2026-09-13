@@ -93,29 +93,26 @@ public enum LookaheadRolloutPolicy
     EvaluatorGreedy,
 
     /// <summary>
-    /// 只用于**对手座位**：rollout 里的对手由一个真正的前瞻搜索牌手代打，而不是规则牌手。
+    /// 这个座位由一个真正的前瞻搜索牌手代打，而不是规则牌手。
     /// <para>
-    /// 这是 S3（"对手建模"）的**强形式**，和已经试过的两次都不一样：
+    /// <b>两侧都能用，而且测的是两件不同的事：</b>
     /// </para>
     /// <list type="bullet">
-    /// <item>目录里的"对手用爬山"（<see cref="EvaluatorGreedy"/>）测出中性（42:32，p=0.41）。
-    /// 那是把一个**更弱**的东西放到对手座位上 —— 用它当对手模型比规则牌手还弱，
-    /// 因为评估函数本身就是整条链上最弱的一环。</item>
-    /// <item>真正的对手是**前瞻搜索牌手 2.0**，比规则牌手强得多。所以"世界模型是错的"
-    /// 这个诊断（`AGENT-STRENGTH-REPORT.md` 第三轮："对手其实是前瞻，世界模型是系统性错的"）
-    /// 从来**没有**在强形式下被测过。</item>
+    /// <item><b>对手座位</b>（<c>opponentRolloutPolicy</c>，S3）：这是"对手建模"的强形式。
+    /// 目录里的"对手用爬山"（<see cref="EvaluatorGreedy"/>）测出中性（42:32，p=0.41），
+    /// 但那是把一个**更弱**的东西放到对手座位上 —— 用它当对手模型比规则牌手还弱。
+    /// 真正的对手是前瞻搜手，所以强形式在此之前**从未测过**。</item>
+    /// <item><b>我方座位</b>（<c>rolloutPolicy</c>，S2）：这是"我方的后续走子"的强形式。
+    /// 原来 rollout 里我方由规则牌手代打，**搜索看不到"需要好后续才能兑现"的动作**
+    /// （`PROBLEM-STATEMENT.md` §六 S2）。改用真前瞻代打，搜索就能看到自己把计划走完的样子。
+    /// 注意这和已经关闭的 §10 方向 C（<see cref="EvaluatorGreedy"/> 代打）**不是**同一件事：
+    /// 爬山只走一步、而且用的是叶子自己那套有偏的判断。</item>
     /// </list>
     /// <para>
-    /// 这一档把 rollout 里的对手换成一个真前瞻牌手，用它自己的视角搜索。
-    /// 代价是嵌套搜索，所以它有自己的（小得多）推演次数与视野，见构造函数的
-    /// <c>opponentRollouts</c> / <c>opponentHorizon</c>。
-    /// </para>
-    /// <para>
-    /// <b>实测成本（2026-09-13，中速梦镜像，1 个 BO10 = 10 局）</b>：
-    /// 基线 49 秒 ｜ 嵌套（对手 1 次推演、对手每个动作都搜）**210 秒**，4.3 倍。
-    /// 整轮验收会从 1.5 小时涨到 5.8 小时，所以又加了
-    /// <c>opponentFirstActionOnly</c>：只搜"对手回应我这一步"的那一次，
-    /// 对手随后的走子仍交给规则牌手。
+    /// <b>实测成本（2026-09-13，中速梦镜像，1 个 BO10 = 10 局）</b>：基线 49 秒 ｜
+    /// 对手侧嵌套（每个动作都搜）**210 秒 = 4.3 倍** ｜ 只搜对手第一手 **134 秒 = 2.7 倍**。
+    /// 嵌套的代价是**乘法**，所以两侧都有自己独立的（小得多的）推演次数与视野：
+    /// <c>opponentRollouts</c> / <c>opponentHorizon</c> 与 <c>ownNestedRollouts</c> / <c>ownNestedHorizon</c>。
     /// </para>
     /// </summary>
     NestedLookahead
@@ -178,12 +175,33 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     /// 那会产出一个**没有意义的负结果**。自检靠这个计数确认分支真的进去过。
     /// </para>
     /// </summary>
+    /// <summary>
+    /// 嵌套（座位上的搜索）的并行度上限。为 <c>--collect-selfplay</c> 这类**外层已经并行**的
+    /// 调用方准备的：外层吃满核的时候，嵌套搜索再自己并行只会互相抢。
+    /// <para>
+    /// 注意：牌手内部**本身没有并行代码**（已核对过），所以这不是采样卡住的原因 ——
+    /// 那次卡住的真实原因是嵌套的**计算量**（外层 rollout 数 × 候选动作数 × 嵌套 rollout 数
+    /// × 嵌套视野），见报告 §18。这个旋钮只是给外部并行调用方留的口子。
+    /// </para>
+    /// </summary>
+    public static int NestedMaxDegreeOfParallelism { get; set; } = 1;
+
     private static long _nestedOpponentDecisions;
+
+    /// <summary>嵌套**我方**（S2）被调用了几次。理由同 <see cref="_nestedOpponentDecisions"/>。</summary>
+    private static long _nestedOwnDecisions;
 
     /// <summary>嵌套对手模型累计被调用的次数；返回 null 表示一次都没用过。</summary>
     public static long? NestedOpponentDecisionCount()
     {
         var count = Interlocked.Read(ref _nestedOpponentDecisions);
+        return count == 0 ? null : count;
+    }
+
+    /// <summary>嵌套我方（S2）累计被调用的次数；返回 null 表示一次都没用过。</summary>
+    public static long? NestedOwnDecisionCount()
+    {
+        var count = Interlocked.Read(ref _nestedOwnDecisions);
         return count == 0 ? null : count;
     }
 
@@ -277,6 +295,19 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     private readonly int? _opponentHorizon;
 
     /// <summary>
+    /// 嵌套**我方**（S2：`rolloutPolicy` / `alternateRolloutPolicy` 用
+    /// <see cref="LookaheadRolloutPolicy.NestedLookahead"/>）的推演次数。
+    /// <para>
+    /// 和对手那份预算分开：两边模拟的是两件不同的事（"我怎么把计划走完" vs "他怎么回应我"），
+    /// 共用一个值会在只调一边的时候串掉另一边。
+    /// </para>
+    /// </summary>
+    private readonly int _ownNestedRollouts;
+
+    /// <summary>嵌套我方的视野。null = 用本牌手自己的主视野。</summary>
+    private readonly int? _ownNestedHorizon;
+
+    /// <summary>
     /// 只让嵌套搜索负责"对手回应我这个候选动作"的第一手，对手随后的走子仍交给规则牌手。
     /// <para>
     /// 为什么要这个开关注释在 <see cref="LookaheadRolloutPolicy.NestedLookahead"/> 上：
@@ -292,6 +323,9 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     /// 每次推演都新建一个的话，一局要多分配几万个对象。
     /// </summary>
     private LookaheadPlayerAgent? _nestedOpponent;
+
+    /// <summary>懒建的嵌套我方（S2）。理由同 <see cref="_nestedOpponent"/>。</summary>
+    private LookaheadPlayerAgent? _nestedOwn;
 
     public LookaheadPlayerAgent(
         int rolloutsPerAction = 60,
@@ -311,7 +345,9 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         bool useEvaluatorEnsemble = false,
         int opponentRollouts = DefaultNestedOpponentRollouts,
         int opponentHorizon = 0,
-        bool opponentFirstActionOnly = false)
+        bool opponentFirstActionOnly = false,
+        int ownNestedRollouts = DefaultNestedOpponentRollouts,
+        int ownNestedHorizon = 0)
     {
         if (rolloutsPerAction is < 1 or > 500)
         {
@@ -364,6 +400,16 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             throw new ArgumentOutOfRangeException(nameof(opponentHorizon), "嵌套对手的视野必须是 0 到 10；0 表示跟随主视野。");
         }
 
+        if (ownNestedRollouts is < 1 or > 500)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ownNestedRollouts), "嵌套我方的推演次数必须是 1 到 500。");
+        }
+
+        if (ownNestedHorizon is < 0 or > 10)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ownNestedHorizon), "嵌套我方的视野必须是 0 到 10；0 表示跟随主视野。");
+        }
+
         _rolloutsPerAction = rolloutsPerAction;
         _futureTurnHorizon = futureTurnHorizon;
         _seed = seed == 0 ? 1UL : seed;
@@ -403,6 +449,8 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         _opponentRollouts = opponentRollouts;
         _opponentHorizon = opponentHorizon > 0 ? opponentHorizon : null;
         _opponentFirstActionOnly = opponentFirstActionOnly;
+        _ownNestedRollouts = ownNestedRollouts;
+        _ownNestedHorizon = ownNestedHorizon > 0 ? ownNestedHorizon : null;
         _useEvaluatorEnsemble = useEvaluatorEnsemble;
     }
 
@@ -417,7 +465,8 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         GameState simulation,
         int activePlayer,
         IReadOnlyList<GameAction> legalActions,
-        LookaheadRolloutPolicy policy)
+        LookaheadRolloutPolicy policy,
+        bool isPerspectiveSeat)
     {
         if (policy == LookaheadRolloutPolicy.RuleAgent)
         {
@@ -428,15 +477,18 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
 
         if (policy == LookaheadRolloutPolicy.NestedLookahead)
         {
-            Interlocked.Increment(ref _nestedOpponentDecisions);
+            // 两侧用**各自**的搜索预算：我方那一侧模拟的是"我怎么把计划走完"，
+            // 对手那一侧模拟的是"他怎么回应我"，共用一个值会在只调一边时串掉另一边。
+            if (isPerspectiveSeat)
+            {
+                Interlocked.Increment(ref _nestedOwnDecisions);
+                var own = _nestedOwn ??= CreateNestedAgent(_ownNestedRollouts, _ownNestedHorizon);
+                return ChooseWithNested(own, simulation, activePlayer, legalActions);
+            }
 
-            // 注意这里传的是 **activePlayer**：嵌套搜索必须从"现在要动的这个人"的视角看局面，
-            // 否则它会拿对手的胜负来给自己排名（对称性错误的典型表现，而且不会报错）。
-            var nested = _nestedOpponent ??= CreateNestedOpponent();
-            return nested.ChooseAction(
-                simulation,
-                GameEngine.ToObservation(simulation, activePlayer),
-                legalActions);
+            Interlocked.Increment(ref _nestedOpponentDecisions);
+            var opponent = _nestedOpponent ??= CreateNestedAgent(_opponentRollouts, _opponentHorizon);
+            return ChooseWithNested(opponent, simulation, activePlayer, legalActions);
         }
 
         var best = legalActions[0];
@@ -458,14 +510,29 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     }
 
     /// <summary>
-    /// 建嵌套对手模型。它自己的 rollout 策略**必须留空（规则牌手）** ——
+    /// 让一个"座位上的搜索牌手"出招。
+    /// **必须传 activePlayer 当视角** —— 否则它会拿对手的胜负来给自己排名
+    /// （对称性写错的典型表现，而且不会报错，只会安静地给出错的招）。
+    /// </summary>
+    private static GameAction ChooseWithNested(
+        LookaheadPlayerAgent nested,
+        GameState simulation,
+        int activePlayer,
+        IReadOnlyList<GameAction> legalActions) =>
+        nested.ChooseAction(
+            simulation,
+            GameEngine.ToObservation(simulation, activePlayer),
+            legalActions);
+
+    /// <summary>
+    /// 建一个"座位上的搜索牌手"。它自己的 rollout 策略**必须留空（规则牌手）** ——
     /// 否则每层都再套一层搜索，代价指数爆炸，而且没有任何证据支持"对手会把自己想得那么深"。
     /// 视野默认取本牌手的主视野：2.0 的真实配置就是短视野，长视野在本项目里一直更差。
     /// </summary>
-    private LookaheadPlayerAgent CreateNestedOpponent() => new(
-        _opponentRollouts,
-        _opponentHorizon ?? _futureTurnHorizon,
-        // 用不同种子的派生值：让嵌套对手和本牌手不要在所有采样世界上完全同相位。
+    private LookaheadPlayerAgent CreateNestedAgent(int rollouts, int? horizon) => new(
+        rollouts,
+        horizon ?? _futureTurnHorizon,
+        // 用不同种子的派生值：让嵌套牌手和本牌手不要在所有采样世界上完全同相位。
         _seed ^ 0x9E3779B97F4A7C15UL,
         rolloutPolicy: LookaheadRolloutPolicy.RuleAgent,
         opponentRolloutPolicy: LookaheadRolloutPolicy.RuleAgent);
@@ -699,22 +766,26 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
                 //
                 // 对手用单独的策略：它模拟的是"别人怎么回应我"，那是另一个模型，
                 // 和"我自己怎么把这回合打完"不该共用一个策略。
-                var policy = activePlayer == perspectivePlayer
+                var isPerspectiveSeat = activePlayer == perspectivePlayer;
+                var policy = isPerspectiveSeat
                     ? _rolloutPolicyCycle[(rollout / horizonCycle.Count) % _rolloutPolicyCycle.Length]
                     : _opponentRolloutPolicy;
 
                 // "只搜第一手"：对手的第一次搜索才是"它怎么回应我这个候选动作"，
                 // 那之后它怎么打完这一回合对排序的信息量小得多，但代价一样贵。
                 // 第一手搜过之后退回规则牌手（= 基线行为），所以这是个便宜的近似。
+                // 只作用于**对手**座位：我方那一侧的"S2 轻量前瞻"本来就是要全程生效的。
                 if (_opponentFirstActionOnly &&
+                    !isPerspectiveSeat &&
                     policy == LookaheadRolloutPolicy.NestedLookahead &&
                     opponentActionsTaken >= 1)
                 {
                     policy = LookaheadRolloutPolicy.RuleAgent;
                 }
 
-                var rolloutAction = ChooseRolloutAction(simulation, activePlayer, legalActions, policy);
-                if (activePlayer != perspectivePlayer)
+                var rolloutAction = ChooseRolloutAction(
+                    simulation, activePlayer, legalActions, policy, isPerspectiveSeat);
+                if (!isPerspectiveSeat)
                 {
                     opponentActionsTaken++;
                 }

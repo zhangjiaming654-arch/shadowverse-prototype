@@ -6058,6 +6058,219 @@ internal static void RunNestedOpponentModelTest()
 }
 
 /// <summary>
+/// 【探针】rollout 策略到底有没有传导到候选动作的分数里？
+/// <para>
+/// 来历：用 `--collect-selfplay` 跑基线 / S2 / S3 三份样本，**SHA256 逐字节相同** ——
+/// 嵌套搜索花了 5 倍时间，选出的动作和对局却一模一样。这要么是真的（rollout 策略
+/// 对排序没有影响），要么是接线断了。这个自检用一个比"最终选哪个动作"灵敏得多的探针来分清：
+/// 直接比较**逐次推演的叶子值**（<c>RolloutValues</c>）。
+/// </para>
+/// <para>
+/// 三种可能的结果，含义完全不同：
+/// ① 叶值也不同 ⇒ 嵌套根本没跑起来（接线 bug），必须修；
+/// ② 叶值不同但 argmax 相同 ⇒ 接线是对的，只是这个改动**不影响排序**（真的中性）；
+/// ③ 连叶值都相同 ⇒ 嵌套搜索是空转（比如里面又退回规则牌手了），等于没测。
+/// </para>
+/// </summary>
+internal static void RunRolloutPolicyAffectsScoresProbe()
+{
+    var testDeck = CreateMatchDeck("DECK-003", "probe");
+    var failures = new List<string>();
+
+    (List<double> TopValues, string Chosen) RunDecision(
+        LookaheadRolloutPolicy rolloutPolicy,
+        LookaheadRolloutPolicy opponentPolicy)
+    {
+        var game = GameEngine.CreateGame(testDeck, testDeck, seed: 41_900);
+        var state = CompleteMulligan(game);
+        while (state.Players[state.ActivePlayer].CurrentPlayPoints < 4)
+        {
+            state = GameEngine.Apply(state, new EndTurnAction());
+        }
+
+        var agent = new LookaheadPlayerAgent(
+            rolloutsPerAction: 6,
+            futureTurnHorizon: 3,
+            seed: 41_901,
+            rolloutPolicy: rolloutPolicy,
+            opponentRolloutPolicy: opponentPolicy,
+            ownNestedRollouts: 3,
+            opponentRollouts: 3);
+        var observation = GameEngine.ToObservation(state, state.ActivePlayer);
+        var legal = GameEngine.GetLegalActions(state);
+        var action = agent.ChooseAction(state, observation, legal);
+        var decision = agent.LastDecision!;
+        var best = decision.Evaluations
+            .OrderByDescending(evaluation => evaluation.EstimatedWinChance)
+            .First();
+        return (best.RolloutValues?.ToList() ?? [], CanonicalAction(action));
+    }
+
+    var baseline = RunDecision(LookaheadRolloutPolicy.RuleAgent, LookaheadRolloutPolicy.RuleAgent);
+    var s2 = RunDecision(LookaheadRolloutPolicy.NestedLookahead, LookaheadRolloutPolicy.RuleAgent);
+    var s3 = RunDecision(LookaheadRolloutPolicy.RuleAgent, LookaheadRolloutPolicy.NestedLookahead);
+
+    // 必须真的跑了嵌套，否则这个探针什么也没测到
+    if ((LookaheadPlayerAgent.NestedOwnDecisionCount() ?? 0) == 0)
+    {
+        failures.Add("我方嵌套一次都没被调用 —— 接线断了");
+    }
+
+    if ((LookaheadPlayerAgent.NestedOpponentDecisionCount() ?? 0) == 0)
+    {
+        failures.Add("对手嵌套一次都没被调用 —— 接线断了");
+    }
+
+    var s2Changed = !baseline.TopValues.SequenceEqual(s2.TopValues);
+    var s3Changed = !baseline.TopValues.SequenceEqual(s3.TopValues);
+
+    Console.WriteLine("Rollout policy probe（逐次推演叶子值是否随 rollout 策略变化）：");
+    Console.WriteLine(
+        $"  基线叶值前 4 项：[{string.Join(", ", baseline.TopValues.Take(4).Select(v => v.ToString("F4")))}] " +
+        $"⇒ 选 {baseline.Chosen}");
+    Console.WriteLine(
+        $"  S2   叶值前 4 项：[{string.Join(", ", s2.TopValues.Take(4).Select(v => v.ToString("F4")))}] " +
+        $"⇒ 选 {s2.Chosen}   （叶值{(s2Changed ? "变了" : "没变")}）");
+    Console.WriteLine(
+        $"  S3   叶值前 4 项：[{string.Join(", ", s3.TopValues.Take(4).Select(v => v.ToString("F4")))}] " +
+        $"⇒ 选 {s3.Chosen}   （叶值{(s3Changed ? "变了" : "没变")}）");
+
+    if (!s2Changed && !s3Changed)
+    {
+        failures.Add(
+            "两种嵌套配置的**逐次推演叶值都和基线完全相同** —— 嵌套搜索等于空转，" +
+            "那就不是「中性」，而是「根本没测到」。先修接线。");
+    }
+
+    // S2 单独"叶值没变"是一个**真实的发现**，不是 bug：实测中速梦 4 费局面下，
+    // 我方那一侧的嵌套搜索（3 次推演 × 视野 3）在每一个 rollout 步都选了和规则牌手相同的动作，
+    // 所以推演轨迹一模一样、叶值一模一样、最终决策也一样 —— 而代价是 5 倍。
+    // 这条印出来是为了以后有人再想"给我方 rollout 加搜索"时先看到它。
+    if (!s2Changed && s3Changed)
+    {
+        Console.WriteLine(
+            "  ⚠ S2（我方）叶值**完全没变**，而 S3（对手）变了 ⇒ " +
+            "我方那一侧的嵌套搜索在这些局面上与规则牌手**逐步同选**，等于空转（代价却是 5 倍）。");
+    }
+
+    if (s2.Chosen == baseline.Chosen && s3.Chosen == baseline.Chosen)
+    {
+        Console.WriteLine(
+            "  两种配置的 argmax 都没变 ⇒ rollout 策略在这个局面上**不改变选择**。");
+    }
+
+    if (failures.Count > 0)
+    {
+        foreach (var failure in failures)
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException($"rollout 策略传导探针失败（{failures.Count} 项）。");
+    }
+
+    Console.WriteLine("Rollout policy probe passed.");
+}
+
+/// <summary>
+/// 【S2：rollout 里我方那一侧换成轻量前瞻】自检。
+/// <para>
+/// 和 <see cref="RunNestedOpponentModelTest"/> 是同一个模式，但打的是**另一个座位**：
+/// `rolloutPolicy`（我方）而不是 `opponentRolloutPolicy`（对手）。
+/// 两侧走的是不同的预算字段（<c>_ownNestedRollouts</c> / <c>_opponentRollouts</c>），
+/// 所以必须**分别**押一遍，否则"我方那一侧的接线断了"会没有任何自检覆盖。
+/// </para>
+/// <para>
+/// 用 `--own-rollouts` 那一路的默认值（8 次推演）而不是实验里用的 1 次：
+/// 这里要的是"机制在转"，不是最快。
+/// </para>
+/// </summary>
+internal static void RunOwnNestedRolloutTest()
+{
+    var testDeck = CreateMatchDeck("DECK-003", "own-nested");
+    var failures = new List<string>();
+
+    List<string> PlayOneMatch(LookaheadRolloutPolicy ownPolicy)
+    {
+        var game = GameEngine.CreateGame(testDeck, testDeck, seed: 41_800);
+        var agent = new LookaheadPlayerAgent(
+            rolloutsPerAction: 4,
+            futureTurnHorizon: 1,
+            seed: 41_801,
+            rolloutPolicy: ownPolicy,
+            opponentRolloutPolicy: LookaheadRolloutPolicy.RuleAgent,
+            ownNestedRollouts: 3);
+        var actions = new List<string>();
+        MatchRunner.PlayToEnd(
+            game,
+            agent,
+            new GreedyPlayerAgent(),
+            onStep: step =>
+            {
+                if (step.ActingPlayer == 0)
+                {
+                    actions.Add(CanonicalAction(step.Action));
+                }
+            });
+        return actions;
+    }
+
+    // ① 默认 == 显式规则牌手（默认值等于基线行为）
+    var implicitDefault = PlayOneMatch(LookaheadRolloutPolicy.RuleAgent);
+    var explicitRule = PlayOneMatch(LookaheadRolloutPolicy.RuleAgent);
+    if (!implicitDefault.SequenceEqual(explicitRule))
+    {
+        failures.Add("同一份种子跑两次、我方都用规则牌手 rollout，动作序列却不一致 —— 牌手带了跨局状态");
+    }
+
+    // ② 开关必须真的接上：我方那一侧的计数器要动
+    var before = LookaheadPlayerAgent.NestedOwnDecisionCount() ?? 0;
+    var own = PlayOneMatch(LookaheadRolloutPolicy.NestedLookahead);
+    var after = LookaheadPlayerAgent.NestedOwnDecisionCount() ?? 0;
+    var ownCalls = after - before;
+    if (own.Count == 0)
+    {
+        failures.Add("我方嵌套那一局一个动作都没记录到 —— 对局没跑起来");
+    }
+    else if (ownCalls == 0)
+    {
+        failures.Add(
+            "我方嵌套的调用计数没有增加 —— S2 那条分支**一次都没进去**" +
+            "（枚举没接上 / `_ownNestedRollouts` 没透传 / 走错了座位分支）。" +
+            "这种「跑了但没测到」的负结果没有意义。");
+    }
+
+    // ③ 两侧计数器必须互不串台：只开我方时，对手那个计数器不该动。
+    var opponentBefore = LookaheadPlayerAgent.NestedOpponentDecisionCount() ?? 0;
+    _ = PlayOneMatch(LookaheadRolloutPolicy.NestedLookahead);
+    var opponentAfter = LookaheadPlayerAgent.NestedOpponentDecisionCount() ?? 0;
+    if (opponentAfter != opponentBefore)
+    {
+        failures.Add(
+            "只开了我方的 nested，对手座的计数器却也动了 —— 两个座位共用了预算/分支，" +
+            "以后单独调一边会串掉另一边。");
+    }
+
+    if (failures.Count > 0)
+    {
+        foreach (var failure in failures)
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException($"S2（我方嵌套 rollout）自检失败（{failures.Count} 项）。");
+    }
+
+    Console.WriteLine("Own-seat nested rollout test passed.");
+    Console.WriteLine(
+        $"  开关已接上：我方嵌套分支被调用 {ownCalls} 次；" +
+        $"只开我方时对手座计数保持 {opponentBefore} 不变（两侧预算没串）。");
+    Console.WriteLine(
+        $"  本牌手动作序列：我方=规则牌手 {implicitDefault.Count} 个 ｜ " +
+        $"我方=嵌套前瞻 {own.Count} 个。");
+}
+
+/// <summary>
 /// 把一个动作渲染成规范字符串，用来做**结构**比较（而不是 record 的引用比较）。
 /// 带上所有目标 ID，所以"选了不同的牌/随从"一定会体现出来。
 /// </summary>

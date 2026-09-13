@@ -56,6 +56,8 @@ internal static void PrintHelp()
     Console.WriteLine("  --opponent-rollouts <1-500>  嵌套对手的推演次数（默认 8；嵌套搜索代价是乘法，别开大）");
     Console.WriteLine("  --opponent-horizon <1-10>  嵌套对手的视野（默认 0 = 跟随主视野）");
     Console.WriteLine("  --opponent-first-action-only  嵌套对手只搜「它怎么回应我」的第一手（省掉约 4 倍成本）");
+    Console.WriteLine("  --own-rollouts <1-500>  嵌套**我方**（--rollout nested）的推演次数（默认 8）");
+    Console.WriteLine("  --own-horizon <1-10>  嵌套我方的视野（默认 0 = 跟随主视野）");
     Console.WriteLine("  --alt-weights-file <路径>  载入集成用的第二套评估权重（不覆盖主权重）");
     Console.WriteLine("  --evaluator-ensemble  第一牌手开启评估函数集成（需配合 --alt-weights-file）");
     Console.WriteLine("  --p2-evaluator-ensemble  第二牌手开启");
@@ -547,7 +549,8 @@ internal static void LoadMatchupWeights(string path)
 internal static void RunSelfPlayCollection(    string[] args,
     int rollouts,
     int horizon,
-    int maxDegreeOfParallelism)
+    int maxDegreeOfParallelism,
+    AgentBenchmark.SideConfig? rolloutConfig = null)
 {
     var matchCount = ParseIntegerOption(
         args,
@@ -577,6 +580,16 @@ internal static void RunSelfPlayCollection(    string[] args,
         perspectiveDeckId is null
             ? "视角：双方决策都记"
             : $"视角：只记 {perspectiveDeckId} 那一方的决策");
+    if (rolloutConfig is not null &&
+        (rolloutConfig.RolloutPolicy != LookaheadRolloutPolicy.RuleAgent ||
+         rolloutConfig.OpponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent))
+    {
+        // 采样的配置必须跟着输出走，否则读样本的人会以为这是基线数据。
+        Console.WriteLine(
+            $"rollout 配置：我方 {rolloutConfig.RolloutPolicy}（{rolloutConfig.OwnNestedRollouts} 次推演）｜ " +
+            $"对手 {rolloutConfig.OpponentRolloutPolicy}（{rolloutConfig.OpponentRollouts} 次推演" +
+            (rolloutConfig.OpponentFirstActionOnly ? "、只搜第一手" : string.Empty) + "）");
+    }
 
     var stopwatch = Stopwatch.StartNew();
     var rows = WeightTools.Collect(
@@ -588,7 +601,8 @@ internal static void RunSelfPlayCollection(    string[] args,
         horizon,
         maxDegreeOfParallelism,
         outputPath,
-        perspectiveDeckId);
+        perspectiveDeckId,
+        rolloutConfig);
     stopwatch.Stop();
     Console.WriteLine($"写入 {rows} 条决策样本 → {outputPath}（{stopwatch.Elapsed.TotalSeconds:F1} 秒）");
 }
@@ -665,6 +679,55 @@ internal static void RunNeuralTraining(string[] args)
     result.Network.Save(outputPath);
     Console.WriteLine($"已写入 {outputPath}");
 }
+
+/// <summary>
+/// 由已解析好的参数拼一份 <see cref="AgentBenchmark.SideConfig"/>。
+/// <para>
+/// 为什么要把这些值当参数传进来而不是在这里重新解析 <c>args</c>：
+/// 重解析等于把同一套开关读两遍，两遍一旦不一致（比如默认值改了只改一处），
+/// 采样用的牌手和报告里写的配置就会**悄悄不是同一个** —— 那是很难查的一类错。
+/// </para>
+/// </summary>
+internal static AgentBenchmark.SideConfig BuildSideConfig(
+    int rollouts,
+    int horizon,
+    double railMargin,
+    LookaheadSelectionMode selectionMode,
+    double robustnessPenalty,
+    double statisticalConfidence,
+    LookaheadRolloutPolicy rolloutPolicy,
+    int mulliganHorizon,
+    int alternateHorizon,
+    int thirdHorizon,
+    LookaheadRolloutPolicy alternateRolloutPolicy,
+    LookaheadExtraPlayPointPolicy extraPlayPointPolicy,
+    LookaheadRolloutPolicy opponentRolloutPolicy,
+    int opponentRollouts,
+    int opponentHorizon,
+    bool opponentFirstActionOnly,
+    int ownNestedRollouts,
+    int ownNestedHorizon,
+    bool evaluatorEnsemble) => new(
+        AgentKind.Lookahead,
+        rollouts,
+        horizon,
+        railMargin,
+        selectionMode,
+        robustnessPenalty,
+        statisticalConfidence,
+        rolloutPolicy,
+        mulliganHorizon,
+        alternateHorizon,
+        thirdHorizon,
+        alternateRolloutPolicy,
+        extraPlayPointPolicy,
+        opponentRolloutPolicy,
+        opponentRollouts,
+        opponentHorizon,
+        opponentFirstActionOnly,
+        ownNestedRollouts,
+        ownNestedHorizon,
+        evaluatorEnsemble);
 
 /// <summary>
 /// 诊断"搜索自己的估值"能多好地预测最终胜负 —— 这是**不跑对局**的证伪：

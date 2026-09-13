@@ -84,6 +84,10 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunNeuralSearchLabelTest();
     // 嵌套对手模型：新分支必须真的被执行到，否则"跑了但没测到"的负结果没有意义。
     AgentSelfTests.RunNestedOpponentModelTest();
+    // S2：我方那一侧是**另一个座位、另一份预算**，必须单独押一遍。
+    AgentSelfTests.RunOwnNestedRolloutTest();
+    // 探针：rollout 策略到底有没有传导到候选动作的分数里（三份样本逐字节相同那件事）。
+    AgentSelfTests.RunRolloutPolicyAffectsScoresProbe();
     return;
 }
 
@@ -240,6 +244,16 @@ var secondOpponentHorizon = ConsoleTools.ParseIntegerOption(
 // 嵌套对手只搜"它怎么回应我"的第一手：成本从 4.3 倍降到接近基线。
 var opponentFirstActionOnly = ConsoleTools.HasOption(args, "--opponent-first-action-only");
 var secondOpponentFirstActionOnly = ConsoleTools.HasOption(args, "--p2-opponent-first-action-only");
+// 嵌套**我方**（S2：--rollout nested）自己的预算。和对手那份分开，两边模拟的是两件不同的事。
+var ownNestedRollouts = ConsoleTools.ParseIntegerOption(
+    args, "--own-rollouts", defaultValue: LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
+    minimum: 1, maximum: 500);
+var secondOwnNestedRollouts = ConsoleTools.ParseIntegerOption(
+    args, "--p2-own-rollouts", defaultValue: 0, minimum: 0, maximum: 500);
+var ownNestedHorizon = ConsoleTools.ParseIntegerOption(
+    args, "--own-horizon", defaultValue: 0, minimum: 0, maximum: 10);
+var secondOwnNestedHorizon = ConsoleTools.ParseIntegerOption(
+    args, "--p2-own-horizon", defaultValue: 0, minimum: 0, maximum: 10);
 if (opponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent ||
     secondOpponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent)
 {
@@ -277,12 +291,6 @@ var thirdHorizon = ConsoleTools.ParseIntegerOption(args, "--third-horizon", defa
 var secondThirdHorizon = ConsoleTools.ParseIntegerOption(
     args, "--p2-third-horizon", defaultValue: thirdHorizon, minimum: 0, maximum: 10);
 
-if (args.Contains("--collect-selfplay", StringComparer.OrdinalIgnoreCase))
-{
-    ConsoleTools.RunSelfPlayCollection(args, lookaheadRollouts, lookaheadHorizon, maxDegreeOfParallelism);
-    return;
-}
-
 if (ConsoleTools.HasOption(args, "--fit-weights"))
 {
     ConsoleTools.RunWeightFitting(args);
@@ -299,6 +307,35 @@ if (ConsoleTools.HasOption(args, "--train-neural"))
 if (ConsoleTools.HasOption(args, "--diagnose-search-value"))
 {
     ConsoleTools.RunSearchValueDiagnostics(args);
+    return;
+}
+
+// 采样分支放在**所有牌手参数解析完之后**：采样要和 --bo10 用同一套 rollout 配置，
+// 否则"采样的牌手"和"报告的配置"会不是同一个东西。
+if (args.Contains("--collect-selfplay", StringComparer.OrdinalIgnoreCase))
+{
+    var collectionConfig = ConsoleTools.BuildSideConfig(
+        lookaheadRollouts,
+        lookaheadHorizon,
+        -1,
+        selectionMode,
+        robustnessPenalty,
+        statisticalConfidence,
+        rolloutPolicy,
+        mulliganHorizon,
+        alternateHorizon,
+        thirdHorizon,
+        alternateRolloutPolicy,
+        extraPlayPointPolicy,
+        opponentRolloutPolicy,
+        opponentRollouts,
+        opponentHorizon,
+        opponentFirstActionOnly,
+        ownNestedRollouts,
+        ownNestedHorizon,
+        evaluatorEnsemble);
+    ConsoleTools.RunSelfPlayCollection(
+        args, lookaheadRollouts, lookaheadHorizon, maxDegreeOfParallelism, collectionConfig);
     return;
 }
 
@@ -367,6 +404,10 @@ if (args.Contains("--stats", StringComparer.OrdinalIgnoreCase) ||
             secondOpponentHorizon,
             opponentFirstActionOnly,
             secondOpponentFirstActionOnly,
+            ownNestedRollouts,
+            secondOwnNestedRollouts,
+            ownNestedHorizon,
+            secondOwnNestedHorizon,
             evaluatorEnsemble,
             secondEvaluatorEnsemble),
         benchmarkDecks);

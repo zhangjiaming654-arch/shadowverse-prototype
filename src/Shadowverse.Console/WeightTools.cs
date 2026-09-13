@@ -65,7 +65,16 @@ public static class WeightTools
         /// 而"牌手要根据对手卡组换策略"这件事，恰恰只能靠这个对照来验证。
         /// </para>
         /// </summary>
-        string? perspectiveDeckId = null)
+        string? perspectiveDeckId = null,
+        /// <summary>
+        /// 采样用哪个 rollout 配置。默认全空 = 基线行为（双方都用规则牌手打完 rollout）。
+        /// <para>
+        /// 存在的理由：`--diagnose-search-value` 算的 AUC 是"搜索自己的估值能不能预测胜负"，
+        /// 而**这个估值的质量正是 rollout 策略决定的**。所以"改 rollout 策略"这类改动
+        /// 可以用同一份采样管线先看 AUC 有没有动，而不必先花几小时跑 BO10。
+        /// </para>
+        /// </summary>
+        AgentBenchmark.SideConfig? sideConfig = null)
     {
         ArgumentNullException.ThrowIfNull(decks);
         if (decks.Count == 0)
@@ -87,16 +96,16 @@ public static class WeightTools
                 var seed = seedBase + (ulong)index;
                 var (deckA, deckB) = SelectDeckPair(decks, seedBase, index);
 
-                var firstAgent = AgentBenchmark.CreateAgent(
-                    agentKind,
-                    seed ^ 0x5DEECE66DUL,
-                    rollouts,
-                    horizon);
-                var secondAgent = AgentBenchmark.CreateAgent(
-                    agentKind,
-                    seed ^ 0xBADC0FFEEUL,
-                    rollouts,
-                    horizon);
+                var firstAgent = sideConfig is null
+                    ? AgentBenchmark.CreateAgent(agentKind, seed ^ 0x5DEECE66DUL, rollouts, horizon)
+                    : AgentBenchmark.CreateAgent(
+                        sideConfig with { Kind = agentKind, RolloutsPerAction = rollouts, FutureTurnHorizon = horizon },
+                        seed ^ 0x5DEECE66DUL);
+                var secondAgent = sideConfig is null
+                    ? AgentBenchmark.CreateAgent(agentKind, seed ^ 0xBADC0FFEEUL, rollouts, horizon)
+                    : AgentBenchmark.CreateAgent(
+                        sideConfig with { Kind = agentKind, RolloutsPerAction = rollouts, FutureTurnHorizon = horizon },
+                        seed ^ 0xBADC0FFEEUL);
 
                 // 除了局面特征，还记"搜索自己给这个局面的估值"。
                 // 迭代回路需要它当老师 —— 只拟合"最终胜负"是这个项目失败过 9 次的目标。

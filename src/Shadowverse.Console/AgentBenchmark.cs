@@ -139,6 +139,14 @@ public static class AgentBenchmark
         /// <summary>嵌套对手只搜"它怎么回应我"的第一手，之后退回规则牌手（省掉 4.3 倍成本里的大头）。</summary>
         bool OpponentFirstActionOnly = false,
         bool SecondOpponentFirstActionOnly = false,
+        /// <summary>
+        /// 嵌套**我方**（S2：`rolloutPolicy` 用 nested）的推演次数与视野。
+        /// 和对手那份分开：两边模拟的是两件不同的事，共用一个值会串。
+        /// </summary>
+        int OwnNestedRollouts = LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
+        int SecondOwnNestedRollouts = LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
+        int OwnNestedHorizon = 0,
+        int SecondOwnNestedHorizon = 0,
         /// <summary>评估函数集成：一半推演用 --alt-weights-file 的第二套权重。两边独立才能对照。</summary>
         bool EvaluatorEnsemble = false,
         bool SecondEvaluatorEnsemble = false);
@@ -1140,6 +1148,8 @@ public static class AgentBenchmark
         int OpponentRollouts,
         int OpponentHorizon,
         bool OpponentFirstActionOnly,
+        int OwnNestedRollouts,
+        int OwnNestedHorizon,
         bool EvaluatorEnsemble);
 
     private static SideConfig ResolveSide(Options options, bool first) => new(
@@ -1174,6 +1184,12 @@ public static class AgentBenchmark
             ? options.OpponentHorizon
             : options.SecondOpponentHorizon > 0 ? options.SecondOpponentHorizon : options.OpponentHorizon,
         first ? options.OpponentFirstActionOnly : options.SecondOpponentFirstActionOnly,
+        first
+            ? options.OwnNestedRollouts
+            : options.SecondOwnNestedRollouts > 0 ? options.SecondOwnNestedRollouts : options.OwnNestedRollouts,
+        first
+            ? options.OwnNestedHorizon
+            : options.SecondOwnNestedHorizon > 0 ? options.SecondOwnNestedHorizon : options.OwnNestedHorizon,
         first ? options.EvaluatorEnsemble : options.SecondEvaluatorEnsemble);
 
     public static IPlayerAgent CreateAgent(SideConfig config, ulong seed)
@@ -1203,7 +1219,9 @@ public static class AgentBenchmark
                 config.EvaluatorEnsemble,
                 config.OpponentRollouts,
                 config.OpponentHorizon,
-                config.OpponentFirstActionOnly),
+                config.OpponentFirstActionOnly,
+                config.OwnNestedRollouts,
+                config.OwnNestedHorizon),
             AgentKind.LookaheadV2 => new LookaheadPlayerAgentV2(seed, config.RolloutsPerAction),
             AgentKind.LookaheadV1 => new LookaheadPlayerAgentV1(
                 config.RolloutsPerAction, config.FutureTurnHorizon, seed, rail),
