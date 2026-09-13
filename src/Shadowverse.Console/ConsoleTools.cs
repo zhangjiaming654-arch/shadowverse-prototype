@@ -55,7 +55,8 @@ internal static void PrintHelp()
     Console.WriteLine("  --alt-weights-file <路径>  载入集成用的第二套评估权重（不覆盖主权重）");
     Console.WriteLine("  --evaluator-ensemble  第一牌手开启评估函数集成（需配合 --alt-weights-file）");
     Console.WriteLine("  --p2-evaluator-ensemble  第二牌手开启");
-    Console.WriteLine("  --train-neural <样本.csv>  训练神经网络叶子评估（--hidden / --epochs / --out）");
+    Console.WriteLine("  --train-neural <样本.csv>  训练神经网络叶子评估（--hidden / --epochs / --out / --value-source）");
+    Console.WriteLine("  --value-source <outcome|search>  训练标签来源：最终胜负（默认）或旁路文件的搜索估值（蒸馏）");
     Console.WriteLine("  --neural-weights <路径>  装载神经网络叶子评估，取代线性评估");
     Console.WriteLine("  2.0 预设：--horizon 1 --alternate-horizon 3 --rollouts 60");
     Console.WriteLine("    中速梦镜像：决定性胜率 76.3%（总胜率 62.2%），vs 1.0，p < 0.0001");
@@ -597,28 +598,89 @@ internal static void RunNeuralTraining(string[] args)
         CultureInfo.InvariantCulture);
     var l2 = double.Parse(ReadOptionValue(args, "--l2") ?? "0.00001", CultureInfo.InvariantCulture);
     var seed = (ulong)ParseIntegerOption(args, "--seed", defaultValue: 12345, minimum: 1, maximum: int.MaxValue);
+    var valueSource = ParseValueSourceOption(args, "--value-source");
     var outputPath = ReadOptionValue(args, "--out")
         ?? Path.Combine(ProjectRoot(), "outputs", "neural-leaf.txt");
 
     Console.WriteLine($"训练神经网络叶子评估：{inputPath}（{epochs} 轮，隐层 {hidden}，学习率 {learningRate}）");
-    var result = NeuralTrainer.Train(inputPath, hidden, epochs, learningRate, l2, seed, Console.WriteLine);
+    Console.WriteLine(valueSource == NeuralTrainer.ValueSource.Search
+        ? $"标签来源：搜索估值（蒸馏）—— 旁路文件 {WeightTools.SearchValuePath(inputPath)}"
+        : "标签来源：最终胜负（和线性拟合同一个目标）");
+    var result = NeuralTrainer.Train(
+        inputPath,
+        hidden,
+        epochs,
+        learningRate,
+        l2,
+        seed,
+        Console.WriteLine,
+        valueSource);
     Console.WriteLine();
-    Console.WriteLine($"样本数：训练 {result.TrainRows} ｜ 验证 {result.ValidationRows}（按行序切分 = 按对局切分）");
-    Console.WriteLine($"采用第 {result.BestEpoch} 轮的权重（验证损失最低那一轮，不是最后一轮）");
-    Console.WriteLine();
-    Console.WriteLine("                   对数损失    准确率");
-    Console.WriteLine($"神经网络  训练集   {result.TrainLogLoss:F5}     {result.TrainAccuracy:P2}");
-    Console.WriteLine($"神经网络  验证集   {result.ValidationLogLoss:F5}     {result.ValidationAccuracy:P2}");
-    Console.WriteLine($"线性手调  验证集   {result.HandTunedValidationLogLoss:F5}     {result.HandTunedValidationAccuracy:P2}");
-    Console.WriteLine(
-        $"预测值标准差 {result.ValidationPredictionStd:F4}" +
-        "（接近 0 说明网络只学会了偏置、没学到任何特征 —— 训练信号没进权重）");
-    Console.WriteLine();
-    Console.WriteLine(result.ValidationLogLoss < result.HandTunedValidationLogLoss
-        ? $"结论：神经网络在验证集上更好（对数损失低 {result.HandTunedValidationLogLoss - result.ValidationLogLoss:F5}）。"
-        : "结论：神经网络在验证集上没有超过线性手调值。");
+    if (valueSource == NeuralTrainer.ValueSource.Search)
+    {
+        Console.WriteLine(
+            $"样本数：训练 {result.TrainRows} ｜ 验证 {result.ValidationRows}（按行序切分 = 按对局切分）" +
+            $" ｜ 因缺搜索估值丢弃 {result.SkippedRows} 行");
+        Console.WriteLine($"采用第 {result.BestEpoch} 轮的权重（验证 MSE 最低那一轮，不是最后一轮）");
+        Console.WriteLine();
+        Console.WriteLine("                       平方误差   相关系数");
+        Console.WriteLine($"神经网络  验证集       {result.ValidationSquaredError:F5}    {result.ValidationCorrelation:F4}");
+        Console.WriteLine(
+            $"老师（搜索估值）      —          —        均值 {result.TeacherMean:F4} ｜ 标准差 {result.TeacherStd:F4}");
+        Console.WriteLine(
+            $"预测值标准差 {result.ValidationPredictionStd:F4}" +
+            "（接近 0 说明网络只学会了老师估值的平均数 —— 蒸馏没成）");
+        Console.WriteLine();
+        Console.WriteLine(result.ValidationCorrelation >= 0.5
+            ? $"结论：网络确实学到了搜索估值（相关系数 {result.ValidationCorrelation:F4}）。" +
+              "但**这还不是验收** —— 判据只有 BO10 得分，见 BO10-JUDGEMENT.md。"
+            : $"结论：网络没能复现搜索估值（相关系数只有 {result.ValidationCorrelation:F4}），" +
+              "蒸馏这一步就没成，换进叶子评估不会有意义。");
+    }
+    else
+    {
+        Console.WriteLine($"样本数：训练 {result.TrainRows} ｜ 验证 {result.ValidationRows}（按行序切分 = 按对局切分）");
+        Console.WriteLine($"采用第 {result.BestEpoch} 轮的权重（验证损失最低那一轮，不是最后一轮）");
+        Console.WriteLine();
+        Console.WriteLine("                   对数损失    准确率");
+        Console.WriteLine($"神经网络  训练集   {result.TrainLogLoss:F5}     {result.TrainAccuracy:P2}");
+        Console.WriteLine($"神经网络  验证集   {result.ValidationLogLoss:F5}     {result.ValidationAccuracy:P2}");
+        Console.WriteLine($"线性手调  验证集   {result.HandTunedValidationLogLoss:F5}     {result.HandTunedValidationAccuracy:P2}");
+        Console.WriteLine(
+            $"预测值标准差 {result.ValidationPredictionStd:F4}" +
+            "（接近 0 说明网络只学会了偏置、没学到任何特征 —— 训练信号没进权重）");
+        Console.WriteLine();
+        Console.WriteLine(result.ValidationLogLoss < result.HandTunedValidationLogLoss
+            ? $"结论：神经网络在验证集上更好（对数损失低 {result.HandTunedValidationLogLoss - result.ValidationLogLoss:F5}）。"
+            : "结论：神经网络在验证集上没有超过线性手调值。");
+    }
+
     result.Network.Save(outputPath);
     Console.WriteLine($"已写入 {outputPath}");
+}
+
+/// <summary>
+/// 解析 <c>--value-source</c>。
+/// <para>
+/// **默认必须是 outcome**：这个项目里"拟合最终胜负"是失败过 9 次的目标，蒸馏（search）是
+/// 新东西，不能让它悄悄变成默认行为把旧结论污染掉。
+/// </para>
+/// </summary>
+private static NeuralTrainer.ValueSource ParseValueSourceOption(string[] args, string name)
+{
+    var raw = ReadOptionValue(args, name);
+    if (raw is null)
+    {
+        return NeuralTrainer.ValueSource.Outcome;
+    }
+
+    return raw.ToLowerInvariant() switch
+    {
+        "outcome" or "win" => NeuralTrainer.ValueSource.Outcome,
+        "search" or "distill" => NeuralTrainer.ValueSource.Search,
+        _ => throw new ArgumentException(
+            $"{name} 只支持 outcome（最终胜负，默认）或 search（旁路文件的搜索估值），收到：{raw}")
+    };
 }
 
 internal static void RunWeightFitting(string[] args)

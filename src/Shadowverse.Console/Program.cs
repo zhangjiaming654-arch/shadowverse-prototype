@@ -80,6 +80,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunOpponentThinkingReportTest();
     // 神经网络训练器：梯度必须真的进到权重里（默认学习率曾经大到把网络打飞）。
     AgentSelfTests.RunNeuralTrainerTest();
+    // 搜索估值标签（蒸馏）：旁路文件必须逐行对齐（错位会静默配错局面），连续值必须学得进去。
+    AgentSelfTests.RunNeuralSearchLabelTest();
     return;
 }
 

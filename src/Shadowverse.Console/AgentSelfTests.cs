@@ -266,6 +266,271 @@ internal static void RunNeuralTrainerTest()
 }
 
 /// <summary>
+/// 【搜索估值标签（蒸馏）】自检：守住"旁路文件确实和样本逐行对齐、空行确实被丢掉、
+/// 连续值确实被学进权重"这三件事。
+/// <para>
+/// 这段代码最危险的失败模式是**错位**：主文件和旁路文件差一行，读出来的样本就整体配错了局面，
+/// 而所有指标看起来都"正常"（对数损失/MSE 都可能很好看），训练完只会得到一个悄悄变差的牌手。
+/// 所以这里刻意造三种错位来验证它**会报错**，而不是静默截断。
+/// </para>
+/// <para>
+/// 靶子用 <c>tanh(3·x0·x1)</c> 型的平滑非线性函数：它是连续值（不是 0/1），非线性
+/// （线性模型拟合不好），而且可复现（种子固定）。
+/// </para>
+/// </summary>
+internal static void RunNeuralSearchLabelTest()
+{
+    // 必须和 LookaheadPlayerAgent.PositionWeights 的长度一致（训练器会拿手调权重做对照）。
+    const int featureCount = 21;
+    const int rows = 4000;
+
+    var mainPath = Path.Combine(Path.GetTempPath(), "neural-selftest-search.csv");
+    var sidecarPath = WeightTools.SearchValuePath(mainPath);
+    // 每 10 行留 1 行没有搜索估值（模拟"规则牌手代打/换牌阶段"那种行）。
+    const int blankEvery = 10;
+    var expectedBlanks = rows / blankEvery;
+
+    var random = new Random(20_260_914);
+    using (var writer = new StreamWriter(mainPath))
+    using (var sidecar = new StreamWriter(sidecarPath))
+    {
+        // 故意在**两个文件里放不同数量的注释行**：注释两边都跳过，所以不该错位。
+        writer.WriteLine("# label,f0,..,f20");
+        sidecar.WriteLine("# 每行一个搜索估值");
+        sidecar.WriteLine("# 空行 = 这一行没有搜索估值");
+        for (var row = 0; row < rows; row++)
+        {
+            var x0 = (random.NextDouble() * 2.0) - 1.0;
+            var x1 = (random.NextDouble() * 2.0) - 1.0;
+            var label = x0 * x1 > 0 ? 1 : 0;
+            var teacher = 0.5 + (0.45 * Math.Tanh(3.0 * x0 * x1));
+
+            var values = new string[featureCount + 1];
+            values[0] = label.ToString(CultureInfo.InvariantCulture);
+            values[1] = x0.ToString("R", CultureInfo.InvariantCulture);
+            values[2] = x1.ToString("R", CultureInfo.InvariantCulture);
+            for (var index = 2; index < featureCount; index++)
+            {
+                values[index + 1] = ((random.NextDouble() * 2.0) - 1.0)
+                    .ToString("R", CultureInfo.InvariantCulture);
+            }
+
+            writer.WriteLine(string.Join(',', values));
+            sidecar.WriteLine(row % blankEvery == 0
+                ? string.Empty
+                : teacher.ToString("R", CultureInfo.InvariantCulture));
+        }
+    }
+
+    try
+    {
+        var result = NeuralTrainer.Train(
+            mainPath,
+            hiddenCount: 32,
+            epochs: 120,
+            learningRate: 0.001,
+            l2: 0.00001,
+            seed: 12_345,
+            report: _ => { },
+            source: NeuralTrainer.ValueSource.Search);
+
+        var failures = new List<string>();
+        if (result.Source != NeuralTrainer.ValueSource.Search)
+        {
+            failures.Add($"标签来源不对：应为 Search，实际 {result.Source}");
+        }
+
+        if (result.SkippedRows != expectedBlanks)
+        {
+            failures.Add($"空行统计不对：应丢弃 {expectedBlanks} 行，实际 {result.SkippedRows} 行");
+        }
+
+        if (result.TrainRows + result.ValidationRows != rows - expectedBlanks)
+        {
+            failures.Add(
+                $"可用行数不对：{result.TrainRows} + {result.ValidationRows} " +
+                $"≠ {rows - expectedBlanks}（应等于样本行数减去空行）");
+        }
+
+        // 相关系数是蒸馏成没成的判据：接近 0 = 只学会了老师估值的平均数。
+        if (!(result.ValidationCorrelation >= 0.8))
+        {
+            failures.Add(
+                $"验证集相关系数 {result.ValidationCorrelation:F4} 太低 —— 没学到搜索估值" +
+                "（连续标签这条通路断了，或者平方误差的梯度算错了）");
+        }
+
+        if (result.ValidationPredictionStd <= 0.05)
+        {
+            failures.Add($"预测值标准差 {result.ValidationPredictionStd:F4} 太低 —— 网络在输出常数");
+        }
+
+        if (failures.Count > 0)
+        {
+            foreach (var failure in failures)
+            {
+                Console.WriteLine("  ✗ " + failure);
+            }
+
+            throw new InvalidOperationException($"搜索估值标签自检失败（{failures.Count} 项）。");
+        }
+
+        Console.WriteLine("Neural search-label test passed.");
+        Console.WriteLine(
+            $"  老师（tanh 靶子）均值 {result.TeacherMean:F4}、标准差 {result.TeacherStd:F4}；" +
+            $"网络预测标准差 {result.ValidationPredictionStd:F4}。");
+        Console.WriteLine(
+            $"  蒸馏质量：验证 MSE {result.ValidationSquaredError:F5}、相关系数 {result.ValidationCorrelation:F4}；" +
+            $"丢弃无估值行 {result.SkippedRows}/{rows}。");
+
+        // ---- 错位必须被抓住，不能静默截断 ----
+        // 每一种错位都要**自己造一份主文件 + 配套的旁路文件**：旁路文件的路径是从主文件推出来的，
+        // 只改原旁路文件是没用的 —— 原主文件读的还是原来那份旁路文件。
+        //
+        // 而且必须是**数据行**数对不上，不是注释行数对不上：
+        // 两边都跳过注释行，所以"给旁路文件多加一行注释"根本不该报错。
+        // 这里第一版就是拿 Skip(1) 去掉了一行注释，于是"少一行"那格没被抓住 —— 自检自己先错了一次。
+        var originalSidecarLines = File.ReadAllLines(sidecarPath);
+        var misalignmentFailures = new List<string>();
+
+        // ① 旁路文件比样本少一个数据行（读到最后少一个估值）
+        var shortMain = Path.Combine(Path.GetTempPath(), "neural-selftest-search-short.csv");
+        File.Copy(mainPath, shortMain, overwrite: true);
+        File.WriteAllLines(
+            WeightTools.SearchValuePath(shortMain),
+            originalSidecarLines.Take(originalSidecarLines.Length - 1));
+        misalignmentFailures.Add(ExpectSearchLabelRejection(
+            shortMain,
+            "旁路文件少一个数据行",
+            "数据行少于样本文件"));
+
+        // ② 旁路文件比样本多一个数据行
+        var longMain = Path.Combine(Path.GetTempPath(), "neural-selftest-search-long.csv");
+        File.Copy(mainPath, longMain, overwrite: true);
+        File.WriteAllLines(
+            WeightTools.SearchValuePath(longMain),
+            originalSidecarLines.Concat(new[] { "0.5" }));
+        misalignmentFailures.Add(ExpectSearchLabelRejection(
+            longMain,
+            "旁路文件多一个数据行",
+            "数据行多于样本文件"));
+
+        // ③ 旁路文件根本不存在（旧样本是在记录搜索估值那次提交之前采的）
+        var missingMain = Path.Combine(Path.GetTempPath(), "neural-selftest-search-missing.csv");
+        File.Copy(mainPath, missingMain, overwrite: true);
+        var missingSidecar = WeightTools.SearchValuePath(missingMain);
+        if (File.Exists(missingSidecar))
+        {
+            File.Delete(missingSidecar);
+        }
+
+        misalignmentFailures.Add(ExpectSearchLabelRejection(
+            missingMain,
+            "旁路文件不存在",
+            "找不到搜索估值旁路文件"));
+
+        // ④ 反向对照：多几行**注释**不算错位（两边都跳过注释行），必须照常训练成功。
+        // 没有这一条，上面三条"必须报错"是可以靠"见谁都说行数不对"骗过去的。
+        //
+        // 注意这里**不能**顺手加一个空行：旁路文件里的空行是数据行（表示"这一行没有搜索估值"），
+        // 第一版就是这么加的，被守卫正确地拦下来了 —— 加空行才是错位。
+        var commentMain = Path.Combine(Path.GetTempPath(), "neural-selftest-search-comment.csv");
+        File.Copy(mainPath, commentMain, overwrite: true);
+        File.WriteAllLines(
+            WeightTools.SearchValuePath(commentMain),
+            originalSidecarLines.Concat(new[] { "# 这里多几行注释", "# 再多一行" }));
+        try
+        {
+            NeuralTrainer.Train(
+                commentMain,
+                hiddenCount: 8,
+                epochs: 1,
+                learningRate: 0.001,
+                l2: 0.00001,
+                seed: 12_345,
+                report: _ => { },
+                source: NeuralTrainer.ValueSource.Search);
+        }
+        catch (Exception exception)
+        {
+            misalignmentFailures.Add(
+                "旁路文件多出几行注释：不该报错，但抛了 " +
+                $"{exception.GetType().Name}: {exception.Message}");
+        }
+        finally
+        {
+            File.Delete(commentMain);
+            File.Delete(WeightTools.SearchValuePath(commentMain));
+        }
+
+        File.Delete(shortMain);
+        File.Delete(WeightTools.SearchValuePath(shortMain));
+        File.Delete(longMain);
+        File.Delete(WeightTools.SearchValuePath(longMain));
+        File.Delete(missingMain);
+
+        misalignmentFailures.RemoveAll(failure => failure.Length == 0);
+        if (misalignmentFailures.Count > 0)
+        {
+            foreach (var failure in misalignmentFailures)
+            {
+                Console.WriteLine("  ✗ " + failure);
+            }
+
+            throw new InvalidOperationException(
+                $"搜索估值旁路文件的对齐自检失败（{misalignmentFailures.Count} 项）——" +
+                "错位会静默地把局面和标签配错，必须报错而不是截断。");
+        }
+
+        Console.WriteLine(
+            "  对齐守卫：少一个数据行 / 多一个数据行 / 文件不存在，三种都按预期报错；" +
+            "多几行注释不算错位。");
+    }
+    finally
+    {
+        File.Delete(mainPath);
+        File.Delete(sidecarPath);
+    }
+}
+
+/// <summary>
+/// 用一份（故意）错位的旁路文件喂训练器。返回空串 = 按预期（且按预期原因）拒绝了。
+/// <para>
+/// 不用 <c>null</c> 表示成功：那样调用方要写 <c>RemoveAll(failure =&gt; failure is null)</c>，
+/// 可空性会让"成功"和"漏了一项检查"在类型上长得一样 —— 这个自检本身就是防静默失败的，
+/// 不该自带一个静默失败的口子。
+/// </para>
+/// </summary>
+private static string ExpectSearchLabelRejection(
+    string mainPath,
+    string description,
+    string expectedFragment)
+{
+    try
+    {
+        NeuralTrainer.Train(
+            mainPath,
+            hiddenCount: 8,
+            epochs: 1,
+            learningRate: 0.001,
+            l2: 0.00001,
+            seed: 12_345,
+            report: _ => { },
+            source: NeuralTrainer.ValueSource.Search);
+    }
+    catch (InvalidOperationException exception) when (exception.Message.Contains(expectedFragment))
+    {
+        return string.Empty;
+    }
+    catch (Exception exception)
+    {
+        return $"{description}：报错了但原因不对 —— {exception.GetType().Name}: {exception.Message}";
+    }
+
+    return $"{description}：**没有报错**。错位的旁路文件必须被拒绝，否则样本会整体配错局面。";
+}
+
+/// <summary>
 /// 【对手思考面板】自检：隐私 + 渲染健壮性。
 /// <para>
 /// <b>隐私</b>：人机对战是靠体感判断牌手强弱的。一旦能看到对手手牌，"我赢了他"就说明不了任何事。

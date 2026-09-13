@@ -910,6 +910,10 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
 
         // 装了神经网络就用它替代线性评估。见 NeuralPositionEvaluator 的注释：
         // 线性模型连续失败不是调参问题，是表达力问题。
+        //
+        // **只对 3.0 生效**：2.0（V2 类）有自己的权重（从它自己的只读引用传进来），
+        // 所以这里必须用 ReferenceEquals 判断"这套权重是不是 3.0 的基准权重"，
+        // 否则把网络的叶子塞给冻结锚点，验收就变成了"网络对网络" —— 那个数字没有意义。
         if (NeuralEvaluator is not null && ReferenceEquals(weights, PositionWeights))
         {
             return NeuralEvaluator.Evaluate(features);
