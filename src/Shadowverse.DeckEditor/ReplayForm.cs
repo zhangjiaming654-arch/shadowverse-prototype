@@ -711,6 +711,10 @@ public sealed partial class ReplayForm : Form
         _nextButton.Enabled = _currentStepIndex + 1 < _steps.Count;
         _autoPlayButton.Enabled = _steps.Count > 0;
         UpdateActionPreviews();
+        // 人机对战：卡牌格子每次都是新造的，点击/拖拽要重新挂上去。
+        // 非实时对局时这个方法直接返回，回放模式不受影响。
+        // 传 true 表示"格子是全新的"，让它可以丢掉旧的防重复挂记录。
+        RefreshHumanInteraction(tilesAreFresh: true);
     }
 
     private void UpdateActionPreviews()
@@ -930,7 +934,10 @@ public sealed partial class ReplayForm : Form
         panel.Controls.Clear();
         foreach (var card in cards)
         {
-            panel.Controls.Add(CreateCardTile(card.Definition, card.Definition.Attack, card.Definition.Defense, compact: true));
+            var tile = CreateCardTile(card.Definition, card.Definition.Attack, card.Definition.Defense, compact: true);
+            // 标出这是哪张牌：人机对战的点击换牌、拖拽出牌都要靠这个 Tag 反查实例号。
+            tile.Tag = card;
+            panel.Controls.Add(tile);
         }
 
         if (cards.Count == 0)
@@ -960,12 +967,16 @@ public sealed partial class ReplayForm : Form
             if (slot < followers.Count)
             {
                 var follower = followers[slot];
-                slotPanel.Controls.Add(CreateCardTile(
+                var tile = CreateCardTile(
                     follower.Definition,
                     follower.Attack,
                     follower.CurrentDefense,
                     compact: false,
-                    isEvolved: follower.IsEvolved));
+                    isEvolved: follower.IsEvolved);
+                // 场上的格子也要能反查到实例：拖拽攻击、右键进化都靠它。
+                tile.Tag = follower;
+                slotPanel.Tag = follower;
+                slotPanel.Controls.Add(tile);
             }
             else
             {
@@ -973,12 +984,15 @@ public sealed partial class ReplayForm : Form
                 if (amuletIndex < amulets.Count)
                 {
                     var amulet = amulets[amuletIndex];
-                    slotPanel.Controls.Add(CreateCardTile(
+                    var tile = CreateCardTile(
                         amulet.Definition,
                         attack: 0,
                         defense: 0,
                         compact: false,
-                        currentCountdown: amulet.Countdown));
+                        currentCountdown: amulet.Countdown);
+                    tile.Tag = amulet;
+                    slotPanel.Tag = amulet;
+                    slotPanel.Controls.Add(tile);
                 }
             }
 

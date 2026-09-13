@@ -68,6 +68,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     // 机制是硬编码两个卡牌 ID 的特判，而且它的前提——"前瞻会浪费早期额外 PP"——
     // 在回退闸下限归零、前瞻改用自身判断之后已经不成立。
     AgentSelfTests.RunLookaheadMatchRunnerTest();
+    // 人机对战：守"每个合法动作都能被某个拖拽/点击手势选中"，界面没法自动化验证，只能在这里守。
+    AgentSelfTests.RunHumanActionResolverTest();
     return;
 }
 

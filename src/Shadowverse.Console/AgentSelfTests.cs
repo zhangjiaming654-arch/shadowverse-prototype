@@ -49,6 +49,199 @@ internal static void RunSmokeTest(string firstDeckId, string secondDeckId)
     Console.WriteLine($"Final health: P1={firstMatch.FinalState.Players[0].Health}, P2={firstMatch.FinalState.Players[1].Health}");
 }
 
+/// <summary>
+/// 人机对战手势解析自检。
+/// <para>
+/// 守住的性质：**引擎给出的每一个合法动作，都必须能被某个拖拽/点击手势选中**。
+/// 界面本身没法自动化验证，所以"真人不会遇到点不到的动作"这条保证只能在这里守。
+/// </para>
+/// <para>
+/// 做法：让真人牌手接管整局，在每一个决策点上把所有可能的手势都跑一遍取并集，
+/// 再看有没有合法动作落在并集外面。
+/// </para>
+/// </summary>
+internal static void RunHumanActionResolverTest()
+{
+    const int gameCount = 6;
+    string[] deckPool = ["DECK-002", "DECK-003"];
+    var failures = new List<string>();
+    var tally = new GestureTally();
+    var decisions = 0;
+    var legalActionTotal = 0;
+
+    for (var game = 0; game < gameCount; game++)
+    {
+        var firstDeck = CreateMatchDeck(deckPool[game % deckPool.Length], "A");
+        var secondDeck = CreateMatchDeck(deckPool[(game + 1) % deckPool.Length], "B");
+        var rule = new GreedyPlayerAgent();
+
+        // 真人牌手在这里只是"接管 + 记录"，真正出什么招交给规则牌手，
+        // 这样这局能正常打完，从而覆盖到开局、中盘、进化、攻击、法术各种决策点。
+        var human = new HumanPlayerAgent((observation, legalActions) =>
+        {
+            decisions++;
+            legalActionTotal += legalActions.Count;
+            CollectGestureReach(observation, legalActions, failures, tally);
+            return rule.ChooseAction(observation, legalActions);
+        });
+
+        MatchRunner.PlayToEnd(
+            GameEngine.CreateGame(firstDeck, secondDeck, seed: (ulong)(9_100 + game)),
+            human,
+            new GreedyPlayerAgent());
+    }
+
+    if (failures.Count > 0)
+    {
+        foreach (var failure in failures.Take(10))
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException(
+            $"人机对战手势自检失败：{failures.Count} 个合法动作没有任何手势能选中，" +
+            "真人会碰到点不到的动作。");
+    }
+
+    Console.WriteLine("Human action resolver test passed.");
+    Console.WriteLine(
+        $"  {gameCount} 局里共 {decisions} 个真人决策点、{legalActionTotal} 个合法动作，全部能被某个手势选中。");
+    Console.WriteLine("  各类手势中筛出多个变体（界面要弹菜单让用户选）的比例：");
+    tally.Report();
+}
+
+/// <summary>
+/// 统计各类手势"筛出多个变体"的比例。
+/// <para>
+/// 这个数字直接对应手感：比例越高，玩的时候弹菜单越多。
+/// 分开按手势类型统计很重要 —— 混在一起算会被"每一个手牌×每个敌人的组合都探一遍"灌水，
+/// 而真正影响体感的是"用户做那个动作时会不会弹菜单"。
+/// </para>
+/// </summary>
+private sealed class GestureTally
+{
+    private readonly Dictionary<string, int> _total = [];
+    private readonly Dictionary<string, int> _multi = [];
+    private readonly List<string> _order = [];
+
+    public void Add(string kind, int candidateCount)
+    {
+        if (!_total.ContainsKey(kind))
+        {
+            _total[kind] = 0;
+            _multi[kind] = 0;
+            _order.Add(kind);
+        }
+
+        _total[kind]++;
+        if (candidateCount > 1)
+        {
+            _multi[kind]++;
+        }
+    }
+
+    public void Report()
+    {
+        foreach (var kind in _order)
+        {
+            var total = _total[kind];
+            var multi = _multi[kind];
+            var rate = total == 0 ? 0 : 100.0 * multi / total;
+            Console.WriteLine($"    {kind}：{multi}/{total} = {rate:F1}%");
+        }
+    }
+}
+
+/// <summary>
+/// 把一个决策点上所有可能的手势跑一遍，并把"没有任何手势能选中"的合法动作记进
+/// <paramref name="failures"/>。
+/// </summary>
+private static void CollectGestureReach(
+    GameObservation observation,
+    IReadOnlyList<GameAction> legalActions,
+    List<string> failures,
+    GestureTally tally)
+{
+    // 这里只放引擎给出的动作实例本身，所以 record 的默认相等性是可靠的 ——
+    // record 里的 IReadOnlyList 字段走引用相等，而两侧就是同一个对象。
+    var reachable = new HashSet<GameAction>();
+
+    void Take(string kind, IReadOnlyList<GameAction> candidates)
+    {
+        tally.Add(kind, candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            reachable.Add(candidate);
+        }
+    }
+
+    // 常驻按钮：结束回合、使用额外 PP。
+    Take("常驻按钮", HumanActionResolver.Direct(legalActions));
+
+    if (observation.Phase == GamePhase.Mulligan)
+    {
+        // 换牌是"点子集"，用户逐个点，所以所有子集都算可达。换牌永远不会弹菜单。
+        var ids = observation.OwnHand.Select(card => card.InstanceId).ToArray();
+        for (var mask = 0; mask < 1 << ids.Length; mask++)
+        {
+            var subset = Enumerable.Range(0, ids.Length)
+                .Where(bit => (mask & (1 << bit)) != 0)
+                .Select(bit => ids[bit])
+                .ToArray();
+            if (HumanActionResolver.Mulligan(legalActions, subset) is { } action)
+            {
+                reachable.Add(action);
+            }
+        }
+    }
+    else
+    {
+        foreach (var card in observation.OwnHand)
+        {
+            // 拖到己方场上（不指定目标）—— 这是最常见的出牌动作
+            Take("手牌→己方场上", HumanActionResolver.FromHand(legalActions, card.InstanceId));
+            // 拖到敌方主战者上
+            Take(
+                "手牌→敌方主战者",
+                HumanActionResolver.FromHand(legalActions, card.InstanceId, null, targetLeader: true));
+            // 拖到每一个敌方随从上
+            foreach (var enemy in observation.Opponent.Board)
+            {
+                Take(
+                    "手牌→敌方随从",
+                    HumanActionResolver.FromHand(legalActions, card.InstanceId, enemy.InstanceId));
+            }
+        }
+
+        foreach (var follower in observation.Self.Board)
+        {
+            // 拖到敌方主战者上
+            Take(
+                "随从→敌方主战者",
+                HumanActionResolver.Attack(legalActions, follower.InstanceId, null, targetLeader: true));
+            // 拖到每一个敌方随从上
+            foreach (var enemy in observation.Opponent.Board)
+            {
+                Take(
+                    "随从→敌方随从",
+                    HumanActionResolver.Attack(legalActions, follower.InstanceId, enemy.InstanceId));
+            }
+
+            // 右键：进化 / 超进化
+            Take("右键进化", HumanActionResolver.Evolve(legalActions, follower.InstanceId));
+        }
+    }
+
+    foreach (var action in legalActions)
+    {
+        if (!reachable.Contains(action))
+        {
+            failures.Add(
+                $"回合 {observation.TurnNumber} P{observation.PerspectivePlayer + 1}：{action}");
+        }
+    }
+}
+
 internal static void RunRubyFanfareTest()
 {
     var ruby = CardCatalog.Get(CardIds.GreedyArchangelRuby);
