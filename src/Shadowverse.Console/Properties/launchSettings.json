@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Shadowverse.Console": {
+      "commandName": "Project",
+      "commandLineArgs": "--deck1 DECK-002 --deck2 DECK-002 --lookahead --rollouts 20 --horizon 3 --random"
+    }
+  }
+}

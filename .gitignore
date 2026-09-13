@@ -1,0 +1,30 @@
+# ===== 构建产物 =====
+[Bb]in/
+[Oo]bj/
+
+# 历次会话遗留的临时构建目录（每个都是完整的 bin/obj 副本，纯垃圾）
+work/
+
+# artifacts 下的构建输出与 CLI 遥测哨兵文件。
+# 保留 artifacts/maintenance/*.zip —— 那是版本控制建立之前的历史备份。
+artifacts/*-build/
+artifacts/dotnet-cli/
+
+# ===== 大体量的可再生产物 =====
+# 自对弈采样数据（几十万行、十几 MB，可随时重新生成）
+outputs/*.csv
+# 对局日志
+outputs/*.log
+# 神经网络调试过程中产生的中间权重
+outputs/neural-test*.txt
+
+# 注意：outputs/fitted-*.txt（拟合出来的评估权重）**要进版本控制** ——
+# 它们是训练/拟合的产物，不是随手可再生的中间文件。
+
+# ===== 编辑器 / 系统 =====
+.vs/
+.idea/
+*.user
+*.suo
+Thumbs.db
+desktop.ini

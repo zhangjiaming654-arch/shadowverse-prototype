@@ -1,0 +1,165 @@
+{
+  "decks": [
+    {
+      "id": "DECK-001",
+      "name": "\u5251\u6597\u58EB\u5361\u7EC4",
+      "description": "\u7531\u5361\u7EC4\u7F16\u8F91\u5668\u521B\u5EFA\u3002",
+      "entries": [
+        {
+          "cardId": "BASE-010",
+          "count": 10
+        },
+        {
+          "cardId": "BASE-009",
+          "count": 10
+        },
+        {
+          "cardId": "BASE-004",
+          "count": 2
+        },
+        {
+          "cardId": "BASE-003",
+          "count": 5
+        },
+        {
+          "cardId": "BASE-002",
+          "count": 5
+        },
+        {
+          "cardId": "BASE-011",
+          "count": 8
+        }
+      ]
+    },
+    {
+      "id": "DECK-002",
+      "name": "\u90ED\u9F99",
+      "description": "\u7531\u5361\u7EC4\u7F16\u8F91\u5668\u521B\u5EFA\u3002",
+      "entries": [
+        {
+          "cardId": "BASE-024",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-026",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-028",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-029",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-030",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-022",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-031",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-025",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-032",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-020",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-021",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-023",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-033",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-037",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-036",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "DECK-003",
+      "name": "\u4E2D\u901F\u68A6",
+      "description": "\u7531\u5361\u7EC4\u7F16\u8F91\u5668\u521B\u5EFA\u3002",
+      "entries": [
+        {
+          "cardId": "BASE-038",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-040",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-042",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-043",
+          "count": 2
+        },
+        {
+          "cardId": "BASE-046",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-047",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-049",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-050",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-051",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-052",
+          "count": 2
+        },
+        {
+          "cardId": "BASE-053",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-054",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-055",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-056",
+          "count": 3
+        }
+      ]
+    }
+  ]
+}
