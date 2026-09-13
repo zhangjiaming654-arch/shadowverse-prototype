@@ -31,6 +31,12 @@ if (args.Contains("--decks", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("--deck-profile", StringComparer.OrdinalIgnoreCase))
+{
+    ConsoleTools.PrintDeckProfile();
+    return;
+}
+
 if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
 {
     AgentSelfTests.RunRubyFanfareTest();

@@ -415,8 +415,87 @@ internal static string ProjectRoot() =>
 /// 让牌手自己下棋，把每一次决策的局面特征连同"这个牌手最后赢了没有"写进样本文件，
 /// 供 --fit-weights 拟合叶子评估的权重。这是把手调常数换成数据驱动常数的唯一入口。
 /// </summary>
-internal static void RunSelfPlayCollection(
-    string[] args,
+/// <summary>
+/// 打印每套牌的"延迟收益"画像。
+/// <para>
+/// 这是为了设计"视野随卡组自适应"的判据：报告第 12 节发现视野和卡组有真实交互
+/// （短视野在中速梦上赚、在郭龙这种斜坡卡组上赔），但**判据必须是量出来的，不能拍脑袋**。
+/// 如果中速梦也有大量吟唱/谢幕曲，那"数延迟收益的牌"就区分不开这两套牌，
+/// 规则就是白设计的 —— 所以先把它打出来看。
+/// </para>
+/// </summary>
+internal static void PrintDeckProfile()
+{
+    Console.WriteLine("卡组「延迟收益」画像（每套牌 40 张）");
+    Console.WriteLine();
+    Console.WriteLine(
+        $"{"卡组",-18}{"均费",6}{"最高费",7}{"斜坡",6}{"吟唱",6}{"回合末",7}{"谢幕曲",7}{"被动",6}{"合计*",7}");
+
+    foreach (var entry in DeckCatalog.All)
+    {
+        var deck = DeckCatalog.Create(entry.Id);
+        var cards = deck.Cards;
+
+        var ramp = cards.Count(card => EffectsOf(card).Any(effect => effect.Kind
+            is CardEffectKind.IncreaseOwnMaxPlayPoints
+            or CardEffectKind.IncreaseOwnMaxPlayPointsAndDrawIfAtTen));
+        var countdown = cards.Count(card => card.Countdown is not null);
+        var endOfTurn = cards.Count(card => card.EndOfOwnTurnEffects is { Count: > 0 }
+            || card.UnevolvedEndOfOwnTurnEffects is { Count: > 0 }
+            || card.EvolvedEndOfOwnTurnEffects is { Count: > 0 });
+        var lastWords = cards.Count(card => card.LastWordsEffects is { Count: > 0 });
+        var passive = cards.Count(card => card.PassiveEffects is { Count: > 0 });
+
+        // "合计*" 是五类的并集（同一张牌同时命中多项只算一次），也就是"延迟收益牌占比"的分子。
+        var anyDelayed = cards.Count(card =>
+            card.Countdown is not null ||
+            card.EndOfOwnTurnEffects is { Count: > 0 } ||
+            card.UnevolvedEndOfOwnTurnEffects is { Count: > 0 } ||
+            card.EvolvedEndOfOwnTurnEffects is { Count: > 0 } ||
+            card.LastWordsEffects is { Count: > 0 } ||
+            card.PassiveEffects is { Count: > 0 } ||
+            EffectsOf(card).Any(effect => effect.Kind
+                is CardEffectKind.IncreaseOwnMaxPlayPoints
+                or CardEffectKind.IncreaseOwnMaxPlayPointsAndDrawIfAtTen));
+
+        Console.WriteLine(
+            $"{deck.Name,-18}{cards.Average(card => card.Cost),6:F2}{cards.Max(card => card.Cost),7}" +
+            $"{ramp,6}{countdown,6}{endOfTurn,7}{lastWords,7}{passive,6}" +
+            $"{$"{anyDelayed}/40",7}");
+    }
+}
+
+/// <summary>一张牌所有会产生效果的地方，去重前的原始枚举（用于统计"这张牌有没有某类效果"）。</summary>
+private static IEnumerable<CardEffect> EffectsOf(CardDefinition card)
+{
+    var lists = new[]
+    {
+        card.FanfareEffects,
+        card.SpellEffects,
+        card.EvolutionEffects,
+        card.SuperEvolutionEvolutionEffects,
+        card.LastWordsEffects,
+        card.EndOfOwnTurnEffects,
+        card.AttackEffects,
+        card.OnEvolveEffects,
+        card.PassiveEffects
+    };
+
+    foreach (var list in lists)
+    {
+        if (list is null)
+        {
+            continue;
+        }
+
+        foreach (var effect in list)
+        {
+            yield return effect;
+        }
+    }
+}
+
+internal static void RunSelfPlayCollection(    string[] args,
     int rollouts,
     int horizon,
     int maxDegreeOfParallelism)
@@ -432,6 +511,9 @@ internal static void RunSelfPlayCollection(
         ?? Path.Combine(ProjectRoot(), "outputs", "selfplay-samples.csv");
     // --collect-deck 把采样限定在单副卡组的镜像局上，用来做"某套牌专精"的权重拟合。
     var forcedDeckId = ReadOptionValue(args, "--collect-deck");
+    // --collect-perspective-deck 只记这套牌那一方的决策：
+    // 这样"同一套牌、不同对手"的数据才能分开采，用来验证"牌手要对不同对手换策略"。
+    var perspectiveDeckId = ReadOptionValue(args, "--collect-perspective-deck");
     var pool = forcedDeckId is not null
         ? new[] { ToBenchmarkDeck(RequireAllowedAgentMatchDeck(forcedDeckId, "--collect-deck")) }
         : DeckCatalog.All
@@ -442,6 +524,10 @@ internal static void RunSelfPlayCollection(
     Console.WriteLine(
         $"自对弈采样：{matchCount} 局 ｜ 牌手 {AgentBenchmark.DisplayName(agentKind)} ｜ " +
         $"{rollouts} 次推演 × {horizon} 回合 ｜ 卡组池 {string.Join("、", pool.Select(deck => deck.Name))}");
+    Console.WriteLine(
+        perspectiveDeckId is null
+            ? "视角：双方决策都记"
+            : $"视角：只记 {perspectiveDeckId} 那一方的决策");
 
     var stopwatch = Stopwatch.StartNew();
     var rows = WeightTools.Collect(
@@ -452,7 +538,8 @@ internal static void RunSelfPlayCollection(
         rollouts,
         horizon,
         maxDegreeOfParallelism,
-        outputPath);
+        outputPath,
+        perspectiveDeckId);
     stopwatch.Stop();
     Console.WriteLine($"写入 {rows} 条决策样本 → {outputPath}（{stopwatch.Elapsed.TotalSeconds:F1} 秒）");
 }

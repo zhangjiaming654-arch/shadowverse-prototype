@@ -56,7 +56,16 @@ public static class WeightTools
         int rollouts,
         int horizon,
         int maxDegreeOfParallelism,
-        string outputPath)
+        string outputPath,
+        /// <summary>
+        /// 只记录**用这套牌那一方**的决策。默认 null = 两边都记。
+        /// <para>
+        /// 为什么需要它：现有的样本只记了"局面特征 + 谁赢"，**没记这一行是哪个牌手在决策**。
+        /// 于是"中速梦面对郭龙时的判断"和"中速梦面对中速梦时的判断"混在同一个文件里，分不开 ——
+        /// 而"牌手要根据对手卡组换策略"这件事，恰恰只能靠这个对照来验证。
+        /// </para>
+        /// </summary>
+        string? perspectiveDeckId = null)
     {
         ArgumentNullException.ThrowIfNull(decks);
         if (decks.Count == 0)
@@ -98,6 +107,13 @@ public static class WeightTools
                     {
                         // The mulligan has no board to weigh, so it carries no usable sample.
                         if (step.BeforeState.Phase != GamePhase.Main)
+                        {
+                            return;
+                        }
+
+                        // 只看指定那一方的决策。用它才能把"同一套牌、不同对手"的数据分开采。
+                        if (perspectiveDeckId is not null &&
+                            (step.ActingPlayer == 0 ? deckA.Id : deckB.Id) != perspectiveDeckId)
                         {
                             return;
                         }
