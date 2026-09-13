@@ -295,6 +295,13 @@ if (ConsoleTools.HasOption(args, "--train-neural"))
     return;
 }
 
+// 诊断"搜索估值到底有没有信息"。极便宜：只读已经采好的样本，不跑任何对局。
+if (ConsoleTools.HasOption(args, "--diagnose-search-value"))
+{
+    ConsoleTools.RunSearchValueDiagnostics(args);
+    return;
+}
+
 // --bo10 是--stats 的另一种计数口径，两者都进批量分支。
 if (args.Contains("--stats", StringComparer.OrdinalIgnoreCase) ||
     ConsoleTools.HasOption(args, "--bo10"))

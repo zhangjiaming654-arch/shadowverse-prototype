@@ -61,6 +61,7 @@ internal static void PrintHelp()
     Console.WriteLine("  --p2-evaluator-ensemble  第二牌手开启");
     Console.WriteLine("  --train-neural <样本.csv>  训练神经网络叶子评估（--hidden / --epochs / --out / --value-source）");
     Console.WriteLine("  --value-source <outcome|search>  训练标签来源：最终胜负（默认）或旁路文件的搜索估值（蒸馏）");
+    Console.WriteLine("  --diagnose-search-value <样本.csv>  诊断搜索估值能不能预测胜负（AUC；不跑对局，只读样本）");
     Console.WriteLine("  --neural-weights <路径>  装载神经网络叶子评估，取代线性评估");
     Console.WriteLine("  2.0 预设：--horizon 1 --alternate-horizon 3 --rollouts 60");
     Console.WriteLine("    中速梦镜像：决定性胜率 76.3%（总胜率 62.2%），vs 1.0，p < 0.0001");
@@ -666,8 +667,57 @@ internal static void RunNeuralTraining(string[] args)
 }
 
 /// <summary>
-/// 解析 <c>--value-source</c>。
-/// <para>
+/// 诊断"搜索自己的估值"能多好地预测最终胜负 —— 这是**不跑对局**的证伪：
+/// 如果它没有信息（AUC ≈ 0.5），那么"蒸馏搜索估值"和"改 rollout 策略去改善搜索"两条路
+/// 都是在提升一个不存在的信号，可以立刻划掉，省下几个小时的对局。
+/// </summary>
+internal static void RunSearchValueDiagnostics(string[] args)
+{
+    var inputPath = ReadOptionValue(args, "--diagnose-search-value")
+        ?? throw new ArgumentException("--diagnose-search-value 后必须提供样本文件路径。");
+
+    Console.WriteLine($"诊断搜索估值的信息量：{inputPath}");
+    Console.WriteLine($"旁路文件：{WeightTools.SearchValuePath(inputPath)}");
+    Console.WriteLine();
+    var report = SearchValueDiagnostics.Analyze(inputPath);
+
+    Console.WriteLine($"样本 {report.Rows} 条决策（赢 {report.Wins} ｜ 输 {report.Losses}）");
+    Console.WriteLine($"搜索估值：均值 {report.MeanValue:F4} ｜ 标准差 {report.StdValue:F4}");
+    Console.WriteLine(
+        $"  赢的决策上均值 {report.MeanValueWhenWin:F4} ｜ 输的决策上均值 {report.MeanValueWhenLoss:F4}" +
+        $" ｜ 差值 {report.MeanValueWhenWin - report.MeanValueWhenLoss:F4}");
+    Console.WriteLine();
+    Console.WriteLine("按搜索估值分十档，看实际胜率是否单调：");
+    Console.WriteLine("  区间          样本数    实际胜率");
+    foreach (var (lowerBound, count, winRate) in report.Buckets)
+    {
+        Console.WriteLine(
+            $"  [{lowerBound:F1},{lowerBound + 0.1:F1})   {count,7}    {winRate,7:P2}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"★ AUC（排序法）    = {report.Auc:F4}");
+    Console.WriteLine($"  AUC（采样交叉验证）= {report.BruteForceAuc:F4}   ← 两条独立算法应当一致");
+    if (SearchValueDiagnostics.LastRankDiagnostics is { } diagnostics)
+    {
+        Console.WriteLine($"  {diagnostics}");
+    }
+    Console.WriteLine(report.Auc switch
+    {
+        < 0.53 => "结论：**几乎没有信息**。搜索自己的判断和最终胜负基本无关 —— " +
+                  "那么蒸馏它、或者改 rollout 去改善它，都是在提升一个不存在的信号。方向可以划掉。",
+        < 0.60 => "结论：信息很弱。比噪声强一点，但不足以支撑「它比叶子强」这个前提。",
+        < 0.70 => "结论：有中等信息。值得继续，但要记住它离「可靠」还很远。",
+        _ => "结论：**有明确信息**。搜索的判断确实能预测胜负，那么改善它是有意义的目标。"
+    });
+    Console.WriteLine();
+    Console.WriteLine(
+        "注意：同一局里几十个决策共享同一个胜负，样本是相关的，所以这个 AUC 不是独立样本检验，" +
+        "只能用来看「有没有信号」的量级，不能当显著性。");
+}
+
+/// <summary>
+/// 解析 <c>--value-source</c>。/// <para>
 /// **默认必须是 outcome**：这个项目里"拟合最终胜负"是失败过 9 次的目标，蒸馏（search）是
 /// 新东西，不能让它悄悄变成默认行为把旧结论污染掉。
 /// </para>
