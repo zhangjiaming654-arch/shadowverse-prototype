@@ -60,7 +60,8 @@ public static class DecisionQualityProbe
         int rollouts,
         int horizon,
         Action<string> report,
-        int treePly = 0)
+        int treePly = 0,
+        bool treeUsesSearchValue = false)
     {
         ArgumentNullException.ThrowIfNull(decks);
         ArgumentNullException.ThrowIfNull(report);
@@ -85,7 +86,8 @@ public static class DecisionQualityProbe
                 futureTurnHorizon: horizon,
                 seed: seed ^ 0x5DEECE66DUL,
                 minimumPracticalAdvantage: 0.0,
-                treePly: treePly);
+                treePly: treePly,
+                treeUsesSearchValue: treeUsesSearchValue);
             var rule = new GreedyPlayerAgent();
             var samples = new List<(double Margin, bool Disagreed, double Estimate)>();
 

@@ -313,9 +313,16 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     /// <para>
     /// 依据：报告 §19.8 实测搜索的判断已经校准、且校准与裕度无关 ⇒
     /// 瓶颈不在判断质量，在候选集太窄。
+    /// ⚠️ 实测深度 1 会崩盘（§19.9/§19.10），机理是深层用叶子评价 ⇒ 系统性高估。
     /// </para>
     /// </summary>
     private readonly int _treePly;
+
+    /// <summary>
+    /// 深层评价用哪种估计。0 = 一层叶值（便宜，**实测会崩盘**）；
+    /// 1 = 用推演估计后续动作的值（贵，是 §19.10 预注册要测的那一档）。
+    /// </summary>
+    private readonly bool _treeUsesSearchValue;
 
     /// <summary>
     /// 只让嵌套搜索负责"对手回应我这个候选动作"的第一手，对手随后的走子仍交给规则牌手。
@@ -358,7 +365,8 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         bool opponentFirstActionOnly = false,
         int ownNestedRollouts = DefaultNestedOpponentRollouts,
         int ownNestedHorizon = 0,
-        int treePly = 0)
+        int treePly = 0,
+        bool treeUsesSearchValue = false)
     {
         if (rolloutsPerAction is < 1 or > 500)
         {
@@ -468,6 +476,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         _ownNestedRollouts = ownNestedRollouts;
         _ownNestedHorizon = ownNestedHorizon > 0 ? ownNestedHorizon : null;
         _treePly = treePly;
+        _treeUsesSearchValue = treeUsesSearchValue;
         _useEvaluatorEnsemble = useEvaluatorEnsemble;
     }
 
@@ -637,7 +646,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         foreach (var action in legal)
         {
             var value = ply <= 1
-                ? OnePlyLeafValue(simulation, perspectivePlayer, action)
+                ? OnePlyValue(simulation, perspectivePlayer, action, decisionNumber)
                 : FollowUpValue(simulation, perspectivePlayer, action, decisionNumber, ply - 1);
             if (value > best)
             {
@@ -654,14 +663,68 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         return best;
     }
 
-    /// <summary>走一步之后的叶值（不做 rollout）。树的叶层用这个，刻意便宜。</summary>
-    private double OnePlyLeafValue(GameState state, int perspectivePlayer, GameAction action)
+    /// <summary>
+    /// 深层评价的单点估计。两种口径由 <c>treeUsesSearchValue</c> 选：
+    /// <list type="bullet">
+    /// <item><b>false（默认）</b>：一层叶值。便宜，但**实测会让搜索系统性高估**（§19.10）。</item>
+    /// <item><b>true</b>：用一套**独立的小推演**估计这个动作的价值 ——
+    /// 候选动作走出去、双方按 rollout 策略打完一小段、取叶值平均。
+    /// 贵得多，但它是 §19.10 预注册要测的那一档。</item>
+    /// </list>
+    /// </summary>
+    private double OnePlyValue(
+        GameState state,
+        int perspectivePlayer,
+        GameAction action,
+        long decisionNumber)
     {
-        var next = GameEngine.Apply(state, action);
-        return next.IsGameOver
-            ? next.Winner == perspectivePlayer ? 1.0 : 0.0
-            : EvaluatePosition(next, perspectivePlayer);
+        if (!_treeUsesSearchValue)
+        {
+            var next = GameEngine.Apply(state, action);
+            return next.IsGameOver
+                ? next.Winner == perspectivePlayer ? 1.0 : 0.0
+                : EvaluatePosition(next, perspectivePlayer);
+        }
+
+        // 用独立推演估计：每个动作在若干采样世界上走完剩余视野，取叶值平均。
+        var total = 0.0;
+        for (var rollout = 0; rollout < NestedRolloutBudget; rollout++)
+        {
+            var simulation = GameEngine.CreateDeterminization(
+                state, perspectivePlayer, SimulationSeed(decisionNumber, 900 + rollout));
+            simulation = GameEngine.Apply(simulation, action);
+            var targetTurn = simulation.TurnNumber + _futureTurnHorizon;
+            var steps = 0;
+            while (!simulation.IsGameOver &&
+                   simulation.TurnNumber < targetTurn &&
+                   steps < 40)
+            {
+                var legal = GameEngine.GetLegalActions(simulation);
+                if (legal.Count == 0)
+                {
+                    break;
+                }
+
+                var next = ChooseRolloutAction(
+                    simulation,
+                    simulation.ActivePlayer,
+                    legal,
+                    LookaheadRolloutPolicy.RuleAgent,
+                    simulation.ActivePlayer == perspectivePlayer);
+                simulation = GameEngine.Apply(simulation, next);
+                steps++;
+            }
+
+            total += simulation.IsGameOver
+                ? simulation.Winner == perspectivePlayer ? 1.0 : 0.0
+                : EvaluatePosition(simulation, perspectivePlayer);
+        }
+
+        return total / NestedRolloutBudget;
     }
+
+    /// <summary>深层评价（搜索值那一档）用的推演次数。刻意小 —— 它会被调用很多次。</summary>
+    private const int NestedRolloutBudget = 3;
 
     /// <summary>
     /// 用 rollout 策略把推演推进到"轮到我做决策"的下一个点。
