@@ -738,8 +738,8 @@ public sealed partial class ReplayForm : Form
 
     private void ShowEmptyState()
     {
-        _opponentLeaderLabel.Text = "Player 2 主战者\n等待对局";
-        _selfLeaderLabel.Text = "Player 1 主战者\n等待对局";
+        _opponentLeaderLabel.Text = "Player 2\n等待对局";
+        _selfLeaderLabel.Text = "Player 1\n等待对局";
         _opponentHandTitle.Text = "Player 2 手牌";
         _selfHandTitle.Text = "Player 1 手牌";
         _actionLabel.Text = "选择双方卡组、牌手和局数后，点击“生成对局”。";
@@ -754,6 +754,9 @@ public sealed partial class ReplayForm : Form
         _previousActionPreview.Text = "上一：—";
         _currentActionPreview.Text = "当前：等待生成对局。";
         _nextActionPreview.Text = "下一：—";
+        // 行动记录是另一半界面上的东西，换局时要一起清掉，否则会留着上一局的记录。
+        _logBody.Text = string.Empty;
+        _thinkingBody.Text = string.Empty;
     }
 
     private void ExportCurrentMachineReplay()
@@ -920,8 +923,11 @@ public sealed partial class ReplayForm : Form
         var leaderLabel = playerIndex == 1 ? _opponentLeaderLabel : _selfLeaderLabel;
         var handTitle = playerIndex == 1 ? _opponentHandTitle : _selfHandTitle;
         var hand = playerIndex == 1 ? _opponentHand : _selfHand;
-        leaderLabel.Text = $"Player {playerIndex + 1} 主战者\n" +
-                           $"生命 {player.Health}/{player.MaxHealth}　PP {player.CurrentPlayPoints}/{player.MaxPlayPoints}\n" +
+        // **刻意压成 3 行**：主战者那一行是 RowStyle(Absolute, 102) 的固定高度，
+        // 排 4 行在 125% DPI 下会把最后一行裁掉 —— 用户实测"看不到墓地数量"就是这么来的。
+        // 加行之前先看这里还剩多少高度。
+        leaderLabel.Text = $"Player {playerIndex + 1}：生命 {player.Health}/{player.MaxHealth}\n" +
+                           $"PP {player.CurrentPlayPoints}/{player.MaxPlayPoints}　" +
                            $"EP {player.EvolutionPoints}　SEP {player.SuperEvolutionPoints}\n" +
                            $"牌库 {player.Deck.Count}　墓地 {player.Graveyard.Count}";
         handTitle.Text = $"Player {playerIndex + 1} 手牌（{player.Hand.Count}）";
@@ -1295,11 +1301,15 @@ public sealed partial class ReplayForm : Form
             : $"；【进化时】对 {FollowerText(target)} 造成{damage}点伤害，剩余体力 {targetAfter.CurrentDefense}";
     }
 
+    /// <summary>
+    /// 主战者信息标签。字号刻意用 9 而不是 10 —— 这块地方是固定高的，
+    /// 字号一大就会把最后一行（牌库／墓地）挤掉，而在 125% DPI 下尤其明显。
+    /// </summary>
     private static Label CreateLeaderLabel() => new()
     {
         Dock = DockStyle.Fill,
         ForeColor = Color.White,
-        Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold),
+        Font = new Font("Microsoft YaHei UI", 9, FontStyle.Bold),
         TextAlign = ContentAlignment.MiddleCenter
     };
 

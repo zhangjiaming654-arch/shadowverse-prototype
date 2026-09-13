@@ -47,10 +47,13 @@ public sealed partial class ReplayForm
     /// <summary>思考面板最多列几个候选。列表太长会把面板撑满，反而不想看。</summary>
     private const int ThinkingRows = 6;
 
+    /// <summary>行动记录最多保留多少步。再多就得滚，而滚起来就没法"一眼看到刚才发生了什么"。</summary>
+    private const int ActionLogLines = 40;
+
     private readonly Panel _humanPanel = new()
     {
         Dock = DockStyle.Right,
-        Width = 300,
+        Width = 340,
         BackColor = Color.FromArgb(24, 34, 46),
         Padding = new Padding(8)
     };
@@ -59,8 +62,9 @@ public sealed partial class ReplayForm
     private readonly Label _humanStatus = new()
     {
         Dock = DockStyle.Top,
-        Height = 84,
+        Height = 96,
         ForeColor = Color.FromArgb(198, 214, 232),
+        Font = new Font("Microsoft YaHei UI", 8.5F),
         Text = "选好你用的卡组（P1）和对手牌手（P2），然后开始。"
     };
 
@@ -84,7 +88,7 @@ public sealed partial class ReplayForm
     private readonly Label _agentLegend = new()
     {
         Dock = DockStyle.Top,
-        Height = 92,
+        Height = 74,
         ForeColor = Color.FromArgb(150, 172, 196),
         Font = new Font("Consolas", 8F),
         Text =
@@ -149,6 +153,40 @@ public sealed partial class ReplayForm
 
     private IPlayerAgent? _opponentAgentInstance;
     private bool _opponentSupportsThinking;
+
+    private readonly Panel _logPanel = new()
+    {
+        Dock = DockStyle.Bottom,
+        Height = 150,
+        BackColor = Color.FromArgb(18, 27, 38),
+        Padding = new Padding(6)
+    };
+
+    private readonly Label _logTitle = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 18,
+        Text = "行动记录（最新在上）",
+        ForeColor = Color.FromArgb(255, 214, 130),
+        Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold)
+    };
+
+    /// <summary>
+    /// 同上，用只读文本框是为了白拿滚动条 —— Dock / AutoScroll 和自动高度的组合在 WinForms 里
+    /// 很难一次写对，而界面我没法自动化验证。
+    /// </summary>
+    private readonly TextBox _logBody = new()
+    {
+        Dock = DockStyle.Fill,
+        Multiline = true,
+        ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical,
+        BackColor = Color.FromArgb(18, 27, 38),
+        ForeColor = Color.FromArgb(198, 214, 232),
+        BorderStyle = BorderStyle.None,
+        Font = new Font("Consolas", 8.5F),
+        TabStop = false
+    };
 
     private readonly object _liveGate = new();
     private List<MatchStep>? _liveSteps;
@@ -218,10 +256,14 @@ public sealed partial class ReplayForm
 
         _thinkingPanel.Controls.Add(_thinkingBody);
         _thinkingPanel.Controls.Add(_thinkingTitle);
+        _logPanel.Controls.Add(_logBody);
+        _logPanel.Controls.Add(_logTitle);
 
         _humanPanel.Controls.Add(_humanActions);
         // 顺序有讲究：WinForms 的 Dock 布局是"后加进去的先排"。
         // Fill 必须最先加（最后排、吃掉剩下的空间），Bottom 要排在 Fill 之后、各个 Top 之前。
+        // 想要"思考在上、记录在下"，就得反着加：先 log 再 thinking。
+        _humanPanel.Controls.Add(_logPanel);
         _humanPanel.Controls.Add(_thinkingPanel);
         _humanPanel.Controls.Add(_humanHint);
         _humanPanel.Controls.Add(_humanStatus);
@@ -1472,6 +1514,8 @@ public sealed partial class ReplayForm
         // 思考面板**放在实时对局的判断之前**更新：打完之后一样能翻页回看对手每一步在想什么 ——
         // 那正是"复盘牌手决策"最有价值的时候。
         UpdateOpponentThinking();
+        // 行动记录同样：它是纯回放信息，实时对局和事后复盘都要有。
+        UpdateActionLog();
 
         if (!_liveMatchRunning)
         {
@@ -1712,9 +1756,49 @@ public sealed partial class ReplayForm
     {
         var self = observation.Self;
         var opponent = observation.Opponent;
-        return $"你 {self.Health} 血 ｜ PP {self.CurrentPlayPoints}/{self.MaxPlayPoints}" +
-               $" ｜ 进化 {self.EvolutionPoints}+{self.SuperEvolutionPoints}\n" +
-               $"对手 {opponent.Health} 血 ｜ 手牌 {opponent.HandCount} 张";
+
+        // 行要短。这段文字会先拼上一行"对手：…"和"第 N 回合"，太长就会换行把下面的内容顶掉 ——
+        // 用户实测"看不到墓地数量"就是版面被挤没的。
+        return $"你 {self.Health}血 PP{self.CurrentPlayPoints}/{self.MaxPlayPoints}" +
+               $" EP{self.EvolutionPoints}+{self.SuperEvolutionPoints}\n" +
+               $"牌库 {self.DeckCount}　墓地 {self.GraveyardCount}\n" +
+               $"敌方 {opponent.Health}血 手牌{opponent.HandCount}" +
+               $"　牌库 {opponent.DeckCount}　墓地 {opponent.GraveyardCount}";
+    }
+
+    /// <summary>
+    /// 行动记录：把最近若干步倒序列出来（最新在上）。
+    /// <para>
+    /// 用户实测提的："看不到对面上回合出了什么牌做了什么动作"。
+    /// 回放底部那排"上一／当前／下一"只显示相邻三步，而对手一个回合有十几步 ——
+    /// 等轮到你的时候，他前面做了什么早翻过去了。
+    /// </para>
+    /// <para>
+    /// 这块和实时对局无关，纯回放模式一样有用，所以**不受 _liveMatchRunning 限制**。
+    /// </para>
+    /// </summary>
+    private void UpdateActionLog()
+    {
+        if (_steps.Count == 0)
+        {
+            _logBody.Text = string.Empty;
+            return;
+        }
+
+        var last = Math.Min(_currentStepIndex, _steps.Count - 1);
+        if (last < 0)
+        {
+            _logBody.Text = "（还没开始）";
+            return;
+        }
+
+        var lines = new List<string>();
+        for (var index = last; index >= 0 && lines.Count < ActionLogLines; index--)
+        {
+            lines.Add(ShortDescription(_steps[index]));
+        }
+
+        _logBody.Text = string.Join(Environment.NewLine, lines);
     }
 
     /// <summary>
