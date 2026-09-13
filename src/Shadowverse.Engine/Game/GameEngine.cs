@@ -315,8 +315,7 @@ public static class GameEngine
     /// 【进化时】【模式】: the card's own evolution modes, the Fanfare modes it repeats, or nothing.
     /// </summary>
     private static IReadOnlyList<ModeDefinition>? GetEvolutionModeOptions(CardDefinition definition) =>
-        definition.EvolutionModeOptions ??
-        (definition.EvolutionRepeatsFanfareMode ? definition.FanfareModeOptions : null);
+        definition.EvolutionModeChoices;
 
     private static IReadOnlyList<int?> GetEvolutionModeChoiceOptions(CardDefinition definition) =>
         GetEvolutionModeOptions(definition) is { Count: > 0 } options

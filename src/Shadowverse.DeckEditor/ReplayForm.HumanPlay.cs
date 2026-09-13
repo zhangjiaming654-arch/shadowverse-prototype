@@ -111,6 +111,16 @@ public sealed partial class ReplayForm
     private readonly HashSet<int> _mulliganMarks = [];
 
     /// <summary>
+    /// 正在等用户选【模式】的那些候选动作。非空时整个右侧面板换成选模式界面。
+    /// <para>
+    /// 为什么要单独一个状态：模式卡牌一次手势会筛出"同一张牌、同一个目标、只有模式不同"的好几个动作，
+    /// 它们靠通用菜单完全没法区分（文字一模一样）。模式名本身就是完整的能力说明，
+    /// 所以必须专门铺出来给用户选。
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<GameAction>? _modeSelection;
+
+    /// <summary>
     /// 整个窗体复用的一个弹出菜单。**不要每次新建再 Dispose** —— 见 <see cref="ShowMenu"/>。
     /// </summary>
     private ContextMenuStrip? _actionMenu;
@@ -310,6 +320,7 @@ public sealed partial class ReplayForm
         _pendingObservation = observation;
         _pendingActions = legalActions;
         _humanShowAllActions = false;
+        _modeSelection = null;
 
         if (observation.Phase == GamePhase.Mulligan)
         {
@@ -345,6 +356,13 @@ public sealed partial class ReplayForm
     {
         if (_pendingActions is not { } actions || _pendingObservation is not { } observation)
         {
+            return;
+        }
+
+        // 正在等用户选【模式】：这时整个面板换成选模式界面，其它按钮全部让位。
+        if (_modeSelection is { } modeCandidates)
+        {
+            BuildModeChoices(modeCandidates, observation);
             return;
         }
 
@@ -431,10 +449,99 @@ public sealed partial class ReplayForm
     {
         _pendingActions = null;
         _pendingObservation = null;
+        _modeSelection = null;
         _mulliganMarks.Clear();
         ClearHumanActions();
         _humanHint.Text = string.Empty;
         _humanChoice?.TrySetResult(action);
+    }
+
+    /// <summary>清掉旧按钮再铺新的。两件事必须成对做，所以包成一个方法。</summary>
+    private void RefreshActionButtons()
+    {
+        ClearHumanActions();
+        RebuildHumanActions();
+    }
+
+    /// <summary>
+    /// 【模式】卡牌的专门选择界面。
+    /// <para>
+    /// 每个模式一个大按钮，标签直接用模式名 —— 模式名本身就是完整的能力说明
+    /// （"对对手所有随从造成5点伤害并回复1点进化点"），不需要再翻译一层。
+    /// 通用菜单在这里是不行的：所有候选的文字完全一样，用户没法选。
+    /// </para>
+    /// </summary>
+    private void BuildModeChoices(IReadOnlyList<GameAction> candidates, GameObservation observation)
+    {
+        var header = new Label
+        {
+            AutoSize = false,
+            Width = Math.Max(180, _humanActions.ClientSize.Width - 24),
+            Height = 22,
+            Text = "选择要发动的【模式】",
+            ForeColor = Color.FromArgb(255, 214, 130),
+            Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold)
+        };
+        _humanActions.Controls.Add(header);
+
+        foreach (var group in candidates.GroupBy(HumanActionResolver.ModeIndexOf))
+        {
+            var sameMode = group.ToList();
+            var index = group.Key ?? 0;
+            var modeName = HumanActionResolver.ModeNameOf(observation, sameMode[0]) ?? $"模式 {index + 1}";
+
+            var button = CreateHumanButton($"{index + 1}. {modeName}", primary: true);
+            // 模式名可以很长，按钮要够高并且允许折行，不能省略号截断 ——
+            // 截断之后各模式看起来又会差不多。
+            button.Height = 52;
+            button.AutoEllipsis = false;
+            button.Click += (_, _) =>
+            {
+                _modeSelection = null;
+                if (sameMode.Count == 1)
+                {
+                    CommitHumanAction(sameMode[0]);
+                    return;
+                }
+
+                // 选完模式还有多个变体（例如同一模式下还要选目标），交给通用菜单。
+                RefreshActionButtons();
+                ShowActionMenu(sameMode);
+            };
+            _humanActions.Controls.Add(button);
+        }
+
+        var cancel = CreateHumanButton("取消（重新选择）", primary: false);
+        cancel.Click += (_, _) =>
+        {
+            _modeSelection = null;
+            _humanHint.Text = string.Empty;
+            RefreshActionButtons();
+        };
+        _humanActions.Controls.Add(cancel);
+    }
+
+    /// <summary>
+    /// 一个手势筛出多个合法变体时的分派。
+    /// 只在模式上不同的 → 进专门的选模式界面；其余 → 通用菜单。
+    /// </summary>
+    private void BeginAmbiguityResolution(IReadOnlyList<GameAction> candidates)
+    {
+        if (candidates.Count == 1)
+        {
+            CommitHumanAction(candidates[0]);
+            return;
+        }
+
+        if (HumanActionResolver.IsModeOnlyChoice(candidates))
+        {
+            _modeSelection = candidates;
+            _humanHint.Text = "这张牌要选一个【模式】发动，在右边选。";
+            RefreshActionButtons();
+            return;
+        }
+
+        ShowActionMenu(candidates);
     }
 
     /// <summary>
@@ -701,7 +808,13 @@ public sealed partial class ReplayForm
                     return item;
                 }
 
-                // 多个变体（选模式 / 选目标）：展开成二级菜单，不替用户猜。
+                // 多个变体：只在模式上不同就交给专门的选模式界面，否则展开成二级菜单。
+                if (HumanActionResolver.IsModeOnlyChoice(variants))
+                {
+                    item.Click += (_, _) => BeginAmbiguityResolution(variants);
+                    return item;
+                }
+
                 foreach (var variant in variants)
                 {
                     var child = new ToolStripMenuItem(DescribeAction(observation, variant));
@@ -1120,15 +1233,9 @@ public sealed partial class ReplayForm
 
         _humanHint.Text = string.Empty;
 
-        if (candidates.Count == 1)
-        {
-            CommitHumanAction(candidates[0]);
-            return;
-        }
-
-        // 同一个手势对应多个合法变体（选模式 / 从手牌再选一张牌）。
-        // 不猜，直接把引擎给的变体列出来让用户选。
-        ShowActionMenu(candidates);
+        // 同一个手势可能对应多个合法变体（选模式 / 从手牌再选一张牌 / 多个目标）。
+        // 不猜：只在模式上不同就进专门的选模式界面，其余弹通用菜单。
+        BeginAmbiguityResolution(candidates);
     }
 
     // ───────────────────────────── 落点命中判定 ─────────────────────────────
@@ -1372,54 +1479,11 @@ public sealed partial class ReplayForm
                $"对手 {opponent.Health} 血 ｜ 手牌 {opponent.HandCount} 张";
     }
 
-    /// <summary>把一个动作翻译成人话。认不出来的动作退回 ToString()，不隐藏任何选项。</summary>
-    private static string DescribeAction(GameObservation observation, GameAction action)
-    {
-        string CardName(int instanceId) =>
-            observation.OwnHand.FirstOrDefault(card => card.InstanceId == instanceId)?.Definition.Name
-            ?? $"#{instanceId}";
-
-        string FollowerName(int instanceId) =>
-            observation.Self.Board.FirstOrDefault(follower => follower.InstanceId == instanceId)?.CardId is { } id
-                ? CardCatalog.Get(id).Name
-                : $"#{instanceId}";
-
-        string TargetName(int instanceId) =>
-            observation.Opponent.Board.FirstOrDefault(follower => follower.InstanceId == instanceId)?.CardId
-                is { } id
-                ? CardCatalog.Get(id).Name
-                : $"#{instanceId}";
-
-        return action switch
-        {
-            MulliganAction mulligan => mulligan.ReplaceInstanceIds.Count == 0
-                ? "不换牌"
-                : "换掉：" + string.Join("、", mulligan.ReplaceInstanceIds.Select(CardName)),
-            PlayFollowerAction play => $"打出随从 {CardName(play.CardInstanceId)}" + TargetSuffix(play),
-            PlayAmuletAction amulet => $"打出护符 {CardName(amulet.CardInstanceId)}",
-            PlaySpellAction spell => $"打出法术 {CardName(spell.CardInstanceId)}" + TargetSuffix(spell),
-            PlayCrystallizeAction crystallize => $"结晶 {CardName(crystallize.CardInstanceId)}",
-            PlayAccelerateAction accelerate => $"加速 {CardName(accelerate.CardInstanceId)}",
-            EvolveAction evolve => $"进化 {FollowerName(evolve.FollowerInstanceId)}" + TargetSuffix(evolve),
-            SuperEvolveAction superEvolve => $"超进化 {FollowerName(superEvolve.FollowerInstanceId)}" + TargetSuffix(superEvolve),
-            AttackLeaderAction attackLeader => $"{FollowerName(attackLeader.AttackerInstanceId)} 攻击对方主战者",
-            AttackFollowerAction attackFollower =>
-                $"{FollowerName(attackFollower.AttackerInstanceId)} 攻击 {TargetName(attackFollower.DefenderInstanceId)}",
-            UseExtraPlayPointAction => "使用额外 PP",
-            EndTurnAction => "结束回合",
-            _ => action.ToString() ?? "未知动作"
-        };
-
-        string TargetSuffix(GameAction candidate) => candidate switch
-        {
-            PlaySpellAction { Target: EnemyLeaderTarget } => "（指定对方主战者）",
-            PlaySpellAction { Target: EnemyFollowerTarget target } =>
-                $"（指定 {TargetName(target.FollowerInstanceId)}）",
-            PlayFollowerAction { EnemyFollowerTargetInstanceIds: { Count: > 0 } ids } =>
-                "（指定 " + string.Join("、", ids.Select(TargetName)) + "）",
-            EvolveAction { EnemyFollowerTargetInstanceId: int id } => $"（指定 {TargetName(id)}）",
-            SuperEvolveAction { EnemyFollowerTargetInstanceId: int id } => $"（指定 {TargetName(id)}）",
-            _ => string.Empty
-        };
-    }
+    /// <summary>
+    /// 把一个动作翻译成人话。翻译逻辑放在引擎层（<see cref="HumanActionText"/>），
+    /// 这样"同一组候选必须能被文字区分开"这条性质才能被自检覆盖 ——
+    /// 界面自己写一份翻译，自检就够不着它，【模式】卡牌会弹出几条一模一样的选项。
+    /// </summary>
+    private static string DescribeAction(GameObservation observation, GameAction action) =>
+        HumanActionText.Describe(observation, action);
 }

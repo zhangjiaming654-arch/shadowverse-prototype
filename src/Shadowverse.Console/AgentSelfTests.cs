@@ -99,8 +99,8 @@ internal static void RunHumanActionResolverTest()
         }
 
         throw new InvalidOperationException(
-            $"人机对战手势自检失败：{failures.Count} 个合法动作没有任何手势能选中，" +
-            "真人会碰到点不到的动作。");
+            $"人机对战手势自检失败：{failures.Count} 项。可能是合法动作点不到，" +
+            "也可能是某组候选的文字无法区分（等于让用户选不了）。");
     }
 
     Console.WriteLine("Human action resolver test passed.");
@@ -108,6 +108,9 @@ internal static void RunHumanActionResolverTest()
         $"  {gameCount} 局里共 {decisions} 个真人决策点、{legalActionTotal} 个合法动作，全部能被某个手势选中。");
     Console.WriteLine("  各类手势中筛出多个变体（界面要弹菜单让用户选）的比例：");
     tally.Report();
+    Console.WriteLine(
+        $"  其中【模式】卡牌的多模式选择出现 {tally.ModeChoicesSeen} 次；" +
+        "所有候选的文字都两两不同（否则用户看着重复按钮无从选起）。");
 }
 
 /// <summary>
@@ -140,6 +143,10 @@ private sealed class GestureTally
         }
     }
 
+    public void NoteModeChoice() => ModeChoicesSeen++;
+
+    public int ModeChoicesSeen { get; private set; }
+
     public void Report()
     {
         foreach (var kind in _order)
@@ -149,6 +156,52 @@ private sealed class GestureTally
             var rate = total == 0 ? 0 : 100.0 * multi / total;
             Console.WriteLine($"    {kind}：{multi}/{total} = {rate:F1}%");
         }
+    }
+}
+
+/// <summary>
+/// 一组候选动作必须<b>两两可区分</b>。
+/// <para>
+/// 界面在"需要用户从多个变体里挑"时，就是把候选的文字列出来（菜单或列表）。
+/// 两条一模一样的文字等于没有选择 —— 用户看着几个相同的按钮，无从选起。
+/// </para>
+/// <para>
+/// 【模式】卡牌最容易踩这个：同一张牌、同一个目标，只有模式不同，
+/// 文字里不带模式名就完全一样。实测就是这么发现的（一张牌弹出 4 条重复选项）。
+/// </para>
+/// <para>
+/// 这个检查之所以能成立，是因为翻译逻辑 <see cref="HumanActionText"/> 和它同在引擎层 ——
+/// 界面自己写一份翻译，这里就够不着了。
+/// </para>
+/// </summary>
+private static void VerifyDistinguishable(
+    GameObservation observation,
+    IReadOnlyList<GameAction> candidates,
+    List<string> failures,
+    GestureTally tally)
+{
+    if (candidates.Count <= 1)
+    {
+        return;
+    }
+
+    if (HumanActionResolver.IsModeOnlyChoice(candidates))
+    {
+        tally.NoteModeChoice();
+    }
+
+    var duplicates = candidates
+        .Select(candidate => HumanActionText.Describe(observation, candidate))
+        .GroupBy(label => label, StringComparer.Ordinal)
+        .Where(group => group.Count() > 1)
+        .Select(group => group.Key)
+        .ToList();
+
+    if (duplicates.Count > 0)
+    {
+        failures.Add(
+            $"回合 {observation.TurnNumber}：有 {duplicates.Count} 组候选的文字完全相同，界面上无法区分：" +
+            string.Join(" ｜ ", duplicates));
     }
 }
 
@@ -169,6 +222,7 @@ private static void CollectGestureReach(
     void Take(string kind, IReadOnlyList<GameAction> candidates)
     {
         tally.Add(kind, candidates.Count);
+        VerifyDistinguishable(observation, candidates, failures, tally);
         foreach (var candidate in candidates)
         {
             reachable.Add(candidate);

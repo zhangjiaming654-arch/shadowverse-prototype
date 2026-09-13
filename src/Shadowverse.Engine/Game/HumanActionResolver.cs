@@ -1,3 +1,6 @@
+using Shadowverse.Engine.Cards;
+using Shadowverse.Engine.Models;
+
 namespace Shadowverse.Engine.Game;
 
 /// <summary>
@@ -157,4 +160,67 @@ public static class HumanActionResolver
     /// <summary>不需要拖拽、直接给按钮的动作。这些留在常驻按钮上。</summary>
     public static IReadOnlyList<GameAction> Direct(IReadOnlyList<GameAction> legalActions) =>
         legalActions.Where(action => action is UseExtraPlayPointAction or EndTurnAction).ToList();
+
+    // ───────────────────────────── 模式（【模式】卡牌）─────────────────────────────
+
+    /// <summary>这个动作选的是第几个模式；不涉及模式就返回 null。</summary>
+    public static int? ModeIndexOf(GameAction action) => action switch
+    {
+        PlayFollowerAction play => play.ModeChoiceIndex,
+        EvolveAction evolve => evolve.ModeChoiceIndex,
+        SuperEvolveAction super => super.ModeChoiceIndex,
+        _ => null
+    };
+
+    /// <summary>这个动作可以选的模式列表；不涉及模式就返回 null。</summary>
+    public static IReadOnlyList<ModeDefinition>? ModeOptionsOf(
+        GameObservation observation,
+        GameAction action) => action switch
+    {
+        PlayFollowerAction play => observation.OwnHand
+            .FirstOrDefault(card => card.InstanceId == play.CardInstanceId)
+            ?.Definition.FanfareModeOptions,
+        EvolveAction evolve => EvolutionModeOptionsOf(observation, evolve.FollowerInstanceId),
+        SuperEvolveAction super => EvolutionModeOptionsOf(observation, super.FollowerInstanceId),
+        _ => null
+    };
+
+    /// <summary>
+    /// 这个动作选的模式叫什么。模式名本身就是完整的能力说明
+    /// （例如"对对手所有随从造成5点伤害并回复1点进化点"），所以界面可以直接拿它当选项标签。
+    /// </summary>
+    public static string? ModeNameOf(GameObservation observation, GameAction action)
+    {
+        if (ModeIndexOf(action) is not int index || index < 0)
+        {
+            return null;
+        }
+
+        var options = ModeOptionsOf(observation, action);
+        return options is not null && index < options.Count ? options[index].Name : null;
+    }
+
+    /// <summary>
+    /// 这一组候选是不是"只在模式上不同"。是的话界面应该进<b>专门的选择模式界面</b>，
+    /// 而不是弹一个列着好几条一模一样文字的通用菜单 ——
+    /// 那样用户根本无从选起，等于没得选。
+    /// </summary>
+    public static bool IsModeOnlyChoice(IReadOnlyList<GameAction> candidates)
+    {
+        if (candidates.Count <= 1)
+        {
+            return false;
+        }
+
+        var modes = candidates.Select(ModeIndexOf).Distinct().ToList();
+        return modes.Count > 1 && modes.All(index => index is not null);
+    }
+
+    private static IReadOnlyList<ModeDefinition>? EvolutionModeOptionsOf(
+        GameObservation observation,
+        int followerInstanceId)
+    {
+        var follower = observation.Self.Board.FirstOrDefault(board => board.InstanceId == followerInstanceId);
+        return follower is null ? null : CardCatalog.Get(follower.CardId).EvolutionModeChoices;
+    }
 }

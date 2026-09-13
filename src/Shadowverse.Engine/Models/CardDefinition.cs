@@ -439,6 +439,17 @@ public sealed record CardDefinition(
     /// <summary>在手牌中发动: an end-of-turn cost reduction while the card stays in hand.</summary>
     HandCostReductionDefinition? HandCostReduction = null)
 {
+    /// <summary>
+    /// 【进化时】真正可以选的模式：卡牌自己印的进化模式，或者它重复的【入场曲】模式（两者不会同时有）。
+    /// <para>
+    /// 放在 <see cref="CardDefinition"/> 上是为了让引擎和界面用<b>同一份</b>判断 ——
+    /// 界面自己抄一遍这段"或者"迟早会和引擎分叉，而分叉的表现是"界面让你选一个引擎不认的模式"。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<ModeDefinition>? EvolutionModeChoices =>
+        EvolutionModeOptions ??
+        (EvolutionRepeatsFanfareMode ? FanfareModeOptions : null);
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Id))
