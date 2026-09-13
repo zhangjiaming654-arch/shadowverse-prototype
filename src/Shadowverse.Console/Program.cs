@@ -88,6 +88,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunOwnNestedRolloutTest();
     // 探针：rollout 策略到底有没有传导到候选动作的分数里（三份样本逐字节相同那件事）。
     AgentSelfTests.RunRolloutPolicyAffectsScoresProbe();
+    // 敏感度恒等式：决策不变 ⇒ 整局逐动作相同 ⇒ 强度必然不变（本轮最硬的结论）。
+    AgentSelfTests.RunDecisionSensitivityIdentityTest();
     return;
 }
 
@@ -307,6 +309,13 @@ if (ConsoleTools.HasOption(args, "--train-neural"))
 if (ConsoleTools.HasOption(args, "--diagnose-search-value"))
 {
     ConsoleTools.RunSearchValueDiagnostics(args);
+    return;
+}
+
+// 【决策敏感度】量"搜索的输出对自身内部有多敏感"。几分钟，不跑 BO10。
+if (ConsoleTools.HasOption(args, "--sensitivity"))
+{
+    ConsoleTools.RunDecisionSensitivity(args);
     return;
 }
 

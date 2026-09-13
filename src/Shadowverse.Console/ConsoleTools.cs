@@ -730,6 +730,205 @@ internal static AgentBenchmark.SideConfig BuildSideConfig(
         evaluatorEnsemble);
 
 /// <summary>
+/// 【决策敏感度】把一批固定局面喂给同一族牌手的不同配置，数"选的动作变了多少次"。
+/// <para>
+/// 用途见 <see cref="DecisionSensitivityProbe"/> 的注释：这个项目试过十几个方向全都不产生强度，
+/// 一个可能的统一解释是**搜索的输出对自身内部不敏感**。这个命令几分钟就能量出来，
+/// 而且它对任何杠杆都能测 —— 比"预测指标"可靠（AUC 那个筛子已被证明是恒等式，报告 §18.4）。
+/// </para>
+/// </summary>
+internal static void RunDecisionSensitivity(string[] args)
+{    var gameCount = ParseIntegerOption(
+        args, "--sensitivity-games", defaultValue: 60, minimum: 5, maximum: 5000);
+    var seed = (ulong)ParseIntegerOption(
+        args, "--sensitivity-seed", defaultValue: 20_260_920, minimum: 1, maximum: int.MaxValue);
+    var neuralPath = ReadOptionValue(args, "--sensitivity-neural");
+
+    // 只用两副允许对战的卡组采局面（中速梦 + 郭龙），和验收的卡组池一致。
+    var decks = new List<DeckDefinition>
+    {
+        AgentSelfTests.CreateMatchDeck("DECK-003", "sensitivity-a"),
+        AgentSelfTests.CreateMatchDeck("DECK-002", "sensitivity-b")
+    };
+
+    Console.WriteLine($"决策敏感度探针：{gameCount} 个局面，种子 {seed}");
+    Console.WriteLine("基线 = 3.0 的默认配置（手调 21 项权重 + 线性叶子 + 视野循环 {1,3} + 60 次推演）");
+    Console.WriteLine();
+
+    var baseline = new DecisionSensitivityProbe.Variant(
+        "基线（默认）",
+        () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0));
+
+    var variants = new List<DecisionSensitivityProbe.Variant>
+    {
+        // 0. 噪声地板：同一个基线配置再建一个实例。它变了多少，后面的数字就只能解读到那个精度。
+        new("【噪声地板】基线重建一次", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 1. 推演次数 60 → 10（六分之一，项目历史上"10 次之后饱和"的那条曲线）
+        new("推演次数 60 → 10", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 10,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 2. 视野：去掉交替视野，退成纯 H1（这是"唯一成功过的机制"，敏感度应该高）
+        new("视野 {1,3} → 纯 1", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 3. 回退闸：统计项强度 1.0 → 0（把闸门完全打开）
+        new("回退闸统计强度 1.0 → 0", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            statisticalConfidence: 0.0,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 4. 叶子：线性 → 蒸馏出来的神经网络
+        new("叶子 线性 → 神经网络(蒸馏)", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 5. rollout 策略：规则牌手 → 真前瞻（对手座位，只搜第一手，成本 2.7×）
+        new("rollout 对手 规则 → 嵌套前瞻", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0,
+            opponentRolloutPolicy: LookaheadRolloutPolicy.NestedLookahead,
+            opponentRollouts: 1,
+            opponentFirstActionOnly: true)),
+
+        // 6. 视野：{1,3} → {1,3,8}（项目里"加到第三档"的配置；长视野实测更差）
+        new("视野 {1,3} → {1,3,8}", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            thirdHorizon: 8,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 7. 推演次数 60 → 240（"加预算"的配置；实测到顶回落）
+        new("推演次数 60 → 240", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 240,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 8. 选择规则：RuleAgentFallback → PureArgmax（实测纯 argmax 更差，65:96）
+        new("选择规则 闸门 → 纯 argmax", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            selectionMode: LookaheadSelectionMode.PureArgmax,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 9. 额外PP 候选权：Search → Never（实测中性）
+        new("额外PP 候选权 Search → Never", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            extraPlayPointPolicy: LookaheadExtraPlayPointPolicy.Never,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 10. 视野 {1,3} → {1,2,3}（中间档：看改变率是不是跟着视野差走）
+        new("视野 {1,3} → {1,2,3}", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            thirdHorizon: 2,
+            minimumPracticalAdvantage: 0.0)),
+
+        // ---- 以下四条是**已知中性**的旋钮（记录在案），用来检验"裕度对比"判据 ----
+        // 用途：如果中性旋钮普遍落在"负对比"一侧（和额外PP 同侧），这个判据就能当预检用；
+        // 如果它们也落在正侧，判据就废掉。见 OVERNIGHT-REPORT §3.5。
+
+        // 11. 稳健惩罚 1.0 → 0（`--confidence` 那一路的历史"中性"记录）
+        new("【已知中性】稳健惩罚 1.0 → 0", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            robustnessPenalty: 0.0,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 12. 闸门统计强度 1.0 → 3.0（记录：强度 2.0 实测是 72:96 更差）
+        new("【已知更差】闸门统计强度 1.0 → 3.0", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            statisticalConfidence: 3.0,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 13. 我方 rollout 换成爬山评估函数（方向 C，已关闭：12:21 更差）
+        new("【已知更差】我方 rollout → 爬山", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            rolloutPolicy: LookaheadRolloutPolicy.EvaluatorGreedy,
+            minimumPracticalAdvantage: 0.0)),
+
+        // 14. 对手 rollout 换成爬山（记录：中性，42:32 p=0.41）
+        new("【已知中性】对手 rollout → 爬山", () => new LookaheadPlayerAgent(
+            rolloutsPerAction: 60,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            opponentRolloutPolicy: LookaheadRolloutPolicy.EvaluatorGreedy,
+            minimumPracticalAdvantage: 0.0))
+    };
+
+    // 注意：**没有"换权重文件"这条轴**。3.0 的权重是**静态全局**的
+    // （`LookaheadPlayerAgent.PositionWeights`，只能整体替换），没有实例级构造参数，
+    // 所以一份进程里换不了权重 —— 硬塞进去会让所有变体一起被改掉，测出来是假的。
+    // 其余五条轴都是实例级旋钮，可以在一个进程里干净对比。
+
+    // 神经网络叶子也是全局槽位，装一次；只有走 PositionWeights 的配置会用到它。
+    if (neuralPath is not null)
+    {
+        var network = NeuralPositionEvaluator.Load(neuralPath);
+        LookaheadPlayerAgent.ConfigureNeuralEvaluator(network);
+        Console.WriteLine($"已装载神经网络叶子：{neuralPath}（第 4 条轴会用它）");
+        Console.WriteLine();
+    }
+
+    var report = DecisionSensitivityProbe.Run(
+        decks, gameCount, seed, baseline, variants, Console.WriteLine);
+
+    Console.WriteLine();
+    Console.WriteLine("==================== 小结 ====================");
+    Console.WriteLine($"局面数 {report.Positions}；**噪声地板**（基线自己重问一遍）改了 "
+        + $"{report.BaselineSelfChanged}/{report.Positions}");
+    if (report.BaselineSelfChanged > 0)
+    {
+        Console.WriteLine(
+            "⚠ 噪声地板不为 0 —— 基线自己重问都会变，说明这个牌手有跨局状态，"
+            + "下面的百分比要和噪声地板一起读。");
+    }
+
+    foreach (var variant in report.Variants)
+    {
+        Console.WriteLine(
+            $"  {variant.Name,-34} {variant.Changed,4}/{variant.Decisions}  "
+            + $"({variant.ChangedShare:P1})  "
+            + $"｜ 裕度对比 {variant.MarginContrast:+0.0000;-0.0000}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("裕度对比 = 未改变处的裕度 − 改变处的裕度。**正数**表示改动集中在");
+    Console.WriteLine("「基线本来就没把握（裕度小）」的决策上 —— 那是「改动打在薄弱环节」的证据；");
+    Console.WriteLine("接近 0 表示改动和裕度无关。用来判断「有效改动改的是不是薄弱决策」这个假设。");
+}
+
+/// <summary>
 /// 诊断"搜索自己的估值"能多好地预测最终胜负 —— 这是**不跑对局**的证伪：
 /// 如果它没有信息（AUC ≈ 0.5），那么"蒸馏搜索估值"和"改 rollout 策略去改善搜索"两条路
 /// 都是在提升一个不存在的信号，可以立刻划掉，省下几个小时的对局。

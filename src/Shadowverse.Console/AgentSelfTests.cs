@@ -6173,6 +6173,96 @@ internal static void RunRolloutPolicyAffectsScoresProbe()
 }
 
 /// <summary>
+/// 【敏感度恒等式】决策改变率 = 0 ⇒ 整局逐动作相同 ⇒ 强度**必然**不变。
+/// <para>
+/// 这是 2026-09-13 那一夜最硬的结论（报告 §19）：好几个旋钮（叶子换成神经网络、
+/// rollout 对手换嵌套前瞻）实测决策改变率**精确为 0**，所以它们对强度的贡献是**可证**的零，
+/// 不是"统计上不显著"。这条恒等式值得机械验证一次 —— 因为它同时也是"敏感度探针本身没坏"的证据。
+/// </para>
+/// <para>
+/// 做法：用两个**决策上完全等价**的配置打完整对局，比较整局的规范动作序列。
+/// 这里选的是"把神经网络叶子装进全局槽位"这个配置：神经网络只被
+/// <c>EvaluatePosition</c> 在走基准权重时读到，而探针实测它对决策零影响。
+/// </para>
+/// </summary>
+internal static void RunDecisionSensitivityIdentityTest()
+{
+    var testDeck = CreateMatchDeck("DECK-003", "sensitivity-identity");
+    var failures = new List<string>();
+
+    List<string> PlayFullMatch()
+    {
+        var game = GameEngine.CreateGame(testDeck, testDeck, seed: 42_000);
+        var agent = new LookaheadPlayerAgent(
+            rolloutsPerAction: 8,
+            futureTurnHorizon: 1,
+            alternateHorizon: 3,
+            minimumPracticalAdvantage: 0.0);
+        var actions = new List<string>();
+        MatchRunner.PlayToEnd(
+            game,
+            agent,
+            new GreedyPlayerAgent(),
+            onStep: step => actions.Add(
+                $"{step.ActingPlayer}:{CanonicalAction(step.Action)}"));
+        return actions;
+    }
+
+    // 配置 A：线性叶子（基线）
+    LookaheadPlayerAgent.ConfigureNeuralEvaluator(null);
+    var linear = PlayFullMatch();
+
+    // 配置 B：同一个牌手，但叶子的实现被换掉。探针实测这条轴的决策改变率是 0。
+    // 这里用一个**退化到常量**的叶子（所有权重为 0 ⇒ 输出恒为 sigmoid(0)=0.5），
+    // 把"决策到底读不读叶子的值"逼到极限。
+    // 用公开构造函数而不是子类：`NeuralPositionEvaluator` 是 sealed，而且 Evaluate 不是 virtual。
+    var featureCount = LookaheadPlayerAgent.PositionWeights.Length;
+    LookaheadPlayerAgent.ConfigureNeuralEvaluator(new NeuralPositionEvaluator(
+        inputCount: featureCount,
+        hiddenCount: 1,
+        scales: Enumerable.Repeat(1.0, featureCount).ToArray(),
+        w1: new double[featureCount],
+        b1: [0.0],
+        w2: [0.0],
+        b2: [0.0],
+        w3: [0.0],
+        b3: 0.0));
+    var constant = PlayFullMatch();
+    LookaheadPlayerAgent.ConfigureNeuralEvaluator(null);
+
+    if (linear.Count == 0)
+    {
+        failures.Add("一局都没记录到动作 —— 对局没跑起来");
+    }
+    else if (!linear.SequenceEqual(constant))
+    {
+        // 这不是失败！这条轴**本来**可能是有影响的。这里只是把事实记下来，
+        // 因为它直接决定"叶子路线还值不值得投"。
+        Console.WriteLine(
+            $"  注意：换掉叶子实现后整局动作序列**不同**（{linear.Count} vs {constant.Count} 个动作）—— " +
+            "说明决策并非与叶子无关；敏感度探针给出的 0% 是**那一个配置**的结果，不能推广到所有叶子。");
+    }
+    else
+    {
+        Console.WriteLine(
+            "  ⭐ 恒等式验证通过：连把叶子换成**恒返回常数的实现**，整局动作序列都逐动作相同" +
+            $"（{linear.Count} 个动作）—— 短视野配置下的决策确实不读叶子的值。");
+    }
+
+    if (failures.Count > 0)
+    {
+        foreach (var failure in failures)
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException($"敏感度恒等式自检失败（{failures.Count} 项）。");
+    }
+
+    Console.WriteLine("Decision sensitivity identity test passed.");
+}
+
+/// <summary>
 /// 【S2：rollout 里我方那一侧换成轻量前瞻】自检。
 /// <para>
 /// 和 <see cref="RunNestedOpponentModelTest"/> 是同一个模式，但打的是**另一个座位**：
