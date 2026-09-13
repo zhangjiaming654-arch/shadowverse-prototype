@@ -50,8 +50,12 @@ internal static void PrintHelp()
     Console.WriteLine("  --p2-alt-rollout <rule|value>  只覆盖第二牌手");
     Console.WriteLine("  --extra-pp <search|rule|never>  额外PP 的候选权：搜索自由决定 / 只有规则牌手也愿意才允许 / 完全禁止");
     Console.WriteLine("  --p2-extra-pp <search|rule|never>  只覆盖第二牌手");
-    Console.WriteLine("  --opponent-rollout <rule|value>  rollout 里对手用什么策略（默认 rule；value = 把对手当成优化者）");
-    Console.WriteLine("  --p2-opponent-rollout <rule|value>  只覆盖第二牌手");
+    Console.WriteLine("  --opponent-rollout <rule|value|nested>  rollout 里对手用什么策略（默认 rule = 1.0/2.0 行为；");
+    Console.WriteLine("                       value = 把对手当成爬山评估函数的优化者；nested = 对手是真前瞻搜索牌手）");
+    Console.WriteLine("  --p2-opponent-rollout <rule|value|nested>  只覆盖第二牌手");
+    Console.WriteLine("  --opponent-rollouts <1-500>  嵌套对手的推演次数（默认 8；嵌套搜索代价是乘法，别开大）");
+    Console.WriteLine("  --opponent-horizon <1-10>  嵌套对手的视野（默认 0 = 跟随主视野）");
+    Console.WriteLine("  --opponent-first-action-only  嵌套对手只搜「它怎么回应我」的第一手（省掉约 4 倍成本）");
     Console.WriteLine("  --alt-weights-file <路径>  载入集成用的第二套评估权重（不覆盖主权重）");
     Console.WriteLine("  --evaluator-ensemble  第一牌手开启评估函数集成（需配合 --alt-weights-file）");
     Console.WriteLine("  --p2-evaluator-ensemble  第二牌手开启");
@@ -357,8 +361,10 @@ internal static LookaheadRolloutPolicy ParseRolloutPolicy(string[] args, string 
     {
         "rule" or "greedy" or "v1" or "1.0" => LookaheadRolloutPolicy.RuleAgent,
         "value" or "evaluator" or "hill" => LookaheadRolloutPolicy.EvaluatorGreedy,
+        "nested" or "lookahead" or "search" => LookaheadRolloutPolicy.NestedLookahead,
         _ => throw new ArgumentException(
-            $"未知 rollout 策略“{value}”。可选：rule、value")
+            $"未知 rollout 策略“{value}”。可选：rule（规则牌手）、value（爬山评估函数）、" +
+            "nested（真前瞻搜索，只对 --opponent-rollout 有意义）")
     };
 }
 

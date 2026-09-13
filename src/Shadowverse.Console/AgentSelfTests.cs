@@ -5905,6 +5905,202 @@ internal static void RunLookaheadAgentTest()
 }
 
 /// <summary>
+/// 【嵌套对手模型】自检。
+/// <para>
+/// 这个自检针对一个很具体的失败模式：新分支写好了、但从来没有被执行到
+/// （枚举没接上、参数没透传、或者走进了 else 分支），于是实验"跑完了、结果是中性"，
+/// 而实际上做的是**基线行为**。那种负结果是没有意义的，而且不会报任何错。
+/// 所以这里**不**断言"打开 nested 之后动作序列一定不同" —— 那是实验结论，不是机制。
+/// 用 4 次推演这种小配置时，对手模型换了、本牌手照样选同一个动作是完全正常的结果。
+/// 断言的是**机制真的在转**：计数器证明分支进去过、嵌套对手确实在做不同的判断、结果可复现。
+/// </para>
+/// <para>
+/// <b>为什么不用 <c>SequenceEqual</c> 比动作序列</b>：`GameAction` 是 record，但
+/// <c>MulliganAction</c> / <c>PlayFollowerAction</c> 这些带 <c>IReadOnlyList&lt;int&gt;</c> 成员的
+/// record，列表是**按引用**比较的。两次跑出来的"同一手换牌"是两个不同的 List 实例，
+/// 于是 record 相等会判为 false —— 这个自检第一版就是这么错的：它报"牌手带了跨局状态"，
+/// 而实际上两条序列逐项的类型和参数都一致。所以这里先渲染成规范字符串再比。
+/// </para>
+/// </summary>
+internal static void RunNestedOpponentModelTest()
+{
+    var testDeck = CreateMatchDeck("DECK-003", "nested");
+    var failures = new List<string>();
+
+    /// <summary>
+    /// 跑一局，并返回（本牌手动作序列, 对手座位与该局同一局面下规则牌手选择不同的次数, 决定点数）。
+    /// <para>
+    /// **每次都新建所有牌手实例**：生产路径里一局就是一套实例。第一版让一个实例跨局复用，
+    /// 结果同一配置两次跑出不同序列（实例带跨局状态），被我自己的确定性断言抓到了。
+    /// 这里不绕开它，而是按生产的用法重写。
+    /// </para>
+    /// </summary>
+    (List<string> Actions, int OpponentDiffers, int Decisions) PlayOneMatch(
+        LookaheadRolloutPolicy opponentPolicy)
+    {
+        var game = GameEngine.CreateGame(testDeck, testDeck, seed: 41_700);
+        var agent = new LookaheadPlayerAgent(
+            rolloutsPerAction: 4,
+            futureTurnHorizon: 1,
+            seed: 41_701,
+            rolloutPolicy: LookaheadRolloutPolicy.RuleAgent,
+            opponentRolloutPolicy: opponentPolicy,
+            opponentRollouts: 3);
+        // 对手座位上是谁，取决于这次要测什么；两种情况下"谁坐在对手座位"是唯一的差别。
+        IPlayerAgent opponent = opponentPolicy == LookaheadRolloutPolicy.NestedLookahead
+            ? new LookaheadPlayerAgent(
+                rolloutsPerAction: 3,
+                futureTurnHorizon: 1,
+                seed: 41_701 ^ 0x9E3779B97F4A7C15UL,
+                rolloutPolicy: LookaheadRolloutPolicy.RuleAgent)
+            : new GreedyPlayerAgent();
+
+        // 只用来回答"换成搜索牌手之后，它会不会做出不一样的选择"，不参与对局。
+        var ruleReference = new GreedyPlayerAgent();
+        var actions = new List<string>();
+        var differs = 0;
+        var decisions = 0;
+
+        MatchRunner.PlayToEnd(
+            game,
+            agent,
+            opponent,
+            onStep: step =>
+            {
+                if (step.ActingPlayer == 0)
+                {
+                    actions.Add(CanonicalAction(step.Action));
+                    return;
+                }
+
+                // 换牌阶段两边的手牌都要动，这里只比主回合的对手建模。
+                if (step.BeforeState.Phase != GamePhase.Main)
+                {
+                    return;
+                }
+
+                var observation = GameEngine.ToObservation(step.BeforeState, step.ActingPlayer);
+                var legal = GameEngine.GetLegalActions(step.BeforeState);
+                decisions++;
+                if (CanonicalAction(ruleReference.ChooseAction(observation, legal))
+                    != CanonicalAction(step.Action))
+                {
+                    differs++;
+                }
+            });
+
+        return (actions, differs, decisions);
+    }
+
+    // ① 默认 == 显式规则牌手（默认值必须逐位等于基线）
+    var implicitDefault = PlayOneMatch(LookaheadRolloutPolicy.RuleAgent);
+    var explicitRule = PlayOneMatch(LookaheadRolloutPolicy.RuleAgent);
+    if (!implicitDefault.Actions.SequenceEqual(explicitRule.Actions))
+    {
+        failures.Add("同一份种子跑两次、对手都用规则牌手，动作序列却不一致 —— 牌手带了跨局状态");
+    }
+
+    // ② 开关必须真的接上：计数器证明 nested 分支进去过
+    var before = LookaheadPlayerAgent.NestedOpponentDecisionCount() ?? 0;
+    var nested = PlayOneMatch(LookaheadRolloutPolicy.NestedLookahead);
+    var after = LookaheadPlayerAgent.NestedOpponentDecisionCount() ?? 0;
+    var nestedCalls = after - before;
+    if (nested.Actions.Count == 0)
+    {
+        failures.Add("嵌套对手那一局一个动作都没记录到 —— 对局没跑起来");
+    }
+    else if (nestedCalls == 0)
+    {
+        failures.Add(
+            "嵌套对手模型的调用计数没有增加 —— nested 分支**一次都没进去**" +
+            "（枚举没接上 / 参数没透传）。这种「跑了但没测到」的负结果没有意义。");
+    }
+
+    // ③ 嵌套对手必须**不是**规则牌手的换名：它要在同一批局面上明显做出不同判断。
+    //    没有这一条，②的计数器可以靠"进去了但里面还是调规则牌手"骗过去。
+    if (nested.Decisions == 0)
+    {
+        failures.Add("嵌套对手对照一次都没跑到 —— 对局没产生决策点");
+    }
+    else if (nested.OpponentDiffers * 4 < nested.Decisions)
+    {
+        failures.Add(
+            $"嵌套对手作为对手座位，只有 {nested.OpponentDiffers}/{nested.Decisions} 次与规则牌手选择不同 —— " +
+            "它基本就是一个换名的规则牌手，那这个实验测的不是「会搜索的对手」。");
+    }
+
+    // ④ 嵌套搜索不能有跨决策隐藏状态：同配置重跑（新实例）必须逐动作一致
+    var nestedAgain = PlayOneMatch(LookaheadRolloutPolicy.NestedLookahead);
+    if (!nested.Actions.SequenceEqual(nestedAgain.Actions))
+    {
+        failures.Add("同种子两次嵌套对手的动作序列不一致 —— 嵌套搜索引入了跨决策的隐藏状态");
+    }
+
+    if (failures.Count > 0)
+    {
+        foreach (var failure in failures)
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException($"嵌套对手模型自检失败（{failures.Count} 项）。");
+    }
+
+    Console.WriteLine("Nested opponent model test passed.");
+    Console.WriteLine($"  开关已接上：nested 分支被调用 {nestedCalls} 次。");
+    Console.WriteLine(
+        $"  嵌套对手确实是搜索牌手：坐在对手座位上，同一批局面下与规则牌手选择不同 " +
+        $"{nested.OpponentDiffers}/{nested.Decisions} 次。");
+    Console.WriteLine(
+        $"  本牌手动作序列：对手=规则牌手 {implicitDefault.Actions.Count} 个 ｜ " +
+        $"对手=嵌套前瞻 {nested.Actions.Count} 个（小配置下换对手模型不必然改变选择，" +
+        "所以这里只押机制、不押结论）。");
+}
+
+/// <summary>
+/// 把一个动作渲染成规范字符串，用来做**结构**比较（而不是 record 的引用比较）。
+/// 带上所有目标 ID，所以"选了不同的牌/随从"一定会体现出来。
+/// </summary>
+private static string CanonicalAction(GameAction action) => action switch
+{
+    MulliganAction mulligan => $"mulligan[{string.Join('|', mulligan.ReplaceInstanceIds)}]",
+    PlayFollowerAction play =>
+        $"follower[{play.CardInstanceId};{play.HandCardTargetInstanceId};" +
+        $"{Join(play.EnemyFollowerTargetInstanceIds)};{play.ModeChoiceIndex};" +
+        $"{Join(play.OwnHandCardTargetInstanceIds)}]",
+    PlayAmuletAction amulet => $"amulet[{amulet.CardInstanceId}]",
+    PlayCrystallizeAction crystallize => $"crystallize[{crystallize.CardInstanceId}]",
+    PlayAccelerateAction accelerate => $"accelerate[{accelerate.CardInstanceId}]",
+    PlaySpellAction spell =>
+        $"spell[{spell.CardInstanceId};{DescribeTarget(spell.Target)};" +
+        $"{Join(spell.OwnHandCardTargetInstanceIds)}]",
+    EvolveAction evolve =>
+        $"evolve[{evolve.FollowerInstanceId};{evolve.ModeChoiceIndex};" +
+        $"{Join(evolve.OwnHandCardTargetInstanceIds)};{evolve.EnemyFollowerTargetInstanceId}]",
+    SuperEvolveAction superEvolve =>
+        $"super[{superEvolve.FollowerInstanceId};{superEvolve.OtherFollowerTargetInstanceId};" +
+        $"{superEvolve.ModeChoiceIndex};{Join(superEvolve.OwnHandCardTargetInstanceIds)};" +
+        $"{superEvolve.EnemyFollowerTargetInstanceId}]",
+    UseExtraPlayPointAction => "extra-pp",
+    AttackLeaderAction attackLeader => $"attack-leader[{attackLeader.AttackerInstanceId}]",
+    AttackFollowerAction attackFollower =>
+        $"attack-follower[{attackFollower.AttackerInstanceId}->{attackFollower.DefenderInstanceId}]",
+    EndTurnAction => "end-turn",
+    _ => action.GetType().Name
+};
+
+private static string DescribeTarget(SpellTarget? target) => target switch
+{
+    null => "-",
+    EnemyLeaderTarget => "leader",
+    EnemyFollowerTarget follower => $"follower:{follower.FollowerInstanceId}",
+    _ => target.GetType().Name
+};
+
+private static string Join(IReadOnlyList<int>? values) =>
+    values is null ? "-" : string.Join('|', values);
+
+/// <summary>
 /// Guard for the frozen 1.0 snapshot.
 /// <para>
 /// "1.0" is the reference opponent every 2.0 experiment is measured against, so its numbers must not

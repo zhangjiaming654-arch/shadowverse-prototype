@@ -82,6 +82,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunNeuralTrainerTest();
     // 搜索估值标签（蒸馏）：旁路文件必须逐行对齐（错位会静默配错局面），连续值必须学得进去。
     AgentSelfTests.RunNeuralSearchLabelTest();
+    // 嵌套对手模型：新分支必须真的被执行到，否则"跑了但没测到"的负结果没有意义。
+    AgentSelfTests.RunNestedOpponentModelTest();
     return;
 }
 
@@ -225,10 +227,39 @@ if (extraPlayPointPolicy != LookaheadExtraPlayPointPolicy.Search ||
 // 对手建模：rollout 里对手用哪个策略。默认规则牌手。
 var opponentRolloutPolicy = ConsoleTools.ParseRolloutPolicy(args, "--opponent-rollout");
 var secondOpponentRolloutPolicy = ConsoleTools.ParseRolloutPolicy(args, "--p2-opponent-rollout");
+// 嵌套对手模型（nested）自己的推演次数与视野。刻意比本牌手小得多——嵌套代价是乘法。
+var opponentRollouts = ConsoleTools.ParseIntegerOption(
+    args, "--opponent-rollouts", defaultValue: LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
+    minimum: 1, maximum: 500);
+var secondOpponentRollouts = ConsoleTools.ParseIntegerOption(
+    args, "--p2-opponent-rollouts", defaultValue: 0, minimum: 0, maximum: 500);
+var opponentHorizon = ConsoleTools.ParseIntegerOption(
+    args, "--opponent-horizon", defaultValue: 0, minimum: 0, maximum: 10);
+var secondOpponentHorizon = ConsoleTools.ParseIntegerOption(
+    args, "--p2-opponent-horizon", defaultValue: 0, minimum: 0, maximum: 10);
+// 嵌套对手只搜"它怎么回应我"的第一手：成本从 4.3 倍降到接近基线。
+var opponentFirstActionOnly = ConsoleTools.HasOption(args, "--opponent-first-action-only");
+var secondOpponentFirstActionOnly = ConsoleTools.HasOption(args, "--p2-opponent-first-action-only");
 if (opponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent ||
     secondOpponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent)
 {
     Console.WriteLine($"对手建模：第一牌手 {opponentRolloutPolicy} ｜ 第二牌手 {secondOpponentRolloutPolicy}。");
+    if (opponentRolloutPolicy == LookaheadRolloutPolicy.NestedLookahead ||
+        secondOpponentRolloutPolicy == LookaheadRolloutPolicy.NestedLookahead)
+    {
+        // 口径必须跟着输出走：这个模型的强度是"会搜索"，不是 2.0 的真实强度。
+        var firstNested = opponentRolloutPolicy == LookaheadRolloutPolicy.NestedLookahead
+            ? opponentRollouts
+            : 0;
+        var secondNested = secondOpponentRolloutPolicy == LookaheadRolloutPolicy.NestedLookahead
+            ? (secondOpponentRollouts > 0 ? secondOpponentRollouts : opponentRollouts)
+            : 0;
+        Console.WriteLine(
+            $"  嵌套对手模型：推演 {firstNested}/{secondNested} 次" +
+            $"（本牌手是 {lookaheadRollouts} 次；嵌套搜索代价是乘法，所以这里刻意开小）" +
+            $" ｜ 视野 {(opponentHorizon > 0 ? opponentHorizon : lookaheadHorizon)}" +
+            (secondOpponentHorizon > 0 ? $"/{secondOpponentHorizon}" : string.Empty));
+    }
 }
 
 // 换牌专用视野。0 = 跟随主回合视野（1.0 的行为）。
@@ -323,6 +354,12 @@ if (args.Contains("--stats", StringComparer.OrdinalIgnoreCase) ||
             secondExtraPlayPointPolicy,
             opponentRolloutPolicy,
             secondOpponentRolloutPolicy,
+            opponentRollouts,
+            secondOpponentRollouts,
+            opponentHorizon,
+            secondOpponentHorizon,
+            opponentFirstActionOnly,
+            secondOpponentFirstActionOnly,
             evaluatorEnsemble,
             secondEvaluatorEnsemble),
         benchmarkDecks);

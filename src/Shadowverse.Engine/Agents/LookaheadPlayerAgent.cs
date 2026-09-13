@@ -90,7 +90,35 @@ public enum LookaheadRolloutPolicy
     /// completion is self-consistent with the final score instead of following a different,
     /// hand-written preference order.
     /// </summary>
-    EvaluatorGreedy
+    EvaluatorGreedy,
+
+    /// <summary>
+    /// 只用于**对手座位**：rollout 里的对手由一个真正的前瞻搜索牌手代打，而不是规则牌手。
+    /// <para>
+    /// 这是 S3（"对手建模"）的**强形式**，和已经试过的两次都不一样：
+    /// </para>
+    /// <list type="bullet">
+    /// <item>目录里的"对手用爬山"（<see cref="EvaluatorGreedy"/>）测出中性（42:32，p=0.41）。
+    /// 那是把一个**更弱**的东西放到对手座位上 —— 用它当对手模型比规则牌手还弱，
+    /// 因为评估函数本身就是整条链上最弱的一环。</item>
+    /// <item>真正的对手是**前瞻搜索牌手 2.0**，比规则牌手强得多。所以"世界模型是错的"
+    /// 这个诊断（`AGENT-STRENGTH-REPORT.md` 第三轮："对手其实是前瞻，世界模型是系统性错的"）
+    /// 从来**没有**在强形式下被测过。</item>
+    /// </list>
+    /// <para>
+    /// 这一档把 rollout 里的对手换成一个真前瞻牌手，用它自己的视角搜索。
+    /// 代价是嵌套搜索，所以它有自己的（小得多）推演次数与视野，见构造函数的
+    /// <c>opponentRollouts</c> / <c>opponentHorizon</c>。
+    /// </para>
+    /// <para>
+    /// <b>实测成本（2026-09-13，中速梦镜像，1 个 BO10 = 10 局）</b>：
+    /// 基线 49 秒 ｜ 嵌套（对手 1 次推演、对手每个动作都搜）**210 秒**，4.3 倍。
+    /// 整轮验收会从 1.5 小时涨到 5.8 小时，所以又加了
+    /// <c>opponentFirstActionOnly</c>：只搜"对手回应我这一步"的那一次，
+    /// 对手随后的走子仍交给规则牌手。
+    /// </para>
+    /// </summary>
+    NestedLookahead
 }
 
 /// <summary>
@@ -113,6 +141,22 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     // 所以现在这个问题变成"让位让多少才最优"，旋钮是下面这个强度系数。
     private const double DefaultStatisticalConfidence = 1.0;
 
+    /// <summary>
+    /// 嵌套对手模型（<see cref="LookaheadRolloutPolicy.NestedLookahead"/>）的默认推演次数。
+    /// <para>
+    /// 为什么是 8 而不是 60：嵌套搜索的代价是**乘法**。本牌手对每个候选动作跑 60 次推演，
+    /// 每次推演里对手还要为它的每个候选动作跑 <c>opponentRollouts</c> 次 ——
+    /// 60×60 会让一局的一步决策从毫秒级涨到秒级。
+    /// </para>
+    /// <para>
+    /// 8 次仍然明显强于"规则牌手"（按报告 §三的扫描，搜索在 1→10 次之间收益极陡：
+    /// 52% → 90%），所以它足以代表"对手是搜索牌手"这件事。
+    /// 这也是一个**必须标注的口径**：它模拟的是"一个弱得多但会搜索的对手"，
+    /// 不是 2.0 的真实强度。
+    /// </para>
+    /// </summary>
+    public const int DefaultNestedOpponentRollouts = 8;
+
     private static long _decisionsSeen;
     private static long _plannerMatchesRuleAgent;
     private static long _decisionsOverriddenByRail;
@@ -125,6 +169,23 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     private static long _snrMilliSum;
     private static long _leafSpreadMilliSum;
     private static long _varianceSamples;
+
+    /// <summary>
+    /// 嵌套对手模型被调用了几次。
+    /// <para>
+    /// 纯粹是**可观测性**，不参与任何决策（只被 Interlocked 加减和读取）。
+    /// 存在的理由：`--opponent-rollout nested` 有一条"看起来跑了、其实走的是基线分支"的失败路径，
+    /// 那会产出一个**没有意义的负结果**。自检靠这个计数确认分支真的进去过。
+    /// </para>
+    /// </summary>
+    private static long _nestedOpponentDecisions;
+
+    /// <summary>嵌套对手模型累计被调用的次数；返回 null 表示一次都没用过。</summary>
+    public static long? NestedOpponentDecisionCount()
+    {
+        var count = Interlocked.Read(ref _nestedOpponentDecisions);
+        return count == 0 ? null : count;
+    }
 
     /// <summary>
     /// 决策信噪比：前两名候选的估值差距 ÷ 两者的配对标准误。**越低说明搜索越分不清好坏**，
@@ -209,6 +270,29 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     private readonly LookaheadRolloutPolicy _opponentRolloutPolicy;
     private readonly bool _useEvaluatorEnsemble;
 
+    /// <summary>嵌套对手模型（<see cref="LookaheadRolloutPolicy.NestedLookahead"/>）的推演次数。</summary>
+    private readonly int _opponentRollouts;
+
+    /// <summary>嵌套对手模型的视野。null = 用本牌手自己的主视野。</summary>
+    private readonly int? _opponentHorizon;
+
+    /// <summary>
+    /// 只让嵌套搜索负责"对手回应我这个候选动作"的第一手，对手随后的走子仍交给规则牌手。
+    /// <para>
+    /// 为什么要这个开关注释在 <see cref="LookaheadRolloutPolicy.NestedLookahead"/> 上：
+    /// 对手每个动作都搜是 4.3 倍成本，整轮验收要 5.8 小时。
+    /// 而"对手会怎么回应我"恰恰是一层就够的信息，所以只搜第一手是最省的近似。
+    /// </para>
+    /// </summary>
+    private readonly bool _opponentFirstActionOnly;
+
+    /// <summary>
+    /// 懒建的嵌套对手。**只用来取它的 <c>ChooseAction</c> 结果**，所以复用一份实例是安全的：
+    /// 它内部的 <c>LastDecision</c> 和决策计数不会被读，检索也不依赖跨决策的状态。
+    /// 每次推演都新建一个的话，一局要多分配几万个对象。
+    /// </summary>
+    private LookaheadPlayerAgent? _nestedOpponent;
+
     public LookaheadPlayerAgent(
         int rolloutsPerAction = 60,
         int futureTurnHorizon = 3,
@@ -224,7 +308,10 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         LookaheadRolloutPolicy alternateRolloutPolicy = LookaheadRolloutPolicy.RuleAgent,
         LookaheadExtraPlayPointPolicy extraPlayPointPolicy = LookaheadExtraPlayPointPolicy.Search,
         LookaheadRolloutPolicy opponentRolloutPolicy = LookaheadRolloutPolicy.RuleAgent,
-        bool useEvaluatorEnsemble = false)
+        bool useEvaluatorEnsemble = false,
+        int opponentRollouts = DefaultNestedOpponentRollouts,
+        int opponentHorizon = 0,
+        bool opponentFirstActionOnly = false)
     {
         if (rolloutsPerAction is < 1 or > 500)
         {
@@ -267,6 +354,16 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             throw new ArgumentOutOfRangeException(nameof(thirdHorizon), "第三档视野必须是 0 到 10；0 表示不用。");
         }
 
+        if (opponentRollouts is < 1 or > 500)
+        {
+            throw new ArgumentOutOfRangeException(nameof(opponentRollouts), "嵌套对手的推演次数必须是 1 到 500。");
+        }
+
+        if (opponentHorizon is < 0 or > 10)
+        {
+            throw new ArgumentOutOfRangeException(nameof(opponentHorizon), "嵌套对手的视野必须是 0 到 10；0 表示跟随主视野。");
+        }
+
         _rolloutsPerAction = rolloutsPerAction;
         _futureTurnHorizon = futureTurnHorizon;
         _seed = seed == 0 ? 1UL : seed;
@@ -298,14 +395,23 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         // 真实对手是 2.0/3.0 级的搜索牌手，所以后者才是错的模型。
         // 注意：EvaluatorGreedy **双方都用**时是负收益（实测 12:21），
         // 但"只给对手用"从没测过，两者是完全不同的实验。
+        //
+        // NestedLookahead 是更强的那个版本：对手座位上放一个**真前瞻牌手**。
+        // 缺省推演次数刻意远小于本牌手（嵌套搜索会乘起来），但它仍然是"会搜索的对手"，
+        // 而不是"更弱的对手"——这是这次真正要测的东西。
         _opponentRolloutPolicy = opponentRolloutPolicy;
+        _opponentRollouts = opponentRollouts;
+        _opponentHorizon = opponentHorizon > 0 ? opponentHorizon : null;
+        _opponentFirstActionOnly = opponentFirstActionOnly;
         _useEvaluatorEnsemble = useEvaluatorEnsemble;
     }
 
     /// <summary>
     /// Picks the action the rollout plays next. Under <see cref="LookaheadRolloutPolicy.RuleAgent"/>
     /// this is 1.0's behaviour; under <see cref="LookaheadRolloutPolicy.EvaluatorGreedy"/> it is a
-    /// one-step improvement of the same evaluator the leaf uses.
+    /// one-step improvement of the same evaluator the leaf uses; under
+    /// <see cref="LookaheadRolloutPolicy.NestedLookahead"/> the seat is filled by a real lookahead
+    /// search run from that player's own point of view.
     /// </summary>
     private GameAction ChooseRolloutAction(
         GameState simulation,
@@ -316,6 +422,19 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         if (policy == LookaheadRolloutPolicy.RuleAgent)
         {
             return _rolloutAgent.ChooseAction(
+                GameEngine.ToObservation(simulation, activePlayer),
+                legalActions);
+        }
+
+        if (policy == LookaheadRolloutPolicy.NestedLookahead)
+        {
+            Interlocked.Increment(ref _nestedOpponentDecisions);
+
+            // 注意这里传的是 **activePlayer**：嵌套搜索必须从"现在要动的这个人"的视角看局面，
+            // 否则它会拿对手的胜负来给自己排名（对称性错误的典型表现，而且不会报错）。
+            var nested = _nestedOpponent ??= CreateNestedOpponent();
+            return nested.ChooseAction(
+                simulation,
                 GameEngine.ToObservation(simulation, activePlayer),
                 legalActions);
         }
@@ -337,6 +456,19 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
 
         return best;
     }
+
+    /// <summary>
+    /// 建嵌套对手模型。它自己的 rollout 策略**必须留空（规则牌手）** ——
+    /// 否则每层都再套一层搜索，代价指数爆炸，而且没有任何证据支持"对手会把自己想得那么深"。
+    /// 视野默认取本牌手的主视野：2.0 的真实配置就是短视野，长视野在本项目里一直更差。
+    /// </summary>
+    private LookaheadPlayerAgent CreateNestedOpponent() => new(
+        _opponentRollouts,
+        _opponentHorizon ?? _futureTurnHorizon,
+        // 用不同种子的派生值：让嵌套对手和本牌手不要在所有采样世界上完全同相位。
+        _seed ^ 0x9E3779B97F4A7C15UL,
+        rolloutPolicy: LookaheadRolloutPolicy.RuleAgent,
+        opponentRolloutPolicy: LookaheadRolloutPolicy.RuleAgent);
 
     /// <summary>The latest main-phase comparison, exposed for reports and later advisor UI.</summary>
     public LookaheadDecision? LastDecision { get; private set; }
@@ -554,6 +686,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             simulation = GameEngine.Apply(simulation, candidate);
 
             var simulatedActions = 0;
+            var opponentActionsTaken = 0;
             while (!simulation.IsGameOver &&
                    simulation.TurnNumber < targetTurnNumber &&
                    simulatedActions < 400)
@@ -569,7 +702,23 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
                 var policy = activePlayer == perspectivePlayer
                     ? _rolloutPolicyCycle[(rollout / horizonCycle.Count) % _rolloutPolicyCycle.Length]
                     : _opponentRolloutPolicy;
+
+                // "只搜第一手"：对手的第一次搜索才是"它怎么回应我这个候选动作"，
+                // 那之后它怎么打完这一回合对排序的信息量小得多，但代价一样贵。
+                // 第一手搜过之后退回规则牌手（= 基线行为），所以这是个便宜的近似。
+                if (_opponentFirstActionOnly &&
+                    policy == LookaheadRolloutPolicy.NestedLookahead &&
+                    opponentActionsTaken >= 1)
+                {
+                    policy = LookaheadRolloutPolicy.RuleAgent;
+                }
+
                 var rolloutAction = ChooseRolloutAction(simulation, activePlayer, legalActions, policy);
+                if (activePlayer != perspectivePlayer)
+                {
+                    opponentActionsTaken++;
+                }
+
                 simulation = GameEngine.Apply(simulation, rolloutAction);
                 simulatedActions++;
             }

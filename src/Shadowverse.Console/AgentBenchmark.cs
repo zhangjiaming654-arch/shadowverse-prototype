@@ -128,6 +128,17 @@ public static class AgentBenchmark
         /// <summary>rollout 里【对手】用哪个策略——对手建模。默认规则牌手 = 1.0/2.0 的行为。</summary>
         LookaheadRolloutPolicy OpponentRolloutPolicy = LookaheadRolloutPolicy.RuleAgent,
         LookaheadRolloutPolicy SecondOpponentRolloutPolicy = LookaheadRolloutPolicy.RuleAgent,
+        /// <summary>
+        /// 嵌套对手模型（<c>--opponent-rollout nested</c>）的推演次数与视野。
+        /// 刻意比本牌手小得多：嵌套搜索的代价是乘法。
+        /// </summary>
+        int OpponentRollouts = LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
+        int SecondOpponentRollouts = LookaheadPlayerAgent.DefaultNestedOpponentRollouts,
+        int OpponentHorizon = 0,
+        int SecondOpponentHorizon = 0,
+        /// <summary>嵌套对手只搜"它怎么回应我"的第一手，之后退回规则牌手（省掉 4.3 倍成本里的大头）。</summary>
+        bool OpponentFirstActionOnly = false,
+        bool SecondOpponentFirstActionOnly = false,
         /// <summary>评估函数集成：一半推演用 --alt-weights-file 的第二套权重。两边独立才能对照。</summary>
         bool EvaluatorEnsemble = false,
         bool SecondEvaluatorEnsemble = false);
@@ -1126,6 +1137,9 @@ public static class AgentBenchmark
         LookaheadRolloutPolicy AlternateRolloutPolicy,
         LookaheadExtraPlayPointPolicy ExtraPlayPointPolicy,
         LookaheadRolloutPolicy OpponentRolloutPolicy,
+        int OpponentRollouts,
+        int OpponentHorizon,
+        bool OpponentFirstActionOnly,
         bool EvaluatorEnsemble);
 
     private static SideConfig ResolveSide(Options options, bool first) => new(
@@ -1153,6 +1167,13 @@ public static class AgentBenchmark
         first ? options.AlternateRolloutPolicy : options.SecondAlternateRolloutPolicy,
         first ? options.ExtraPlayPointPolicy : options.SecondExtraPlayPointPolicy,
         first ? options.OpponentRolloutPolicy : options.SecondOpponentRolloutPolicy,
+        first
+            ? options.OpponentRollouts
+            : options.SecondOpponentRollouts > 0 ? options.SecondOpponentRollouts : options.OpponentRollouts,
+        first
+            ? options.OpponentHorizon
+            : options.SecondOpponentHorizon > 0 ? options.SecondOpponentHorizon : options.OpponentHorizon,
+        first ? options.OpponentFirstActionOnly : options.SecondOpponentFirstActionOnly,
         first ? options.EvaluatorEnsemble : options.SecondEvaluatorEnsemble);
 
     public static IPlayerAgent CreateAgent(SideConfig config, ulong seed)
@@ -1179,7 +1200,10 @@ public static class AgentBenchmark
                 config.AlternateRolloutPolicy,
                 config.ExtraPlayPointPolicy,
                 config.OpponentRolloutPolicy,
-                config.EvaluatorEnsemble),
+                config.EvaluatorEnsemble,
+                config.OpponentRollouts,
+                config.OpponentHorizon,
+                config.OpponentFirstActionOnly),
             AgentKind.LookaheadV2 => new LookaheadPlayerAgentV2(seed, config.RolloutsPerAction),
             AgentKind.LookaheadV1 => new LookaheadPlayerAgentV1(
                 config.RolloutsPerAction, config.FutureTurnHorizon, seed, rail),
