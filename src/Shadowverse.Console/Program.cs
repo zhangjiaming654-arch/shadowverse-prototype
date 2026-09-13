@@ -33,41 +33,41 @@ if (args.Contains("--decks", StringComparer.OrdinalIgnoreCase))
 
 if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
 {
-    ConsoleTools.RunRubyFanfareTest();
-    ConsoleTools.RunSeraphsGospelTest();
-    ConsoleTools.RunOliviaEffectTest();
-    ConsoleTools.RunApocalypseDeckReplacementTest();
-    ConsoleTools.RunPurgatoryEvilWorshipTest();
-    ConsoleTools.RunAstarothsVerdictTest();
-    ConsoleTools.RunGladiatorEnhanceTest();
-    ConsoleTools.RunStarchiumEvolutionTest();
-    ConsoleTools.RunDragonCardEffectTest();
-    ConsoleTools.RunLilimAndBatTest();
-    ConsoleTools.RunLathAndSkeletonTest();
-    ConsoleTools.RunBaruTest();
-    ConsoleTools.RunSummonerAndTokenTest();
-    ConsoleTools.RunConcertTest();
-    ConsoleTools.RunHeavenEyeTest();
-    ConsoleTools.RunTightropeWalkerTest();
-    ConsoleTools.RunDeathbedAnathemaTest();
-    ConsoleTools.RunAbyssalColonelTest();
-    ConsoleTools.RunDepartingAspirationTest();
-    ConsoleTools.RunDeathHostTest();
-    ConsoleTools.RunGalatadeTest();
-    ConsoleTools.RunIstanbulDeadTest();
-    ConsoleTools.RunNetherLieutenantTest();
-    ConsoleTools.RunStoredDeckRuleTest();
-    ConsoleTools.RunOpponentDeckInferenceTest();
-    ConsoleTools.RunGreedyStarchiumPriorityTest();
-    ConsoleTools.RunGuoLongAgentPriorityTest();
-    ConsoleTools.RunLookaheadAgentTest();
-    ConsoleTools.RunFrozenLookaheadV1Test();
-    ConsoleTools.RunFrozenLookaheadV2Test();
-    ConsoleTools.RunLookaheadDragonAccelerationTest();
+    AgentSelfTests.RunRubyFanfareTest();
+    AgentSelfTests.RunSeraphsGospelTest();
+    AgentSelfTests.RunOliviaEffectTest();
+    AgentSelfTests.RunApocalypseDeckReplacementTest();
+    AgentSelfTests.RunPurgatoryEvilWorshipTest();
+    AgentSelfTests.RunAstarothsVerdictTest();
+    AgentSelfTests.RunGladiatorEnhanceTest();
+    AgentSelfTests.RunStarchiumEvolutionTest();
+    AgentSelfTests.RunDragonCardEffectTest();
+    AgentSelfTests.RunLilimAndBatTest();
+    AgentSelfTests.RunLathAndSkeletonTest();
+    AgentSelfTests.RunBaruTest();
+    AgentSelfTests.RunSummonerAndTokenTest();
+    AgentSelfTests.RunConcertTest();
+    AgentSelfTests.RunHeavenEyeTest();
+    AgentSelfTests.RunTightropeWalkerTest();
+    AgentSelfTests.RunDeathbedAnathemaTest();
+    AgentSelfTests.RunAbyssalColonelTest();
+    AgentSelfTests.RunDepartingAspirationTest();
+    AgentSelfTests.RunDeathHostTest();
+    AgentSelfTests.RunGalatadeTest();
+    AgentSelfTests.RunIstanbulDeadTest();
+    AgentSelfTests.RunNetherLieutenantTest();
+    AgentSelfTests.RunStoredDeckRuleTest();
+    AgentSelfTests.RunOpponentDeckInferenceTest();
+    AgentSelfTests.RunGreedyStarchiumPriorityTest();
+    AgentSelfTests.RunGuoLongAgentPriorityTest();
+    AgentSelfTests.RunLookaheadAgentTest();
+    AgentSelfTests.RunFrozenLookaheadV1Test();
+    AgentSelfTests.RunFrozenLookaheadV2Test();
+    AgentSelfTests.RunLookaheadDragonAccelerationTest();
     // V2（额外 PP 保留策略）已删除：实测无收益（对 V1 52.5% : 47.5%，p=0.77），
     // 机制是硬编码两个卡牌 ID 的特判，而且它的前提——"前瞻会浪费早期额外 PP"——
     // 在回退闸下限归零、前瞻改用自身判断之后已经不成立。
-    ConsoleTools.RunLookaheadMatchRunnerTest();
+    AgentSelfTests.RunLookaheadMatchRunnerTest();
     return;
 }
 
@@ -309,7 +309,7 @@ if (args.Contains("--stats", StringComparer.OrdinalIgnoreCase) ||
 
 if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
 {
-    ConsoleTools.RunSmokeTest(firstDeckId, secondDeckId);
+    AgentSelfTests.RunSmokeTest(firstDeckId, secondDeckId);
     return;
 }
 
