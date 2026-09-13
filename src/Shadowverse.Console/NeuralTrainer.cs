@@ -22,6 +22,9 @@ public static class NeuralTrainer
         NeuralPositionEvaluator Network,
         int TrainRows,
         int ValidationRows,
+        /// <summary>交出的是第几轮的权重。验证损失会跳而训练损失一直在降，
+        /// 所以返回的**不是**最后一轮，而是验证最好的那一轮。</summary>
+        int BestEpoch,
         double TrainLogLoss,
         double TrainAccuracy,
         double ValidationLogLoss,
@@ -89,6 +92,24 @@ public static class NeuralTrainer
         var h1 = new double[hiddenCount];
         var h2 = new double[hiddenCount];
 
+        // 每一轮都算验证损失，并留下**验证最好的那一份快照**。
+        // 实测：训练损失一路降到 0.51 而验证损失在 0.61~0.65 之间跳（过拟合已经开始），
+        // 这时候返回"最后一轮"等于抽签 —— 返回最好的一轮才是唯一合理的选择。
+        NeuralPositionEvaluator Snapshot() => new(
+            inputCount,
+            hiddenCount,
+            (double[])net.Scales.Clone(),
+            (double[])net.W1.Clone(),
+            (double[])net.B1.Clone(),
+            (double[])net.W2.Clone(),
+            (double[])net.B2.Clone(),
+            (double[])net.W3.Clone(),
+            net.B3);
+
+        var best = Snapshot();
+        var bestValidationLoss = double.MaxValue;
+        var bestEpoch = 0;
+
         for (var epoch = 0; epoch < epochs; epoch++)
         {
             // 每个 epoch 打乱一次
@@ -137,13 +158,33 @@ public static class NeuralTrainer
                 var prediction = 1.0 / (1.0 + Math.Exp(-output));
 
                 // ---- 反向 ----
+                // **先把所有层的梯度算完，再统一更新。**
+                // 原来只注意到"dH2 必须在更新 W3 之前算"，却把 W2 更新排在了 dH1 之前 ——
+                // 于是 dH1 用的是**已经更新过**的 W2，梯度不一致。同一种错，只是深了一层。
+                // 先算完再更新，这类顺序问题就整体不存在了。
                 var dOutput = prediction - y;
 
-                // 先算 dH2，再更新 W3。反过来的话 dH2 会用**更新后**的 W3，梯度就不一致了。
                 var dH2 = new double[hiddenCount];
                 for (var index = 0; index < hiddenCount; index++)
                 {
                     dH2[index] = h2[index] > 0 ? dOutput * net.W3[index] : 0.0;
+                }
+
+                var dH1 = new double[hiddenCount];
+                for (var index = 0; index < hiddenCount; index++)
+                {
+                    if (h1[index] <= 0)
+                    {
+                        continue;
+                    }
+
+                    var sum = 0.0;
+                    for (var unit = 0; unit < hiddenCount; unit++)
+                    {
+                        sum += net.W2[(unit * hiddenCount) + index] * dH2[unit];
+                    }
+
+                    dH1[index] = sum;
                 }
 
                 for (var index = 0; index < hiddenCount; index++)
@@ -169,23 +210,6 @@ public static class NeuralTrainer
                     net.B2[unit] += vB2[unit];
                 }
 
-                var dH1 = new double[hiddenCount];
-                for (var index = 0; index < hiddenCount; index++)
-                {
-                    if (h1[index] <= 0)
-                    {
-                        continue;
-                    }
-
-                    var sum = 0.0;
-                    for (var unit = 0; unit < hiddenCount; unit++)
-                    {
-                        sum += net.W2[(unit * hiddenCount) + index] * dH2[unit];
-                    }
-
-                    dH1[index] = sum;
-                }
-
                 for (var unit = 0; unit < hiddenCount; unit++)
                 {
                     var offset = unit * inputCount;
@@ -202,14 +226,24 @@ public static class NeuralTrainer
                 }
             }
 
+            var trainLoss = LogLoss(net, trainFeatures, trainLabels);
+            var validationLoss = LogLoss(net, validationFeatures, validationLabels);
+            if (validationLoss < bestValidationLoss)
+            {
+                bestValidationLoss = validationLoss;
+                bestEpoch = epoch + 1;
+                best = Snapshot();
+            }
+
             if ((epoch + 1) % Math.Max(1, epochs / 5) == 0)
             {
-                report(
-                    $"  epoch {epoch + 1}/{epochs}：" +
-                    $"训练 {LogLoss(net, trainFeatures, trainLabels):F5} ｜ " +
-                    $"验证 {LogLoss(net, validationFeatures, validationLabels):F5}");
+                report($"  epoch {epoch + 1}/{epochs}：训练 {trainLoss:F5} ｜ 验证 {validationLoss:F5}");
             }
         }
+
+        // 交出去的是验证最好的那一份，不是最后一轮。
+        net = best;
+        report($"  取第 {bestEpoch} 轮的权重（验证损失最好 {bestValidationLoss:F5}）。");
 
         // 手调线性评估作为对照：把网络和它放在同一把尺子上。
         var handTunedWeights = LookaheadPlayerAgent.PositionWeights;
@@ -218,6 +252,7 @@ public static class NeuralTrainer
             net,
             trainCount,
             validationCount,
+            bestEpoch,
             LogLoss(net, trainFeatures, trainLabels),
             Accuracy(net, trainFeatures, trainLabels),
             LogLoss(net, validationFeatures, validationLabels),

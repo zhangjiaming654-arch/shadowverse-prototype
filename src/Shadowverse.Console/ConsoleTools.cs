@@ -465,7 +465,7 @@ internal static void RunNeuralTraining(string[] args)
     var hidden = ParseIntegerOption(args, "--hidden", defaultValue: 64, minimum: 4, maximum: 512);
     var epochs = ParseIntegerOption(args, "--epochs", defaultValue: 12, minimum: 1, maximum: 10_000);
     var learningRate = double.Parse(
-        ReadOptionValue(args, "--learning-rate") ?? "0.02",
+        ReadOptionValue(args, "--learning-rate") ?? "0.001",
         CultureInfo.InvariantCulture);
     var l2 = double.Parse(ReadOptionValue(args, "--l2") ?? "0.00001", CultureInfo.InvariantCulture);
     var seed = (ulong)ParseIntegerOption(args, "--seed", defaultValue: 12345, minimum: 1, maximum: int.MaxValue);
@@ -476,6 +476,7 @@ internal static void RunNeuralTraining(string[] args)
     var result = NeuralTrainer.Train(inputPath, hidden, epochs, learningRate, l2, seed, Console.WriteLine);
     Console.WriteLine();
     Console.WriteLine($"样本数：训练 {result.TrainRows} ｜ 验证 {result.ValidationRows}（按行序切分 = 按对局切分）");
+    Console.WriteLine($"采用第 {result.BestEpoch} 轮的权重（验证损失最低那一轮，不是最后一轮）");
     Console.WriteLine();
     Console.WriteLine("                   对数损失    准确率");
     Console.WriteLine($"神经网络  训练集   {result.TrainLogLoss:F5}     {result.TrainAccuracy:P2}");

@@ -72,6 +72,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunHumanActionResolverTest();
     // 人机对战：对手思考面板不能泄露对手手牌，渲染本身也不能抛异常（那会把整局对战卡死）。
     AgentSelfTests.RunOpponentThinkingReportTest();
+    // 神经网络训练器：梯度必须真的进到权重里（默认学习率曾经大到把网络打飞）。
+    AgentSelfTests.RunNeuralTrainerTest();
     return;
 }
 

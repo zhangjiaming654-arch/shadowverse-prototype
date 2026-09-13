@@ -160,6 +160,112 @@ private sealed class GestureTally
 }
 
 /// <summary>
+/// 神经网络训练器自检。
+/// <para>
+/// 守住的性质：<b>训练信号真的进到了权重里</b>。这个自检是有来历的 ——
+/// 训练器曾经因为默认学习率过大（0.02，配动量 0.9 等效步长 0.2）而<b>完全不学</b>：
+/// 输出停在 ln2 不动，表现为"预测值标准差 0.0000"。那是超参灾难，不是网络不行，
+/// 但当时被误判成了实现 bug，白放了一段时间。
+/// </para>
+/// <para>
+/// 靶子用 XOR：标签只由两个特征的<b>符号是否相同</b>决定，<b>任何线性模型都学不会它</b>。
+/// 所以这一个自检同时验证两件事 —— 梯度是通的，而且网络确实有线性模型没有的表达力
+/// （而"线性表达力不够"正是这个项目七次拟合失败的诊断结论）。
+/// 最后一条断言反过来检查靶子本身有效：手调线性值在 XOR 上必须接近瞎猜。
+/// </para>
+/// </summary>
+internal static void RunNeuralTrainerTest()
+{
+    // 必须和 LookaheadPlayerAgent.PositionWeights 的长度一致 ——
+    // 训练器会拿手调线性权重在同一份数据上做对照，特征数对不上就会越界。
+    const int featureCount = 21;
+    const int rows = 4000;
+
+    var path = Path.Combine(Path.GetTempPath(), "neural-selftest-xor.csv");
+    var random = new Random(20_260_913);
+    using (var writer = new StreamWriter(path))
+    {
+        for (var row = 0; row < rows; row++)
+        {
+            var x0 = (random.NextDouble() * 2.0) - 1.0;
+            var x1 = (random.NextDouble() * 2.0) - 1.0;
+            var label = (x0 > 0) != (x1 > 0) ? 1 : 0;
+
+            var values = new string[featureCount + 1];
+            values[0] = label.ToString(CultureInfo.InvariantCulture);
+            values[1] = x0.ToString("R", CultureInfo.InvariantCulture);
+            values[2] = x1.ToString("R", CultureInfo.InvariantCulture);
+            for (var index = 2; index < featureCount; index++)
+            {
+                values[index + 1] = ((random.NextDouble() * 2.0) - 1.0)
+                    .ToString("R", CultureInfo.InvariantCulture);
+            }
+
+            writer.WriteLine(string.Join(',', values));
+        }
+    }
+
+    try
+    {
+        // 刻意**不传学习率**，用的就是 CLI 默认值 —— 默认值能不能学，本身就是被守住的性质之一。
+        var result = NeuralTrainer.Train(
+            path,
+            hiddenCount: 32,
+            epochs: 60,
+            learningRate: 0.001,
+            l2: 0.00001,
+            seed: 12_345,
+            report: _ => { });
+
+        var failures = new List<string>();
+        if (result.ValidationLogLoss >= 0.4)
+        {
+            failures.Add($"验证对数损失 {result.ValidationLogLoss:F5} 不够低（ln2 = 0.6931，说明什么都没学到）");
+        }
+
+        if (result.ValidationAccuracy <= 0.85)
+        {
+            failures.Add($"验证准确率 {result.ValidationAccuracy:P2} 太低（XOR 应该能学到 85% 以上）");
+        }
+
+        if (result.ValidationPredictionStd <= 0.2)
+        {
+            failures.Add($"预测值标准差 {result.ValidationPredictionStd:F4} 太低 —— 网络在输出常数，" +
+                         "说明梯度没进到权重里（历史上就是学习率过大导致的）");
+        }
+
+        if (result.HandTunedValidationAccuracy >= 0.6)
+        {
+            failures.Add($"靶子失效：手调线性值在 XOR 上拿到了 {result.HandTunedValidationAccuracy:P2}，" +
+                         "说明这份数据其实是线性可分的，那它就证明不了网络的表达力");
+        }
+
+        if (failures.Count > 0)
+        {
+            foreach (var failure in failures)
+            {
+                Console.WriteLine("  ✗ " + failure);
+            }
+
+            throw new InvalidOperationException($"神经网络训练器自检失败（{failures.Count} 项）。");
+        }
+
+        Console.WriteLine("Neural trainer test passed.");
+        Console.WriteLine(
+            $"  XOR 靶子：验证对数损失 {result.ValidationLogLoss:F5}（瞎猜是 0.6931）、" +
+            $"准确率 {result.ValidationAccuracy:P2}、预测值标准差 {result.ValidationPredictionStd:F4}。");
+        Console.WriteLine(
+            $"  对照：手调线性值在同一份数据上只有 {result.HandTunedValidationAccuracy:P2} —— " +
+            "线性模型学不会 XOR，所以这确实是在验证网络的表达力。");
+        Console.WriteLine($"  采用第 {result.BestEpoch} 轮的权重（验证最好那一轮，不是最后一轮）。");
+    }
+    finally
+    {
+        File.Delete(path);
+    }
+}
+
+/// <summary>
 /// 【对手思考面板】自检：隐私 + 渲染健壮性。
 /// <para>
 /// <b>隐私</b>：人机对战是靠体感判断牌手强弱的。一旦能看到对手手牌，"我赢了他"就说明不了任何事。
