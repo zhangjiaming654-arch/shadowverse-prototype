@@ -117,14 +117,10 @@ public sealed partial class ReplayForm : Form
         // 这里只加一行，把改动面压到最小 —— 界面没法自动化验证，改布局的风险最高。
         BuildHumanPlayPanel();
         LoadDeckChoices();
-        _firstAgent.Items.AddRange([
-            "前瞻牌手", "前瞻牌手 1.0（冻结）",
-            "规则牌手", "规则牌手 1.0（冻结）", "随机牌手"]);
-        _secondAgent.Items.AddRange([
-            "规则牌手", "前瞻牌手", "前瞻牌手 1.0（冻结）",
-            "规则牌手 1.0（冻结）", "随机牌手"]);
-        _firstAgent.SelectedItem = "前瞻牌手";
-        _secondAgent.SelectedItem = "规则牌手";
+        _firstAgent.Items.AddRange(AgentNames);
+        _secondAgent.Items.AddRange(AgentNames);
+        _firstAgent.SelectedItem = "前瞻牌手 3.0（开发中）";
+        _secondAgent.SelectedItem = "前瞻牌手 1.0（冻结）";
         foreach (var rollouts in new[] { _firstRollouts, _secondRollouts })
         {
             rollouts.Items.AddRange(["20", "60", "120", "240"]);
@@ -567,15 +563,45 @@ public sealed partial class ReplayForm : Form
         _secondRollouts.Enabled = AgentSearches(_secondAgent.SelectedItem as string);
     }
 
+    /// <summary>
+    /// 冻结版本的**定义值**。这两个数字是它们身份的组成部分，所以选到它们时**忽略推演下拉框** ——
+    /// 否则"打 2.0"到底是多少次推演就说不清了（2.0 的定义是 60，1.0 是 10）。
+    /// </summary>
+    private const int FrozenV1Rollouts = 10;
+
+    private const int FrozenV2Rollouts = 60;
+
+    /// <summary>
+    /// 下拉框里的牌手名单。命名和命令行基准（<c>AgentBenchmark.DisplayName</c>）保持一致，
+    /// 免得同一份代码在两处叫不同的名字 —— 之前就是这样把"老基线"叫成了"1.0"。
+    /// </summary>
+    private static readonly string[] AgentNames =
+    [
+        "前瞻牌手 3.0（开发中）",
+        "前瞻牌手 2.0（冻结）",
+        "前瞻牌手 1.0（冻结）",
+        "前瞻牌手·旧冻结基线",
+        "规则牌手",
+        "规则牌手·冻结基线",
+        "随机牌手"
+    ];
+
+    /// <summary>
+    /// 只有 3.0 是活的，推演次数才由下拉框决定。四个冻结版本都用各自的定义值。
+    /// </summary>
     private static bool AgentSearches(string? agentName) =>
-        agentName is "前瞻牌手" or "前瞻牌手 1.0（冻结）";
+        agentName is "前瞻牌手 3.0（开发中）";
 
     private static IPlayerAgent CreateAgent(string agentName, ulong seed, int rolloutsPerAction) => agentName switch
     {
-        "前瞻牌手" => new LookaheadPlayerAgent(rolloutsPerAction, futureTurnHorizon: 3, seed),
-        "前瞻牌手 1.0（冻结）" => new BaselineLookaheadPlayerAgent(rolloutsPerAction, futureTurnHorizon: 3, seed),
+        "前瞻牌手 3.0（开发中）" => new LookaheadPlayerAgent(rolloutsPerAction, futureTurnHorizon: 3, seed),
+        "前瞻牌手 2.0（冻结）" => new LookaheadPlayerAgentV2(seed, FrozenV2Rollouts),
+        "前瞻牌手 1.0（冻结）" => new LookaheadPlayerAgentV1(
+            FrozenV1Rollouts, futureTurnHorizon: 3, seed, minimumPracticalAdvantage: 0.0),
+        "前瞻牌手·旧冻结基线" => new BaselineLookaheadPlayerAgent(
+            FrozenV1Rollouts, futureTurnHorizon: 3, seed),
         "规则牌手" => new GreedyPlayerAgent(),
-        "规则牌手 1.0（冻结）" => new BaselineGreedyPlayerAgent(),
+        "规则牌手·冻结基线" => new BaselineGreedyPlayerAgent(),
         "随机牌手" => new RandomPlayerAgent(unchecked((int)seed)),
         _ => throw new ArgumentException($"未知牌手：{agentName}")
     };

@@ -39,6 +39,24 @@ public sealed partial class ReplayForm
         Text = "选好你用的卡组（P1）和对手牌手（P2），然后开始。"
     };
 
+    /// <summary>
+    /// 版本图例。之前下拉框里把"本会话之前的老快照"叫成"1.0"，而且 2.0 根本不在列表里，
+    /// 让人没法判断自己在打哪个版本 —— 所以把定义直接写在界面上。
+    /// </summary>
+    private readonly Label _agentLegend = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 92,
+        ForeColor = Color.FromArgb(150, 172, 196),
+        Font = new Font("Consolas", 8F),
+        Text =
+            "3.0 视野循环{1,3} × 60 推演（活的）\r\n" +
+            "2.0 冻结：视野循环{1,3} × 60\r\n" +
+            "1.0 冻结：视野 3 × 10 推演\r\n" +
+            "旧基线 本会话之前的老快照\r\n" +
+            "冻结版本忽略推演下拉框"
+    };
+
     private readonly FlowLayoutPanel _humanActions = new()
     {
         Dock = DockStyle.Fill,
@@ -68,6 +86,7 @@ public sealed partial class ReplayForm
 
         _humanPanel.Controls.Add(_humanActions);
         _humanPanel.Controls.Add(_humanStatus);
+        _humanPanel.Controls.Add(_agentLegend);
         _humanPanel.Controls.Add(_humanPlayButton);
         _humanPanel.Controls.Add(title);
         Controls.Add(_humanPanel);
