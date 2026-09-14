@@ -325,6 +325,26 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
     private readonly bool _treeUsesSearchValue;
 
     /// <summary>
+    /// 深层评价（"搜索值"那一档）的推演预算。
+    /// <para>
+    /// §19.11 实测：预算只有 3 次时偏差高达 +22~+32%。这一档就是用来回答
+    /// "**偏差是不是只是预算太小造成的**" —— 预注册判据见 §19.10：
+    /// 把预算加大，偏差回到 ≤ ±8% 才继续投。
+    /// </para>
+    /// </summary>
+    private readonly int _deepRollouts;
+
+    /// <summary>
+    /// 深层的后续动作用 **mean** 而不是 **max** 汇总。
+    /// <para>
+    /// 用途：把"偏差的来源是**形式**（对噪声取 max ⇒ 赢家诅咒）"和
+    /// "偏差的来源是**预算**"分开。实测预算 3→20 不改善（§19.12），
+    /// 所以形式这一档是必要的对照。
+    /// </para>
+    /// </summary>
+    private readonly bool _treeUsesMeanFollowUp;
+
+    /// <summary>
     /// 只让嵌套搜索负责"对手回应我这个候选动作"的第一手，对手随后的走子仍交给规则牌手。
     /// <para>
     /// 为什么要这个开关注释在 <see cref="LookaheadRolloutPolicy.NestedLookahead"/> 上：
@@ -366,7 +386,9 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         int ownNestedRollouts = DefaultNestedOpponentRollouts,
         int ownNestedHorizon = 0,
         int treePly = 0,
-        bool treeUsesSearchValue = false)
+        bool treeUsesSearchValue = false,
+        int deepRollouts = DefaultDeepRollouts,
+        bool treeUsesMeanFollowUp = false)
     {
         if (rolloutsPerAction is < 1 or > 500)
         {
@@ -434,6 +456,11 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             throw new ArgumentOutOfRangeException(nameof(treePly), "搜索树深度必须是 0 到 3；0 = 关闭（基线行为）。");
         }
 
+        if (deepRollouts is < 1 or > 200)
+        {
+            throw new ArgumentOutOfRangeException(nameof(deepRollouts), "深层评价的推演次数必须是 1 到 200。");
+        }
+
         _rolloutsPerAction = rolloutsPerAction;
         _futureTurnHorizon = futureTurnHorizon;
         _seed = seed == 0 ? 1UL : seed;
@@ -477,6 +504,8 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         _ownNestedHorizon = ownNestedHorizon > 0 ? ownNestedHorizon : null;
         _treePly = treePly;
         _treeUsesSearchValue = treeUsesSearchValue;
+        _deepRollouts = deepRollouts;
+        _treeUsesMeanFollowUp = treeUsesMeanFollowUp;
         _useEvaluatorEnsemble = useEvaluatorEnsemble;
     }
 
@@ -642,6 +671,28 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             return EvaluatePosition(simulation, perspectivePlayer);
         }
 
+        // 【关键开关】深层用 max 还是 mean。
+        //
+        // 实测（报告 §19.12）：用 **max** 会让搜索系统性高估（偏差 +22~+35%），
+        // 而且加大预算（3→20 次推演）**不改善** —— 因为偏差的来源不是采样噪声，
+        // 而是"对噪声估计取最大值"这个动作本身（赢家诅咒）：估计越不确定，
+        // max 越倾向挑到被高估的那个。
+        //
+        // 所以这里给出 mean 的对照：它不引入赢家诅咒，代价是"假设后续平均地走"
+        // （不是最理想地走）。这一档就是用来分开"形式问题"和"预算问题"的。
+        if (_treeUsesMeanFollowUp)
+        {
+            var total = 0.0;
+            foreach (var action in legal)
+            {
+                total += ply <= 1
+                    ? OnePlyValue(simulation, perspectivePlayer, action, decisionNumber)
+                    : FollowUpValue(simulation, perspectivePlayer, action, decisionNumber, ply - 1);
+            }
+
+            return total / legal.Count;
+        }
+
         var best = double.NegativeInfinity;
         foreach (var action in legal)
         {
@@ -687,8 +738,12 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         }
 
         // 用独立推演估计：每个动作在若干采样世界上走完剩余视野，取叶值平均。
+        //
+        // **采样世界按"动作下标"无关的方式取**：同一个决策点里的所有兄弟动作共用
+        // `SimulationSeed(decisionNumber, 900+rollout)` 这一批种子 —— 和主搜索的
+        // "公共随机数"配对比较同一个道理，能把"动作之间的比较"的噪声降下来。
         var total = 0.0;
-        for (var rollout = 0; rollout < NestedRolloutBudget; rollout++)
+        for (var rollout = 0; rollout < _deepRollouts; rollout++)
         {
             var simulation = GameEngine.CreateDeterminization(
                 state, perspectivePlayer, SimulationSeed(decisionNumber, 900 + rollout));
@@ -720,11 +775,11 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
                 : EvaluatePosition(simulation, perspectivePlayer);
         }
 
-        return total / NestedRolloutBudget;
+        return total / _deepRollouts;
     }
 
-    /// <summary>深层评价（搜索值那一档）用的推演次数。刻意小 —— 它会被调用很多次。</summary>
-    private const int NestedRolloutBudget = 3;
+    /// <summary>深层评价（搜索值那一档）的默认推演次数。刻意小 —— 它会被调用很多次。</summary>
+    public const int DefaultDeepRollouts = 3;
 
     /// <summary>
     /// 用 rollout 策略把推演推进到"轮到我做决策"的下一个点。

@@ -61,7 +61,9 @@ public static class DecisionQualityProbe
         int horizon,
         Action<string> report,
         int treePly = 0,
-        bool treeUsesSearchValue = false)
+        bool treeUsesSearchValue = false,
+        int deepRollouts = LookaheadPlayerAgent.DefaultDeepRollouts,
+        bool treeUsesMeanFollowUp = false)
     {
         ArgumentNullException.ThrowIfNull(decks);
         ArgumentNullException.ThrowIfNull(report);
@@ -87,7 +89,9 @@ public static class DecisionQualityProbe
                 seed: seed ^ 0x5DEECE66DUL,
                 minimumPracticalAdvantage: 0.0,
                 treePly: treePly,
-                treeUsesSearchValue: treeUsesSearchValue);
+                treeUsesSearchValue: treeUsesSearchValue,
+                deepRollouts: deepRollouts,
+                treeUsesMeanFollowUp: treeUsesMeanFollowUp);
             var rule = new GreedyPlayerAgent();
             var samples = new List<(double Margin, bool Disagreed, double Estimate)>();
 
