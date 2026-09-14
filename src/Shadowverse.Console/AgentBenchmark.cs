@@ -153,6 +153,15 @@ public static class AgentBenchmark
         /// </summary>
         int TreePly = 0,
         int SecondTreePly = 0,
+        /// <summary>深层评价用"推演估计"而不是一层叶值（§19.12 证明叶值深评会崩盘）。</summary>
+        bool TreeUsesSearchValue = false,
+        bool SecondTreeUsesSearchValue = false,
+        /// <summary>深层的后续动作用 mean 而非 max 汇总（去掉赢家诅咒，§19.12 实测偏差缩小 3 倍）。</summary>
+        bool TreeUsesMeanFollowUp = false,
+        bool SecondTreeUsesMeanFollowUp = false,
+        /// <summary>深层评价的推演预算。</summary>
+        int DeepRollouts = LookaheadPlayerAgent.DefaultDeepRollouts,
+        int SecondDeepRollouts = LookaheadPlayerAgent.DefaultDeepRollouts,
         /// <summary>评估函数集成：一半推演用 --alt-weights-file 的第二套权重。两边独立才能对照。</summary>
         bool EvaluatorEnsemble = false,
         bool SecondEvaluatorEnsemble = false);
@@ -1157,6 +1166,9 @@ public static class AgentBenchmark
         int OwnNestedRollouts,
         int OwnNestedHorizon,
         int TreePly,
+        bool TreeUsesSearchValue,
+        bool TreeUsesMeanFollowUp,
+        int DeepRollouts,
         bool EvaluatorEnsemble);
 
     private static SideConfig ResolveSide(Options options, bool first) => new(
@@ -1198,6 +1210,9 @@ public static class AgentBenchmark
             ? options.OwnNestedHorizon
             : options.SecondOwnNestedHorizon > 0 ? options.SecondOwnNestedHorizon : options.OwnNestedHorizon,
         first ? options.TreePly : options.SecondTreePly,
+        first ? options.TreeUsesSearchValue : options.SecondTreeUsesSearchValue,
+        first ? options.TreeUsesMeanFollowUp : options.SecondTreeUsesMeanFollowUp,
+        first ? options.DeepRollouts : options.SecondDeepRollouts,
         first ? options.EvaluatorEnsemble : options.SecondEvaluatorEnsemble);
 
     public static IPlayerAgent CreateAgent(SideConfig config, ulong seed)
@@ -1210,27 +1225,30 @@ public static class AgentBenchmark
             AgentKind.Greedy => new GreedyPlayerAgent(),
             AgentKind.Baseline => new BaselineGreedyPlayerAgent(),
             AgentKind.Lookahead => new LookaheadPlayerAgent(
-                config.RolloutsPerAction,
-                config.FutureTurnHorizon,
-                seed,
-                rail,
-                config.SelectionMode,
-                config.RobustnessPenalty,
-                config.StatisticalConfidence,
-                config.RolloutPolicy,
-                config.MulliganHorizon,
-                config.AlternateHorizon,
-                config.ThirdHorizon,
-                config.AlternateRolloutPolicy,
-                config.ExtraPlayPointPolicy,
-                config.OpponentRolloutPolicy,
-                config.EvaluatorEnsemble,
-                config.OpponentRollouts,
-                config.OpponentHorizon,
-                config.OpponentFirstActionOnly,
-                config.OwnNestedRollouts,
-                config.OwnNestedHorizon,
-                config.TreePly),
+                rolloutsPerAction: config.RolloutsPerAction,
+                futureTurnHorizon: config.FutureTurnHorizon,
+                seed: seed,
+                minimumPracticalAdvantage: rail,
+                selectionMode: config.SelectionMode,
+                robustnessPenalty: config.RobustnessPenalty,
+                statisticalConfidence: config.StatisticalConfidence,
+                rolloutPolicy: config.RolloutPolicy,
+                mulliganHorizon: config.MulliganHorizon,
+                alternateHorizon: config.AlternateHorizon,
+                thirdHorizon: config.ThirdHorizon,
+                alternateRolloutPolicy: config.AlternateRolloutPolicy,
+                extraPlayPointPolicy: config.ExtraPlayPointPolicy,
+                opponentRolloutPolicy: config.OpponentRolloutPolicy,
+                useEvaluatorEnsemble: config.EvaluatorEnsemble,
+                opponentRollouts: config.OpponentRollouts,
+                opponentHorizon: config.OpponentHorizon,
+                opponentFirstActionOnly: config.OpponentFirstActionOnly,
+                ownNestedRollouts: config.OwnNestedRollouts,
+                ownNestedHorizon: config.OwnNestedHorizon,
+                treePly: config.TreePly,
+                treeUsesSearchValue: config.TreeUsesSearchValue,
+                deepRollouts: config.DeepRollouts,
+                treeUsesMeanFollowUp: config.TreeUsesMeanFollowUp),
             AgentKind.LookaheadV2 => new LookaheadPlayerAgentV2(seed, config.RolloutsPerAction),
             AgentKind.LookaheadV1 => new LookaheadPlayerAgentV1(
                 config.RolloutsPerAction, config.FutureTurnHorizon, seed, rail),

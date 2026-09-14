@@ -263,6 +263,16 @@ var treePly = ConsoleTools.ParseIntegerOption(
     args, "--tree-ply", defaultValue: 0, minimum: 0, maximum: 3);
 var secondTreePly = ConsoleTools.ParseIntegerOption(
     args, "--p2-tree-ply", defaultValue: 0, minimum: 0, maximum: 3);
+// §19.12 实测：树崩盘的主因是"用一层叶值评价深层"和"对噪声取 max"（赢家诅咒）。
+// 这两个开关把那两条分别打开，供后续实验用。
+var treeUsesSearchValue = ConsoleTools.HasOption(args, "--tree-uses-search-value");
+var secondTreeUsesSearchValue = ConsoleTools.HasOption(args, "--p2-tree-uses-search-value");
+var treeUsesMeanFollowUp = ConsoleTools.HasOption(args, "--tree-mean-followup");
+var secondTreeUsesMeanFollowUp = ConsoleTools.HasOption(args, "--p2-tree-mean-followup");
+var deepRollouts = ConsoleTools.ParseIntegerOption(
+    args, "--deep-rollouts", defaultValue: LookaheadPlayerAgent.DefaultDeepRollouts, minimum: 1, maximum: 200);
+var secondDeepRollouts = ConsoleTools.ParseIntegerOption(
+    args, "--p2-deep-rollouts", defaultValue: LookaheadPlayerAgent.DefaultDeepRollouts, minimum: 1, maximum: 200);
 if (opponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent ||
     secondOpponentRolloutPolicy != LookaheadRolloutPolicy.RuleAgent)
 {
@@ -338,26 +348,29 @@ if (ConsoleTools.HasOption(args, "--quality"))
 if (args.Contains("--collect-selfplay", StringComparer.OrdinalIgnoreCase))
 {
     var collectionConfig = ConsoleTools.BuildSideConfig(
-        lookaheadRollouts,
-        lookaheadHorizon,
-        -1,
-        selectionMode,
-        robustnessPenalty,
-        statisticalConfidence,
-        rolloutPolicy,
-        mulliganHorizon,
-        alternateHorizon,
-        thirdHorizon,
-        alternateRolloutPolicy,
-        extraPlayPointPolicy,
-        opponentRolloutPolicy,
-        opponentRollouts,
-        opponentHorizon,
-        opponentFirstActionOnly,
-        ownNestedRollouts,
-        ownNestedHorizon,
-        treePly,
-        evaluatorEnsemble);
+        rollouts: lookaheadRollouts,
+        horizon: lookaheadHorizon,
+        railMargin: -1,
+        selectionMode: selectionMode,
+        robustnessPenalty: robustnessPenalty,
+        statisticalConfidence: statisticalConfidence,
+        rolloutPolicy: rolloutPolicy,
+        mulliganHorizon: mulliganHorizon,
+        alternateHorizon: alternateHorizon,
+        thirdHorizon: thirdHorizon,
+        alternateRolloutPolicy: alternateRolloutPolicy,
+        extraPlayPointPolicy: extraPlayPointPolicy,
+        opponentRolloutPolicy: opponentRolloutPolicy,
+        opponentRollouts: opponentRollouts,
+        opponentHorizon: opponentHorizon,
+        opponentFirstActionOnly: opponentFirstActionOnly,
+        ownNestedRollouts: ownNestedRollouts,
+        ownNestedHorizon: ownNestedHorizon,
+        treePly: treePly,
+        treeUsesSearchValue: treeUsesSearchValue,
+        deepRollouts: deepRollouts,
+        treeUsesMeanFollowUp: treeUsesMeanFollowUp,
+        evaluatorEnsemble: evaluatorEnsemble);
     ConsoleTools.RunSelfPlayCollection(
         args, lookaheadRollouts, lookaheadHorizon, maxDegreeOfParallelism, collectionConfig);
     return;
@@ -434,6 +447,12 @@ if (args.Contains("--stats", StringComparer.OrdinalIgnoreCase) ||
             secondOwnNestedHorizon,
             treePly,
             secondTreePly,
+            treeUsesSearchValue,
+            secondTreeUsesSearchValue,
+            treeUsesMeanFollowUp,
+            secondTreeUsesMeanFollowUp,
+            deepRollouts,
+            secondDeepRollouts,
             evaluatorEnsemble,
             secondEvaluatorEnsemble),
         benchmarkDecks);
