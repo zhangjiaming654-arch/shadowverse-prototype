@@ -28,3 +28,15 @@ outputs/neural-test*.txt
 *.suo
 Thumbs.db
 desktop.ini
+
+# 因果续局实验的运行产物：不提交（烟雾 CSV、临时错误日志、中断残留、归档）
+outputs/archive/
+outputs/causal-formal*
+outputs/causal-continuation*
+outputs/causal-measure*
+outputs/req*.log
+outputs/dir5-*.log
+outputs/int*.err
+outputs/int*.log
+outputs/resume-complete.log
+outputs/*-config.json
