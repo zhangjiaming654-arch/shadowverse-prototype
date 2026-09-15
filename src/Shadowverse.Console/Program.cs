@@ -353,7 +353,10 @@ if (ConsoleTools.HasOption(args, "--causal-continuation")
     || ConsoleTools.HasOption(args, "--causal-replay")
     || ConsoleTools.HasOption(args, "--causal-bootstrap-check")
     || ConsoleTools.HasOption(args, "--causal-amulet-check")
-    || ConsoleTools.HasOption(args, "--causal-entry-check"))
+    || ConsoleTools.HasOption(args, "--causal-entry-check")
+    // [DIR-6] 4.0 原型（信息集树）的验收入口
+    || ConsoleTools.HasOption(args, "--v4-tree-check")
+    || ConsoleTools.HasOption(args, "--v4-wiring"))
 {
     ConsoleTools.RunCausalContinuation(args);
     return;

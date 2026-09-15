@@ -978,6 +978,27 @@ internal static void RunCausalContinuation(string[] args)
         return;
     }
 
+    // [DIR-6] 4.0 原型（InformationSetTurnMctsAgentV4）的验收入口。
+    if (HasOption(args, "--v4-tree-check"))
+    {
+        var ok = V4Checks.RunTreeChecks(Console.WriteLine);
+        Console.WriteLine();
+        Console.WriteLine(ok ? "V4 信息集树专项检查：全部通过" : "V4 信息集树专项检查：有失败项");
+        Environment.ExitCode = ok ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--v4-wiring"))
+    {
+        var wiringGames = ParseIntegerOption(args, "--games", defaultValue: 2, minimum: 1, maximum: 50);
+        var wiringIterations = ParseIntegerOption(args, "--v4-iterations", defaultValue: 32, minimum: 1, maximum: 100_000);
+        var ok = V4Checks.RunWiring(config, wiringGames, wiringIterations, Console.WriteLine);
+        Console.WriteLine();
+        Console.WriteLine(ok ? "V4 接线验收：通过" : "V4 接线验收：未通过");
+        Environment.ExitCode = ok ? 0 : 1;
+        return;
+    }
+
     if (HasOption(args, "--causal-replay"))
     {
         bool replayed;
