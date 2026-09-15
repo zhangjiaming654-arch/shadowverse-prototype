@@ -767,16 +767,31 @@ public static class CausalContinuationProbe
 
         var continuationSeeds = config.ContinuationSeeds.ToList();
 
-        // [DIR-5 #5] 冻结种子护栏：正式种子只能用于完整的正式运行（125 局/对局）。
-        // 否则一次小规模运行就会把这些种子"观察"掉，它们就不再是未观察过的正式种子。
+        // [DIR-5 #5] + [RES-9C] 冻结种子护栏（**双向**）：
+        //      gamesPerMatchup == 125   <=>   四个冻结参数全部精确匹配
+        // 单向护栏只挡住"冻结种子配小规模"，挡不住反过来的情况：
+        // 125 局配错种子 —— 那会跑出"规模看起来像正式实验、种子却不是预注册种子"的数据。
+        // 两个方向都必须拒绝：小规模测试请显式换一次性种子；125 局只允许预注册配置。
         var usesFrozenSeeds = config.SourceSeedBase == 1_469_598_103UL
             && config.ProbeSeed == 104_729UL
             && continuationSeeds.SequenceEqual(new ulong[] { 32_416_190_071UL, 32_416_187_567UL });
-        if (usesFrozenSeeds && config.GamesPerMatchup != 125)
+        var isFormalScale = config.GamesPerMatchup == 125;
+        if (usesFrozenSeeds && !isFormalScale)
         {
             throw new InvalidOperationException(
                 "正式冻结种子（1469598103 / 104729 / 32416190071 / 32416187567）只能用于 "
                 + "gamesPerMatchup=125 的正式运行；小规模运行请显式换一组一次性种子。");
+        }
+
+        if (isFormalScale && !usesFrozenSeeds)
+        {
+            throw new InvalidOperationException(
+                "gamesPerMatchup=125 只允许用于预注册的正式配置"
+                + "（--causal-seed 1469598103 --causal-probe-seed 104729 "
+                + "--causal-continuation-seeds 32416190071,32416187567）；"
+                + $"当前收到 seed={config.SourceSeedBase} probe={config.ProbeSeed} "
+                + $"continuation=[{string.Join(",", continuationSeeds)}]。"
+                + "125 局是正式规模，换种子必须先改预注册文档并经用户批准，不得临时改用一次性种子。");
         }
 
         // 供 [DIR-4] 要求的"影子同步失败注入测试"使用：置 1 时强制第一处比对失败
@@ -1086,6 +1101,15 @@ public static class CausalContinuationProbe
                 {
                     break;   // 无效运行：不再进入下一个源对局
                 }
+            }
+
+            // [DIR-4A #4 修正] 上面的 break 只跳出**对局轮转的内层循环**；外层还按
+            // GamesPerMatchup 继续 125 轮，每轮都会再空跑一局（onStep 立刻 return、
+            // 0 行落盘、却把该种子记成"已完成"）。实测：强制同步失败时跑出 108 个
+            // "已完成"种子、rowCount=0，白烧约 8 分钟。必须同时退出外层循环。
+            if (abortRequested)
+            {
+                break;   // 整批作废：不再进入下一轮
             }
         }
 
