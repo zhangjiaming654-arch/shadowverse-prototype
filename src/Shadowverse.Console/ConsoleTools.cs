@@ -806,6 +806,331 @@ internal static void RunDecisionQuality(string[] args)
 /// 而且它对任何杠杆都能测 —— 比"预测指标"可靠（AUC 那个筛子已被证明是恒等式，报告 §18.4）。
 /// </para>
 /// </summary>
+/// <summary>
+/// 【因果续局】§11 预注册实验的独立入口。
+/// <para>
+/// <b>它做什么</b>：用冻结 2.0 打源对局采局面，同时问 2.0/3.0 的动作；动作一致的局面记 δ=0
+/// （不跑续局），动作不同的局面把状态克隆两份，各强制走一个动作，后续都交给冻结 2.0
+/// 用相同随机源打完，比较哪一边赢。
+/// </para>
+/// <para>
+/// <b>两种模式</b>：<c>--causal-wiring</c> 只跑接线验收（不看强弱结论）；
+/// 不带则跑正式实验并输出逐局面 CSV 与汇总。
+/// </para>
+/// <para>
+/// <b>统计单位是局面，不是 (局面,种子)</b>：同一局面的多次续局高度相关，展开成独立样本会
+/// 人为压低方差。先在局面内对种子求平均，再以局面为样本做 cluster 自助法。
+/// </para>
+/// <para>
+/// <b>不能只报一个 Δ</b>：<c>Δ_cond</c> 是"分歧条件下的收益"（分母 D），
+/// <c>Δ_all</c> 是"每个抽样决策的收益"（分母 M，动作一致记 0）。两口径必须同时给，
+/// 否则 3:2 这种会被误读成 60% 的总体优势。
+/// </para>
+/// </summary>
+internal static void RunCausalContinuation(string[] args)
+{
+    var gamesPerMatchup = ParseIntegerOption(
+        args, "--causal-games", defaultValue: 5, minimum: 1, maximum: 500);
+    var sourceSeed = (ulong)ParseIntegerOption(
+        args, "--causal-seed", defaultValue: 20_260_915, minimum: 1, maximum: int.MaxValue);
+    var probeSeed = (ulong)ParseIntegerOption(
+        args, "--causal-probe-seed", defaultValue: 88_210, minimum: 1, maximum: int.MaxValue);
+    var wiring = HasOption(args, "--causal-wiring");
+    var seedsText = ReadOptionValue(args, "--causal-continuation-seeds");
+    var continuationSeeds = string.IsNullOrWhiteSpace(seedsText)
+        ? new List<ulong> { 900_001UL, 900_002UL }
+        : seedsText
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(text => ulong.Parse(text))
+            .ToList();
+
+    if (continuationSeeds.Count == 0)
+    {
+        continuationSeeds = [900_001UL, 900_002UL];
+    }
+
+    var outputDirectory = Path.Combine(ProjectRoot(), "outputs");
+    Directory.CreateDirectory(outputDirectory);
+    var config = new CausalContinuationProbe.Config(
+        gamesPerMatchup, sourceSeed, probeSeed, continuationSeeds, outputDirectory, wiring,
+        HasOption(args, "--causal-resume"));
+
+    Console.WriteLine("因果续局探针（§11 的分叉诊断：3.0 的单步动作是否真的比 2.0 更好）");
+    Console.WriteLine($"  模式            ：{(wiring ? "接线验收（--causal-wiring）" : "正式实验")}");
+    Console.WriteLine($"  每对局源对局数  ：{gamesPerMatchup}（四种对局，合计最多 {gamesPerMatchup * 4} 个统计单位）");
+    Console.WriteLine($"  源对局种子基    ：{sourceSeed}（必须是未用于调参的新种子）");
+    Console.WriteLine($"  询问用牌手种子  ：{probeSeed}");
+    Console.WriteLine($"  续局种子        ：{string.Join(", ", continuationSeeds)}（{continuationSeeds.Count} 个）");
+    Console.WriteLine($"  2.0 = 冻结 LookaheadPlayerAgentV2（{CausalContinuationProbe.FrozenV2Rollouts} 次推演）");
+    Console.WriteLine("  3.0 = LookaheadPlayerAgent(推演 60 / 视野 1 / 交替视野 3 / 回退闸 0.0)");
+    Console.WriteLine();
+
+    if (wiring)
+    {
+        var passed = CausalContinuationProbe.RunWiringChecks(config, Console.WriteLine);
+        WriteCausalConfig(config, outputDirectory, "causal-continuation-wiring");
+        Console.WriteLine();
+        Console.WriteLine(passed
+            ? "接线验收：通过 → 可进入正式实验（仍需用户批准机时）"
+            : "接线验收：未通过 → 先修接线，不得进入正式实验");
+        Environment.ExitCode = passed ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--causal-clone-tests"))
+    {
+        var cloneOk = CausalContinuationProbe.RunCloneTests(config, Console.WriteLine);
+        Console.WriteLine();
+        Console.WriteLine(cloneOk ? "克隆回归测试：全部通过" : "克隆回归测试：有失败项");
+        Environment.ExitCode = cloneOk ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--causal-census"))
+    {
+        var measure = CausalContinuationProbe.Measure(config, Console.WriteLine);
+        Console.WriteLine();
+        Console.WriteLine("== 影子同步校验（必须 100%，否则测量结果不得使用）==");
+        Console.WriteLine($"  决策 {measure.Sync.Decisions} 个，不一致 {measure.Sync.Mismatches} 个 → 一致率 {measure.Sync.Agreement:P3}");
+        foreach (var example in measure.Sync.Examples)
+        {
+            Console.WriteLine($"    {example}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("== 修正后的规模与分歧（持久影子牌手，决策序号与实战同步）==");
+        Console.WriteLine($"  决策 {measure.Decisions} ｜ 合格（≥2 合法动作）{measure.Eligible} ｜ 分歧 {measure.Disagreements}");
+        Console.WriteLine($"  分歧率：对全部决策 {measure.DisagreementRate:P2} ｜ 对合格决策 {measure.EligibleDisagreementRate:P2}");
+        Console.WriteLine($"  源对局 {measure.Games} 局 ｜ 至少出现一次分歧的局 {measure.GamesWithAtLeastOneDisagreement} 局（{measure.GameWithDisagreementRate:P2}）");
+        Console.WriteLine(
+            "  每局分歧数分布：" + string.Join(
+                "  ",
+                measure.DisagreementsPerGame.GroupBy(count => count).OrderBy(group => group.Key)
+                    .Select(group => $"{group.Key}次:{group.Count()}局")));
+
+        Console.WriteLine();
+        Console.WriteLine("== 决策来源分解 ==");
+        Console.WriteLine("| 牌手 | 决策 | 有规划器信息 | 规划器=规则 | 闸门覆盖 | 最终=规则 | 最终=规划器 |");
+        Console.WriteLine("|---|---|---|---|---|---|---|");
+        foreach (var gate in new[] { measure.V2, measure.V3 })
+        {
+            Console.WriteLine(
+                $"| {gate.Name} | {gate.Decisions} | {gate.WithPlanner} | " +
+                $"{gate.PlannerMatchesRule}（{gate.PlannerMatchesRuleRate:P1}） | " +
+                $"{gate.RailOverrode}（{gate.RailOverrideRate:P1}） | " +
+                $"{gate.FinalEqualsRule}（{gate.FinalEqualsRuleRate:P1}） | {gate.FinalEqualsPlanner} |");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("== 分歧原因交叉表 ==");
+        foreach (var (cause, count) in measure.DisagreementCauses)
+        {
+            Console.WriteLine($"  {cause}：{count}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("| 分层 | 决策 | 分歧 | 分歧率 |");
+        Console.WriteLine("|---|---|---|---|");
+        foreach (var slice in measure.BySeat.Concat(measure.ByMatchup).Concat(measure.ByTurnBucket))
+        {
+            Console.WriteLine($"| {slice.Key} | {slice.Decisions} | {slice.Disagreements} | {slice.Rate:P2} |");
+        }
+
+        WriteCausalConfig(config, outputDirectory, "causal-measure");
+        return;
+    }
+
+    if (HasOption(args, "--causal-entry-check"))
+    {
+        bool consistent;
+        try
+        {
+            consistent = CausalContinuationProbe.RunEntryConsistencyCheck(config, Console.WriteLine);
+        }
+        catch (InvalidOperationException exception)
+        {
+            Console.Error.WriteLine($"两入口一致性检查中止：{exception.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine(consistent ? "两入口一致性：通过" : "两入口一致性：未通过");
+        Environment.ExitCode = consistent ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--causal-amulet-check"))
+    {
+        var ok = CausalContinuationProbe.RunAmuletChecks(config, Console.WriteLine);
+        Console.WriteLine();
+        Console.WriteLine(ok ? "护符确定性测试：全部通过" : "护符确定性测试：有失败项");
+        Environment.ExitCode = ok ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--causal-bootstrap-check"))
+    {
+        var ok = CausalContinuationProbe.RunBootstrapChecks(Console.WriteLine);
+        Console.WriteLine();
+        Console.WriteLine(ok ? "零分歧 bootstrap 专项测试：全部通过" : "零分歧 bootstrap 专项测试：有失败项");
+        Environment.ExitCode = ok ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--causal-replay"))
+    {
+        bool replayed;
+        try
+        {
+            replayed = CausalContinuationProbe.ReplaySingleRow(config, Console.WriteLine);
+        }
+        catch (InvalidOperationException exception)
+        {
+            Console.Error.WriteLine($"单行重放中止：{exception.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        Environment.ExitCode = replayed ? 0 : 1;
+        return;
+    }
+
+    if (HasOption(args, "--causal-formal"))
+    {
+        CausalContinuationProbe.FormalSummary formal;
+        try
+        {
+            formal = CausalContinuationProbe.RunFormal(config, Console.WriteLine);
+        }
+        catch (InvalidOperationException exception)
+        {
+            // [DIR-4A] 第 4 条：正式接口用**受控退出码 1**，不要用未处理异常的 Windows 负码
+            Console.Error.WriteLine($"正式运行中止：{exception.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"CSV：{formal.CsvPath}");
+        Console.WriteLine($"T={formal.T}（全部决策）  M={formal.M}（合格）  D={formal.D}（分歧）");
+        Console.WriteLine(
+            $"Δ_call={formal.DeltaCall:+0.0000;-0.0000;0.0000}  " +
+            $"Δ_eligible={formal.DeltaEligible:+0.0000;-0.0000;0.0000}  " +
+            $"Δ_cond={formal.DeltaCond:+0.0000;-0.0000;0.0000}");
+        Console.WriteLine(
+            $"Δ_cond 的源对局聚类 95% CI：" +
+            $"[{formal.CondCiLow:+0.0000;-0.0000;0.0000}, {formal.CondCiHigh:+0.0000;-0.0000;0.0000}]");
+        Console.WriteLine();
+        Console.WriteLine("| 对局 | T | M | D | Δ_cond | 95% CI |");
+        Console.WriteLine("|---|---|---|---|---|---|");
+        foreach (var stat in formal.ByMatchup)
+        {
+            Console.WriteLine(
+                $"| {stat.Matchup} | {stat.T} | {stat.M} | {stat.D} | " +
+                $"{stat.DeltaCond:+0.0000;-0.0000;0.0000} | " +
+                $"[{stat.CiLow:+0.0000;-0.0000;0.0000}, {stat.CiHigh:+0.0000;-0.0000;0.0000}] |");
+        }
+
+        WriteCausalConfig(config, outputDirectory, "causal-formal");
+        return;
+    }
+
+    // ⚠️ 旧正式路径已被 [RES-6] 判定不可用：它抽单个座位0局面、每个局面重建牌手，
+    // 因而把决策序号重置 —— 比较的不是实战中 2.0/3.0 的策略，跑再久也没有意义。
+    // 在 [DIR-3] 重写完成并通过 [RES-7] 之前，这里硬报错，避免误跑四小时无效实验。
+    Console.Error.WriteLine(
+        "旧的正式实验入口已停用：它每个局面重建牌手并重置决策序号，测的不是实战策略。");
+    Console.Error.WriteLine(
+        "可用入口：--causal-wiring ｜ --causal-census ｜ --causal-clone-tests");
+    Console.Error.WriteLine(
+        "正式入口将在 DIR-3 重写并通过 RES-7 后恢复；在那之前不得运行长实验。");
+    Environment.ExitCode = 2;
+    return;
+}
+
+/// <summary>把运行参数写成 JSON，供复审核对"可重放"。</summary>
+private static void WriteCausalConfig(
+    CausalContinuationProbe.Config config, string outputDirectory, string fileStem)
+{
+    var json = string.Join('\n',
+        "{",
+        $"  \"gamesPerMatchup\": {config.GamesPerMatchup},",
+        $"  \"sourceSeedBase\": {config.SourceSeedBase},",
+        $"  \"probeSeed\": {config.ProbeSeed},",
+        $"  \"continuationSeeds\": [{string.Join(", ", config.ContinuationSeeds)}],",
+        $"  \"dryRun\": {(config.DryRun ? "true" : "false")},",
+        $"  \"frozenV2Rollouts\": {CausalContinuationProbe.FrozenV2Rollouts},",
+        "  \"v3Config\": { \"rolloutsPerAction\": 60, \"futureTurnHorizon\": 1, \"alternateHorizon\": 3, \"minimumPracticalAdvantage\": 0.0 }",
+        "}");
+    File.WriteAllText(Path.Combine(outputDirectory, fileStem + "-config.json"), json);
+}
+
+/// <summary>人类可读汇总。刻意把两个 Δ 并列，避免只看到一个数字。</summary>
+private static string BuildCausalSummary(CausalContinuationProbe.Summary summary)
+{
+    var lines = new List<string>
+    {
+        "# 因果续局实验 · 汇总",
+        string.Empty,
+        "> 这是**分叉诊断**：两条分支的后续都是冻结 2.0，所以它只回答「3.0 的单步动作是否更好」，",
+        "> **不能**推出「完整 3.0 策略更强」。",
+        string.Empty,
+        "## 规模与分歧",
+        string.Empty,
+        "| 项 | 值 |",
+        "|---|---|",
+        $"| 源对局尝试 | {summary.SourceGamesAttempted} |",
+        $"| 无合格决策被跳过 | {summary.SourceGamesWithoutEligibleDecision} |",
+        $"| 抽样决策 M | {summary.M} |",
+        $"| 分歧数 D | {summary.D} |",
+        $"| 分歧率 D/M | {summary.DisagreementRate:P2} |",
+        string.Empty,
+        "## 两个 Δ（必须并列看）",
+        string.Empty,
+        "| 口径 | 定义 | 值 | 95% 自助区间（重采样单位 = 局面） |",
+        "|---|---|---|---|",
+        $"| Δ_cond | Σδᵢ / D，只在分歧局面上 | {summary.DeltaConditional:+0.0000;-0.0000;0.0000} | " +
+            $"[{summary.ConditionalCiLow:+0.0000;-0.0000;0.0000}, {summary.ConditionalCiHigh:+0.0000;-0.0000;0.0000}] |",
+        $"| Δ_all | Σδᵢ / M，动作一致记 δ=0 | {summary.DeltaAll:+0.0000;-0.0000;0.0000} | " +
+            $"[{summary.AllCiLow:+0.0000;-0.0000;0.0000}, {summary.AllCiHigh:+0.0000;-0.0000;0.0000}] |",
+        string.Empty,
+        $"局面级方向计数（只在分歧局面上）：正 {summary.PositiveUnits} ｜ 负 {summary.NegativeUnits} ｜ 平 {summary.TieUnits}",
+        string.Empty,
+        $"续局种子离散度（局面内 max−min 的均值，**只用于报告方差，不作通过线**）：{summary.MeanSeedDeltaSpread:0.0000}",
+        string.Empty,
+        "> ⚠️ 两次独立续局结果不同的概率是 `2p(1−p)`，只有 `p=0.5` 时才等于 50%。",
+        "> 所以**不能**把「不同种子差异 ≈50%」当自检判据 —— 动作越决定性，这个数越小于 50%。",
+        string.Empty,
+        "## 分层（按对局）",
+        string.Empty,
+        "| 对局 | 单位 | 分歧 | 分歧率 | Δ_all | Δ_cond |",
+        "|---|---|---|---|---|---|"
+    };
+
+    foreach (var stratum in summary.ByMatchup)
+    {
+        lines.Add(
+            $"| {stratum.Name} | {stratum.Units} | {stratum.Disagreements} | {stratum.DisagreementRate:P2} | " +
+            $"{stratum.DeltaAll:+0.0000;-0.0000;0.0000} | {stratum.DeltaConditional:+0.0000;-0.0000;0.0000} |");
+    }
+
+    lines.Add(string.Empty);
+    lines.Add("## 逐局面明细");
+    lines.Add(string.Empty);
+    lines.Add("| 对局 | 源种子 | 决策# | 状态指纹 | 合格数 | 抽中# | 一致? | δ(局面) |");
+    lines.Add("|---|---|---|---|---|---|---|---|");
+    foreach (var unit in summary.Units)
+    {
+        lines.Add(
+            $"| {unit.Matchup} | {unit.SourceGameSeed} | {unit.DecisionIndex} | {unit.StateHash} | " +
+            $"{unit.EligibleDecisionCount} | {unit.SampledDecisionIndex} | {(unit.Agreed ? "是" : "**否**")} | " +
+            $"{unit.Delta:+0.0000;-0.0000;0.0000} |");
+    }
+
+    return string.Join('\n', lines) + "\n";
+}
+
 internal static void RunDecisionSensitivity(string[] args)
 {    var gameCount = ParseIntegerOption(
         args, "--sensitivity-games", defaultValue: 60, minimum: 5, maximum: 5000);

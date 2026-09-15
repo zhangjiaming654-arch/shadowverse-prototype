@@ -66,7 +66,13 @@ public sealed class FollowerInstance
     public bool IsEvolved => EvolutionState is EvolutionState.Evolved or EvolutionState.SuperEvolved;
     public bool IsSuperEvolved => EvolutionState == EvolutionState.SuperEvolved;
 
-    internal FollowerInstance DeepCopy() => new(Card, SummonedOnTurn)
+    /// <summary>
+    /// Copies the follower **and its card**. The card must be copied, not shared:
+    /// <see cref="CardInstance.CostReduction"/> has an internal setter, so a shared card
+    /// would let one branch's cost reduction leak into another branch (and into the
+    /// original state) as soon as a board object travels back to a hand.
+    /// </summary>
+    internal FollowerInstance DeepCopy() => new(Card.CopyForState(), SummonedOnTurn)
     {
         Attack = Attack,
         MaxDefense = MaxDefense,
@@ -107,7 +113,8 @@ public sealed class AmuletInstance
         Crystallized is not null ? Crystallized.LastWordsEffects : Definition.LastWordsEffects;
     public int? Countdown { get; internal set; }
 
-    internal AmuletInstance DeepCopy() => new(Card, Crystallized) { Countdown = Countdown };
+    /// <summary>Copies the amulet **and its card**; see <see cref="FollowerInstance.DeepCopy"/> for why.</summary>
+    internal AmuletInstance DeepCopy() => new(Card.CopyForState(), Crystallized) { Countdown = Countdown };
 }
 
 public enum TimedLeaderEffectKind

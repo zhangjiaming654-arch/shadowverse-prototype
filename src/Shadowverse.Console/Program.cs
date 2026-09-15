@@ -343,6 +343,22 @@ if (ConsoleTools.HasOption(args, "--quality"))
     return;
 }
 
+// 【因果续局】§11 预注册实验：3.0 的单步动作是否真的比 2.0 更好？
+// 分叉诊断，不是强度验收。--causal-wiring 只跑接线验收，不看强弱结论。
+if (ConsoleTools.HasOption(args, "--causal-continuation")
+    || ConsoleTools.HasOption(args, "--causal-wiring")
+    || ConsoleTools.HasOption(args, "--causal-census")
+    || ConsoleTools.HasOption(args, "--causal-clone-tests")
+    || ConsoleTools.HasOption(args, "--causal-formal")
+    || ConsoleTools.HasOption(args, "--causal-replay")
+    || ConsoleTools.HasOption(args, "--causal-bootstrap-check")
+    || ConsoleTools.HasOption(args, "--causal-amulet-check")
+    || ConsoleTools.HasOption(args, "--causal-entry-check"))
+{
+    ConsoleTools.RunCausalContinuation(args);
+    return;
+}
+
 // 采样分支放在**所有牌手参数解析完之后**：采样要和 --bo10 用同一套 rollout 配置，
 // 否则"采样的牌手"和"报告的配置"会不是同一个东西。
 if (args.Contains("--collect-selfplay", StringComparer.OrdinalIgnoreCase))

@@ -46,6 +46,170 @@ public static class GameEngine
         };
     }
 
+    /// <summary>
+    /// Copies a state without advancing it, including its internal random state.
+    /// <para>
+    /// Needed by causal-branch experiments: two branches must start from a byte-identical
+    /// snapshot and then differ only in the one forced action under test.
+    /// <see cref="GameState.DeepCopy"/> is internal, so this is the public seam.
+    /// This adds an API only; it changes no existing behaviour.
+    /// </para>
+    /// </summary>
+    public static GameState Clone(GameState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return state.DeepCopy();
+    }
+
+    /// <summary>
+    /// 完整状态指纹：覆盖两名玩家的全部标量、全部可变实例字段，以及
+    /// <c>Phase / StartingPlayer / ActivePlayer / TurnNumber / Winner / RandomState / NextInstanceId</c>。
+    /// <para>
+    /// <b>它不是"决策指纹"</b>。决策指纹只哈希回合 + 行动方 + 合法动作，即使共享引用被改写也可能保持不变，
+    /// 因此**不能**用来证明状态未被污染。分支实验的污染检查必须用这个完整指纹。
+    /// </para>
+    /// </summary>
+    public static string StateFingerprint(GameState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append(state.Phase).Append('|')
+            .Append(state.StartingPlayer).Append('|')
+            .Append(state.ActivePlayer).Append('|')
+            .Append(state.TurnNumber).Append('|')
+            .Append(state.Winner?.ToString() ?? "-").Append('|')
+            .Append(state.RandomState).Append('|')
+            .Append(state.NextInstanceId).Append('|');
+        for (var seat = 0; seat < state.Players.Length; seat++)
+        {
+            AppendPlayerFingerprint(builder, seat, state.Players[seat]);
+        }
+
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(builder.ToString())));
+    }
+
+    private static void AppendPlayerFingerprint(System.Text.StringBuilder builder, int seat, PlayerState player)
+    {
+        builder.Append('#').Append(seat).Append(':')
+            .Append(player.DeckName).Append(',')
+            .Append(player.Health).Append(',').Append(player.MaxHealth).Append(',')
+            .Append(player.CurrentPlayPoints).Append(',').Append(player.MaxPlayPoints).Append(',')
+            .Append(player.OwnTurnNumber).Append(',')
+            .Append(player.EvolutionPoints).Append(',').Append(player.SuperEvolutionPoints).Append(',')
+            .Append(player.UsedEvolutionOrSuperEvolutionThisTurn ? 1 : 0).Append(',')
+            .Append(player.UsedEarlyExtraPlayPoint ? 1 : 0).Append(',')
+            .Append(player.UsedLateExtraPlayPoint ? 1 : 0).Append(',')
+            .Append(player.AttackedEnemyLeaderThisTurn ? 1 : 0).Append(',')
+            .Append(player.AttackedEnemyLeaderOnPreviousTurn ? 1 : 0).Append(';');
+
+        foreach (var card in player.DeckInternal) { AppendCardFingerprint(builder, card); }
+
+        builder.Append(';');
+        foreach (var card in player.HandInternal) { AppendCardFingerprint(builder, card); }
+
+        builder.Append(';');
+        foreach (var follower in player.BoardInternal)
+        {
+            builder.Append('F').Append(follower.InstanceId).Append(',')
+                .Append(follower.Attack).Append(',').Append(follower.MaxDefense).Append(',')
+                .Append(follower.CurrentDefense).Append(',')
+                .Append(follower.HasAttacked ? 1 : 0).Append(',')
+                .Append(follower.EvolutionState).Append(',')
+                .Append((int)follower.GrantedKeywords).Append(',').Append((int)follower.ConsumedKeywords).Append(',')
+                .Append(follower.TemporaryAttackBonus).Append(',')
+                .Append(follower.SummonedOnTurn).Append(';');
+            AppendCardFingerprint(builder, follower.Card);
+        }
+
+        builder.Append(';');
+        foreach (var amulet in player.AmuletsInternal)
+        {
+            builder.Append('A').Append(amulet.InstanceId).Append(',')
+                .Append(amulet.Countdown?.ToString() ?? "-").Append(',')
+                // 显式编码"普通护符 / 结晶护符"身份：CurrentCost 与 LastWords 都取决于它
+                .Append(amulet.Crystallized is null
+                    ? "-"
+                    : $"c{amulet.Crystallized.Cost}x{amulet.Crystallized.Countdown}")
+                .Append(';');
+            AppendCardFingerprint(builder, amulet.Card);
+        }
+
+        builder.Append(';');
+        foreach (var effect in player.TimedLeaderEffectsInternal)
+        {
+            builder.Append('T').Append(effect.Kind).Append(',').Append(effect.ExpiresAtEndOfPlayerTurn).Append(';');
+        }
+
+        builder.Append(';');
+        foreach (var crest in player.CrestsInternal)
+        {
+            builder.Append('C').Append(crest.Definition.Id).Append(',')
+                .Append(crest.LastOwnLeaderRestoreTriggerTurn).Append(';');
+        }
+
+        builder.Append(';');
+        foreach (var card in player.GraveyardInternal) { AppendCardFingerprint(builder, card); }
+
+        builder.Append(';');
+        foreach (var id in player.RevealedCardIdsInternal) { builder.Append(id).Append(','); }
+
+        builder.Append(';');
+    }
+
+    private static void AppendCardFingerprint(System.Text.StringBuilder builder, CardInstance card)
+    {
+        // CardDefinition 是不可变的共享目录定义。这里**必须**用跨进程稳定的标识，
+        // 且用唯一的 Id 而非 Name（Name 可能重名）。不能用 RuntimeHelpers.GetHashCode ——
+        // 引用身份哈希每个进程都不同，会让同一个局面在两次运行里算出不同指纹（实测踩到过）。
+        builder.Append(card.Definition.Id).Append(',')
+            .Append(card.InstanceId).Append(',')
+            .Append(card.HasSuppressedLastWords ? 1 : 0).Append(',')
+            .Append(card.CostReduction).Append(';');
+    }
+
+    /// <summary>
+    /// 克隆完整性审计：两个状态之间是否共享**任何**可变的 <see cref="CardInstance"/> 引用。
+    /// <para>
+    /// 比逐个 <c>ReferenceEquals</c> 更强：只要返回 false，就说明不存在任何能让一条分支的
+    /// 改动（例如回手之后触发手牌减费）泄漏到另一条分支的卡牌别名路径，
+    /// 不需要依赖某张具体卡去构造动作链。
+    /// </para>
+    /// </summary>
+    public static bool ShareAnyCardInstance(GameState first, GameState second)
+    {
+        ArgumentNullException.ThrowIfNull(first);
+        ArgumentNullException.ThrowIfNull(second);
+
+        var left = new HashSet<CardInstance>(ReferenceEqualityComparer.Instance);
+        var right = new HashSet<CardInstance>(ReferenceEqualityComparer.Instance);
+        CollectCardInstances(first, left);
+        CollectCardInstances(second, right);
+        return left.Overlaps(right);
+    }
+
+    /// <summary>收集一个状态里可达的全部 <see cref="CardInstance"/>（含场上随从与护符所持有的卡）。</summary>
+    public static IReadOnlyCollection<CardInstance> CollectCardInstances(GameState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var set = new HashSet<CardInstance>(ReferenceEqualityComparer.Instance);
+        CollectCardInstances(state, set);
+        return set;
+    }
+
+    private static void CollectCardInstances(GameState state, HashSet<CardInstance> set)
+    {
+        foreach (var player in state.Players)
+        {
+            foreach (var card in player.DeckInternal) { set.Add(card); }
+            foreach (var card in player.HandInternal) { set.Add(card); }
+            foreach (var card in player.GraveyardInternal) { set.Add(card); }
+            foreach (var follower in player.BoardInternal) { set.Add(follower.Card); }
+            foreach (var amulet in player.AmuletsInternal) { set.Add(amulet.Card); }
+        }
+    }
+
     /// <summary>Returns a new state, leaving the supplied state unchanged for replay and search use.</summary>
     public static GameState Apply(GameState state, GameAction action)
     {
