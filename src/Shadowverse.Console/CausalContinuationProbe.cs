@@ -902,6 +902,21 @@ public static class CausalContinuationProbe
                     + "（崩溃窗口的正常残留）；以 partial 为准，缺失的对局将整组重跑");
             }
 
+            // [DIR-6 #1] 被丢弃的尾部残缺组必须**从 partial 里真正清掉**（只留表头 + validRows），
+            // 否则补跑后续对局之后，这半局就不再处于文件尾部 —— 二次中断恢复会把它判成
+            // "非尾部损坏"而直接拒绝，运行就此卡死。
+            if (groups.Count != completedSeeds.Count)
+            {
+                var rewritten = new List<string> { CausalRow.Header };
+                rewritten.AddRange(validRows.Select(row => row.ToCsv()));
+                var temporaryPartial = partialCsvPath + ".tmp";
+                File.WriteAllLines(temporaryPartial, rewritten);
+                File.Move(temporaryPartial, partialCsvPath, overwrite: true);
+                WriteCheckpoint(checkpointPath, configHash, consoleHash, engineHash, completedSeeds, validRows.Count);
+                report($"[DIR-6 #1] 已原子重写 partial：保留表头 + {validRows.Count} 有效行，"
+                    + $"并同步检查点（cleared {groups.Count - completedSeeds.Count} 组残缺）");
+            }
+
             rows.AddRange(validRows);
             resumedGames = completedSeeds.Count;
             report($"断点续跑：校验通过，载入 {validRows.Count} 行 / {resumedGames} 个已完成源对局（丢弃尾部残缺 {groups.Count - resumedGames} 组），跳过它们");
