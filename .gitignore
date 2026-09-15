@@ -40,3 +40,6 @@ outputs/int*.err
 outputs/int*.log
 outputs/resume-complete.log
 outputs/*-config.json
+outputs/*.err
+outputs/archive/
+
