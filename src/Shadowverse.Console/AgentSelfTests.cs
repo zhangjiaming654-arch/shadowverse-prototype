@@ -8704,7 +8704,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             }
         }
 
-        CheckFace(sloth, 3, 0, 2, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(sloth, 3, 0, 2, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.Stealth, true);
         CheckFace(lazuli, 3, 3, 3, CardType.Follower, CardRarity.Silver, CardProfession.Nemesis, CardKeyword.None, true);
         CheckFace(gorgeous, 3, 2, 2, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.Storm, false,
             [CardIds.CreationTrait]);
@@ -8719,6 +8719,142 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             ReportParkourFailures(failures, "第二批卡面");
         }
 
+        // ---- ①b 【潜伏】的机制断言（走真实对局，不能用内部状态构造） ----
+        // 官网术语表「潜行」：不会被对方的能力选中，且不会被对方随从攻击；
+        // 进行攻击时、或通过能力造成伤害时失去潜行。
+        var stealthAttackChecks = 0;
+        var stealthSelectChecks = 0;
+        var stealthConsumeChecks = 0;
+        var stealthFailures = new List<string>();
+
+        // 让**对手**也用一副潜伏随从：这样"我方能不能攻击它"才是真实局面。
+        CardDefinition[] stealthDeckCards =
+        [
+            .. Enumerable.Repeat(sloth, 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 10)
+        ];
+        CardDefinition[] stealthAttackerCards =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.GorgeousCreation), 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 10)
+        ];
+
+        foreach (var seed in new ulong[] { 71_001, 71_002, 71_003 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("stealth-attacker", stealthAttackerCards),
+                new DeckDefinition("stealth-defender", stealthDeckCards),
+                seed);
+
+            for (var step = 0; step < 800 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var me = state.ActivePlayer;
+                var them = OtherPlayerIndex(me);
+
+                // ① 对方场上有【潜伏】随从时，我的攻击动作里**绝不能**出现它。
+                var enemyStealth = state.Players[them].Board.Where(f => f.HasStealth).ToArray();
+                if (enemyStealth.Length > 0)
+                {
+                    var illegal = legalActions
+                        .OfType<AttackFollowerAction>()
+                        .FirstOrDefault(action => enemyStealth.Any(f => f.InstanceId == action.DefenderInstanceId));
+                    if (illegal is not null)
+                    {
+                        // 引擎在 Apply 时会拒绝这种攻击，但"合法动作里根本不该出现它"——这里如实计为失败，
+                        // 而不是让引擎的异常把整个套件打断（变异测试时就是被异常打断、断言没机会报错）。
+                        stealthFailures.Add("【潜伏】随从出现在「可被攻击」的合法动作里 —— 它不该被对方随从攻击");
+                    }
+                    else
+                    {
+                        stealthAttackChecks++;
+                    }
+
+                    // 同时它也不该出现在"选对手随从"的能力目标里（用攻击目标集合代表这一类）。
+                    if (legalActions.OfType<AttackFollowerAction>().All(action =>
+                            enemyStealth.All(f => f.InstanceId != action.DefenderInstanceId)))
+                    {
+                        stealthSelectChecks++;
+                    }
+                }
+
+                // ② 我的【潜伏】随从一攻击，就必须失去潜行。
+                var myStealth = state.Players[me].Board.FirstOrDefault(f => f.HasStealth);
+                if (myStealth is not null)
+                {
+                    var stealthAttack = legalActions
+                        .OfType<AttackFollowerAction>()
+                        .FirstOrDefault(action => action.AttackerInstanceId == myStealth.InstanceId)
+                        ?? (GameAction?)legalActions
+                            .OfType<AttackLeaderAction>()
+                            .FirstOrDefault(action => action.AttackerInstanceId == myStealth.InstanceId);
+                    if (stealthAttack is not null)
+                    {
+                        state = GameEngine.Apply(state, stealthAttack);
+                        var stillStealth = state.Players[me].Board
+                            .Any(f => f.InstanceId == myStealth.InstanceId && f.HasStealth);
+                        if (stillStealth)
+                        {
+                            stealthFailures.Add("带【潜伏】的随从攻击后仍然保持潜行 —— 攻击应当解除潜行");
+                        }
+                        else
+                        {
+                            stealthConsumeChecks++;
+                        }
+
+                        continue;
+                    }
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                // 引擎会在 Apply 时拒绝非法动作（例如攻击【潜伏】随从）。把拒绝也变成**本断言的证据**：
+                // 若拒绝的原因是潜行，就说明"合法动作里出现了不该出现的攻击"——那正是要抓的缺陷。
+                // 不这么做的话异常会打断整个自检套件，断言根本没机会报错（变异测试时就是这样）。
+                try
+                {
+                    state = GameEngine.Apply(state, actionToTake);
+                }
+                catch (InvalidOperationException exception)
+                    when (exception.Message.Contains("潜伏", StringComparison.Ordinal))
+                {
+                    stealthFailures.Add(
+                        $"合法动作里给出了「攻击【潜伏】随从」的动作，引擎在 Apply 时拒绝：{exception.Message}");
+                    break;
+                }
+            }
+        }
+
+        if (stealthAttackChecks == 0)
+        {
+            stealthFailures.Add("没能验证「【潜伏】随从不能被对方随从攻击」");
+        }
+
+        if (stealthSelectChecks == 0)
+        {
+            stealthFailures.Add("没能验证「【潜伏】随从不会被对方能力选中」");
+        }
+
+        if (stealthConsumeChecks == 0)
+        {
+            stealthFailures.Add("没能验证「攻击后失去【潜伏】」");
+        }
+
+        failures.AddRange(stealthFailures);
         // ---- ② 斯洛士：进化后回合末 → 给**对手**纹章 + 自己消失；随后纹章每回合随机发动 ----
         // 全程只用公开 API（打出/进化/结束回合），所以这条同时覆盖"给纹章"和"消失"两条链路。
         var vanishChecks = 0;
@@ -9072,6 +9208,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         }
 
         Console.WriteLine("Sloth batch test passed.");
+        Console.WriteLine($"【潜伏】：不可被攻击 {stealthAttackChecks} 次 ｜ 不被选为目标 {stealthSelectChecks} 次 ｜ 攻击后解除潜行 {stealthConsumeChecks} 次。");
         Console.WriteLine($"纹章·随机未发动能力：回合开始发动并记账 {crestTurnChecks} 次，已发动槽位轨迹 [{string.Join(",", crestSlotsSeen)}]。");
         Console.WriteLine($"【奥义】槽=回合数+本局进化次数：<10 不进化 {oathLowChecks} 次 ｜ ≥10 进化 {oathHighChecks} 次。");
         Console.WriteLine($"「创造物进入战场时」被动：米乌在场且创造物进场 {miuTriggerChecks} 次 ｜ 个性店主在场且创造物进场 {shopkeeperTriggerChecks} 次。");

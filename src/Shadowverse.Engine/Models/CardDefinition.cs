@@ -12,7 +12,13 @@ public enum CardKeyword
     Barrier = 32,
     Intimidate = 64,
     Aura = 128,
-    Drain = 256
+    Drain = 256,
+    /// <summary>
+    /// 【潜伏】: cannot be chosen by the opponent's abilities and cannot be attacked by enemy followers.
+    /// Lost when this follower attacks, or when it deals damage through an ability
+    /// (official glossary 「潜行」).
+    /// </summary>
+    Stealth = 512
 }
 
 public enum CardType

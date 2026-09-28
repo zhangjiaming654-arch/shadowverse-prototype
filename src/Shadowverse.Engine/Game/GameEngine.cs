@@ -453,8 +453,14 @@ public static class GameEngine
 
         // Intimidate takes priority over Ward, so an Intimidate follower is neither a
         // legal attack target nor a Ward target that prevents leader attacks.
-        var wardTargets = opponent.Board.Where(follower => follower.HasWard && !follower.HasIntimidate).ToArray();
-        var followerAttackTargets = opponent.Board.Where(follower => !follower.HasIntimidate).ToArray();
+        // 【潜伏】followers cannot be attacked by enemy followers at all, so they are excluded from both
+        // lists — including from the Ward list, where they must not block leader attacks either.
+        var wardTargets = opponent.Board
+            .Where(follower => follower.HasWard && !follower.HasIntimidate && !follower.HasStealth)
+            .ToArray();
+        var followerAttackTargets = opponent.Board
+            .Where(follower => !follower.HasIntimidate && !follower.HasStealth)
+            .ToArray();
         foreach (var attacker in active.Board.Where(follower => CanAttackFollowerThisTurn(state, follower)))
         {
             if (wardTargets.Length > 0 && !attacker.CanIgnoreWard)
@@ -614,7 +620,7 @@ public static class GameEngine
         if (effects.Any(effect => effect.Kind == CardEffectKind.DealDamageToEnemyFollower))
         {
             var singleTargets = state.Players[OtherPlayer(state.ActivePlayer)].Board
-                .Where(follower => !follower.HasAura)
+                .Where(follower => !follower.HasAura && !follower.HasStealth)
                 .ToArray();
             return singleTargets.Length == 0
                 ? [Array.Empty<int>()]
@@ -627,7 +633,7 @@ public static class GameEngine
         }
 
         var enemyFollowers = state.Players[OtherPlayer(state.ActivePlayer)].Board
-            .Where(follower => !follower.HasAura)
+            .Where(follower => !follower.HasAura && !follower.HasStealth)
             .ToArray();
         if (enemyFollowers.Length == 0)
         {
@@ -730,7 +736,7 @@ public static class GameEngine
 
         // 【灵气】随从不能成为敌方能力的目标，与其他指定目标的效果保持一致。
         var targets = state.Players[OtherPlayer(state.ActivePlayer)].Board
-            .Where(follower => !follower.HasAura)
+            .Where(follower => !follower.HasAura && !follower.HasStealth)
             .ToArray();
         return targets.Length == 0
             ? [null]
@@ -1417,7 +1423,7 @@ public static class GameEngine
         IReadOnlyList<CardEffect> effects)
     {
         var selectableEnemyFollowers = state.Players[OtherPlayer(state.ActivePlayer)].Board
-            .Where(follower => !follower.HasAura)
+            .Where(follower => !follower.HasAura && !follower.HasStealth)
             .ToArray();
 
         if (effects.Any(effect => effect.Kind == CardEffectKind.TransformInto))
@@ -2179,7 +2185,7 @@ public static class GameEngine
         var opponent = state.Players[opponentIndex];
 
         var selectableFollowers = opponent.BoardInternal
-            .Where(follower => !follower.HasAura)
+            .Where(follower => !follower.HasAura && !follower.HasStealth)
             .ToArray();
         var requiredTargetCount = Math.Min(2, selectableFollowers.Length);
         var selectedTargetIds = targetInstanceIds ?? [];
@@ -2947,6 +2953,7 @@ public static class GameEngine
         }
 
         attacker.HasAttacked = true;
+        ConsumeStealthByAttacking(attacker);
         if (DealDamageToLeader(state, OtherPlayer(state.ActivePlayer), attacker.Attack))
         {
             ApplyDrainHeal(state, attacker, attacker.Attack);
@@ -2967,7 +2974,12 @@ public static class GameEngine
             throw new InvalidOperationException("An Intimidate follower cannot be attacked by an enemy follower.");
         }
 
-        if (opponent.Board.Any(follower => follower.HasWard && !follower.HasIntimidate) &&
+        if (defender.HasStealth)
+        {
+            throw new InvalidOperationException("A 【潜伏】 follower cannot be attacked by an enemy follower.");
+        }
+
+        if (opponent.Board.Any(follower => follower.HasWard && !follower.HasIntimidate && !follower.HasStealth) &&
             !attacker.CanIgnoreWard &&
             !defender.HasWard)
         {
@@ -2981,6 +2993,7 @@ public static class GameEngine
         }
 
         attacker.HasAttacked = true;
+        ConsumeStealthByAttacking(attacker);
         var damageDealt = DealDamageToFollower(
             state,
             OtherPlayer(state.ActivePlayer),
@@ -3081,6 +3094,18 @@ public static class GameEngine
         }
     }
 
+    /// <summary>
+    /// 【潜伏】"进行攻击时…将失去潜行"：attacking always breaks Stealth, whichever side it attacks.
+    /// Mirrors how <see cref="CardKeyword.Barrier"/> is spent via <c>ConsumedKeywords</c>.
+    /// </summary>
+    private static void ConsumeStealthByAttacking(FollowerInstance attacker)
+    {
+        if (attacker.HasStealth)
+        {
+            attacker.ConsumedKeywords |= CardKeyword.Stealth;
+        }
+    }
+
     private static void ApplyAttackEffects(GameState state, FollowerInstance attacker)
     {
         foreach (var effect in attacker.Definition.AttackEffects ?? [])
@@ -3099,6 +3124,9 @@ public static class GameEngine
                     // The damage is simultaneous, so we only stop early when the first hit already
                     // finished the game; otherwise the second hit would overwrite the winner.
                     DealDamageToLeader(state, OtherPlayer(state.ActivePlayer), effect.Amount);
+                    // 【潜伏】"通过能力造成伤害时将失去潜行": recorded now, consumed at the start of this
+                    // follower's controller's next turn (so the opponent gets a full turn to punish it).
+                    attacker.DealtDamageByAbility = true;
                     if (!state.IsGameOver)
                     {
                         DealDamageToLeader(state, state.ActivePlayer, effect.Amount);
@@ -3156,6 +3184,15 @@ public static class GameEngine
         foreach (var follower in active.BoardInternal)
         {
             follower.HasAttacked = false;
+
+            // 【潜伏】"拥有潜行的随从通过能力造成伤害时将失去潜行"：上个自己回合里通过能力造成过
+            // 伤害的潜伏随从，在这里显形。放在回合开始（而不是造成伤害的那一刻）是为了让它在
+            // **对手的回合里已经失去潜行**——否则对手打完一轮它才消失，等于白嫖一个回合。
+            if (follower.DealtDamageByAbility)
+            {
+                follower.ConsumedKeywords |= CardKeyword.Stealth;
+                follower.DealtDamageByAbility = false;
+            }
         }
 
         ApplyStartOfOwnTurnCrestEffects(state);

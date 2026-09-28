@@ -1530,7 +1530,7 @@ public static class CardCatalog
             3,
             0,
             2,
-            CardKeyword.None,
+            CardKeyword.Stealth,
             CardType.Follower,
             "【潜伏】\n自己的回合结束时，若本随从为进化后，则使对手获得『纹章：转动的《命运之轮》·斯洛士』。使本随从消失。",
             Effect: null,

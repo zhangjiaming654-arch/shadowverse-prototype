@@ -7,7 +7,9 @@ This Visual Studio solution implements the current prototype ruleset:
 - leader health 20, PP grows by one each own turn (up to 10), and one draw each turn;
 - deck exhaustion loses; hand limit is 9 and overflow cards enter the graveyard;
 - followers, spells and amulets share a five-slot board; followers fight each other and attack
-  leaders, using Ward, Storm, Bane, Rush, Barrier, Intimidate, Aura, Drain and Ward-ignoring;
+  leaders, using Ward, Storm, Bane, Rush, Barrier, Intimidate, Aura, Drain, Ward-ignoring and
+  Stealth (【潜伏】: cannot be chosen by the opponent's abilities or attacked by enemy followers,
+  and is lost when the follower attacks);
 - standard Worlds Beyond evolution: 2 EP and 2 SEP per player, ordinary evolution, super
   evolution, and the second player's two staged extra-PP uses;
 - Fanfare, Evolution, Super-evolution, Last Words, discard, attack and end-of-turn effects,

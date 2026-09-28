@@ -61,6 +61,11 @@ public sealed class FollowerInstance
     /// <summary>Keywords that have been used up on this particular follower.</summary>
     public CardKeyword ConsumedKeywords { get; internal set; }
     public int TemporaryAttackBonus { get; internal set; }
+    /// <summary>
+    /// 【潜伏】"通过能力造成伤害时将失去潜行": set by an attack effect that deals damage, and consumed at
+    /// the start of this follower's controller's next turn (see <c>StartTurn</c>).
+    /// </summary>
+    public bool DealtDamageByAbility { get; internal set; }
     public CardKeyword Keywords => (Definition.Keywords | GrantedKeywords) & ~ConsumedKeywords;
     public bool HasWard => Keywords.HasFlag(CardKeyword.Ward);
     public bool HasStorm => Keywords.HasFlag(CardKeyword.Storm);
@@ -70,6 +75,7 @@ public sealed class FollowerInstance
     public bool CanIgnoreWard => Keywords.HasFlag(CardKeyword.IgnoreWard);
     public bool HasBarrier => Keywords.HasFlag(CardKeyword.Barrier);
     public bool HasAura => Keywords.HasFlag(CardKeyword.Aura);
+    public bool HasStealth => Keywords.HasFlag(CardKeyword.Stealth);
     public bool HasDrain => Keywords.HasFlag(CardKeyword.Drain);
     public bool IsEvolved => EvolutionState is EvolutionState.Evolved or EvolutionState.SuperEvolved;
     public bool IsSuperEvolved => EvolutionState == EvolutionState.SuperEvolved;
@@ -89,7 +95,8 @@ public sealed class FollowerInstance
         EvolutionState = EvolutionState,
         GrantedKeywords = GrantedKeywords,
         ConsumedKeywords = ConsumedKeywords,
-        TemporaryAttackBonus = TemporaryAttackBonus
+        TemporaryAttackBonus = TemporaryAttackBonus,
+        DealtDamageByAbility = DealtDamageByAbility
     };
 }
 
