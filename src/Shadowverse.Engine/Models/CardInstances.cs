@@ -16,9 +16,17 @@ public sealed record CardInstance(
     /// </summary>
     public int CostReduction { get; internal set; }
 
+    /// <summary>
+    /// 「回合结束前，使自己的所有手牌的费用-1」: a reduction that lasts only until the end of the current
+    /// turn. Kept separate from <see cref="CostReduction"/> (which is permanent) so the end-of-turn wipe
+    /// can clear exactly this part without touching reductions a card earned on its own.
+    /// </summary>
+    public int TemporaryCostReduction { get; internal set; }
+
     internal CardInstance CopyForState() => new(InstanceId, Definition, HasSuppressedLastWords)
     {
-        CostReduction = CostReduction
+        CostReduction = CostReduction,
+        TemporaryCostReduction = TemporaryCostReduction
     };
 }
 
@@ -149,8 +157,26 @@ public sealed class CrestInstance
     /// <summary>The controller turn number in which the heal trigger was last used.</summary>
     public int LastOwnLeaderRestoreTriggerTurn { get; internal set; } = -1;
 
-    internal CrestInstance DeepCopy() => new(Definition)
+    /// <summary>
+    /// 「从以下未发动的能力中随机发动1个能力」: which numbered slots this crest has already rolled.
+    /// The ability only ever picks from the slots it has not used yet, and this record must survive
+    /// <see cref="DeepCopy"/> or a search branch would re-roll an already-spent slot.
+    /// </summary>
+    internal HashSet<int> UsedAbilitySlotsInternal { get; } = [];
+
+    /// <summary>
+    /// How many numbered abilities this crest has already rolled. Public so the console self-tests can
+    /// assert the "never repeats a spent slot" rule without reaching into engine internals.
+    /// </summary>
+    public int UsedAbilitySlotCount => UsedAbilitySlotsInternal.Count;
+
+    internal CrestInstance DeepCopy()
     {
-        LastOwnLeaderRestoreTriggerTurn = LastOwnLeaderRestoreTriggerTurn
-    };
+        var copy = new CrestInstance(Definition)
+        {
+            LastOwnLeaderRestoreTriggerTurn = LastOwnLeaderRestoreTriggerTurn
+        };
+        copy.UsedAbilitySlotsInternal.UnionWith(UsedAbilitySlotsInternal);
+        return copy;
+    }
 }

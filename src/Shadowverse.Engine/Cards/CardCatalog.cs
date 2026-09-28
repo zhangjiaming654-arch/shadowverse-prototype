@@ -94,6 +94,29 @@ public static class CardIds
     /// <summary>0-cost 【突进】 token that destroys itself at the end of the opponent's turn.</summary>
     public const string Marionette = "BASE-069";
 
+    public const string SpinningWheelOfFortuneSloth = "BASE-070";
+
+    public const string DoorwaySuccessorLazuli = "BASE-071";
+
+    /// <summary>3-cost 2/2 【疾驰】 token handed out by 门扉接续者·拉姿莉.</summary>
+    public const string GorgeousCreation = "BASE-072";
+
+    /// <summary>
+    /// Filter token for <see cref="CardEffectKind.DrawTraitCards"/>: 「抽取2张随从」 draws followers only.
+    /// Stored in <see cref="CardEffect.ReferencedCardId"/> so the filter is part of the card definition
+    /// rather than a hard-coded branch in the engine.
+    /// </summary>
+    public const string DrawFollowerFilter = "follower";
+
+    public const string SkyConqueringSkytrooperGranAndDjeeta = "BASE-073";
+
+    public const string DiligentPursuitMiu = "BASE-074";
+
+    public const string IndividualShopkeeper = "BASE-075";
+
+    /// <summary>4/5 【守护】 token summoned by 个性店主.</summary>
+    public const string MysteriousCreation = "BASE-076";
+
     /// <summary>
     /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
     /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
@@ -105,6 +128,12 @@ public static class CrestIds
 {
     public const string AshenAnathemaBanderst = "CREST-001";
     public const string IstanbulDeadVersusMalchiget = "CREST-002";
+
+    /// <summary>「转动的《命运之轮》·斯洛士」hands this crest to the opponent when it vanishes.</summary>
+    public const string SpinningWheelOfFortuneSloth = "CREST-003";
+
+    /// <summary>The mirror-image (all-negative) crest the vanishing follower gives its opponent.</summary>
+    public const string SpinningWheelOfFortuneSlothCurse = "CREST-004";
 }
 
 /// <summary>Definitions for named effects that persist in a leader's crest area.</summary>
@@ -122,7 +151,33 @@ public static class CrestCatalog
             CrestIds.IstanbulDeadVersusMalchiget,
             "伊斯坦戴德 对 玛尔奇盖特",
             "自己的回合结束时，若自己的战场上有拥有【谢幕曲】的卡牌，则破坏自己的战场上的随机1张拥有【谢幕曲】的卡牌和对手的战场上的随机1个随从。",
-            EndOfOwnTurnEffects: [new CardEffect(CardEffectKind.ShatterRandomLastWordsCardAndEnemyFollower, 1)])
+            EndOfOwnTurnEffects: [new CardEffect(CardEffectKind.ShatterRandomLastWordsCardAndEnemyFollower, 1)]),
+        // 「转动的《命运之轮》·斯洛士」的**正面**纹章：斯洛士的持有者自己在回合开始随机发动1个。
+        // 三个能力分别编码为 cost=1（手牌费用-1）/ buff=2（全体+2/+2）/ heal=3（回复3点）。
+        new(
+            CrestIds.SpinningWheelOfFortuneSloth,
+            "转动的《命运之轮》·斯洛士",
+            "自己的回合开始时，从以下未发动的能力中随机发动1个能力。\n（1）回合结束前，使自己的所有手牌的费用-1。\n（2）使自己的战场上的所有随从+2/+2。\n（3）回复自己的主战者3点生命值。",
+            StartOfOwnTurnEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.FireRandomUnusedNumberedAbility,
+                    1,
+                    "1=cost:1;2=buff:2;3=heal:3")
+            ]),
+        // 同一张卡的**反面**纹章（图片 2）：回合开始随机发动1个"负面"能力。
+        // 同名但效果相反，所以用不同 ID 分开存放；引擎按 ID 查找，不存在歧义。
+        new(
+            CrestIds.SpinningWheelOfFortuneSlothCurse,
+            "转动的《命运之轮》·斯洛士",
+            "自己的回合开始时，从以下未发动的能力中随机发动1个能力。\n（1）回合结束前，使自己的所有手牌的费用+1。\n（2）使自己的战场上的所有随从-2/-2。\n（3）对自己的主战者造成3点伤害。",
+            StartOfOwnTurnEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.FireRandomUnusedNumberedAbility,
+                    1,
+                    "1=cost:-1;2=debuff:2;3=damage:3")
+            ])
     ];
 
     private static readonly IReadOnlyDictionary<string, CrestDefinition> DefinitionsById =
@@ -1468,6 +1523,145 @@ public static class CardCatalog
             CardProfession.Nemesis,
             Traits: ["人偶"],
             DestroysAtEndOfOpponentTurn: true,
+            IsCollectible: false),
+        new(
+            CardIds.SpinningWheelOfFortuneSloth,
+            "转动的《命运之轮》·斯洛士",
+            3,
+            0,
+            2,
+            CardKeyword.None,
+            CardType.Follower,
+            "【潜伏】\n自己的回合结束时，若本随从为进化后，则使对手获得『纹章：转动的《命运之轮》·斯洛士』。使本随从消失。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            GrantedCrestId: CrestIds.SpinningWheelOfFortuneSlothCurse,
+            EndOfOwnTurnEffects:
+            [
+                // 把反面纹章交给**对手**，然后本随从消失（消滅，不是破坏；对手获得的是负面纹章）。
+                new CardEffect(
+                    CardEffectKind.GrantEnemyCrestAndVanishSelfIfEvolved,
+                    1,
+                    CrestIds.SpinningWheelOfFortuneSlothCurse)
+            ]),
+        new(
+            CardIds.DoorwaySuccessorLazuli,
+            "门扉接续者·拉姿莉",
+            3,
+            3,
+            3,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】将1张『绚烂的创造物』加入手牌。",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.GorgeousCreation)
+            ]),
+        new(
+            CardIds.GorgeousCreation,
+            "绚烂的创造物",
+            3,
+            2,
+            2,
+            CardKeyword.Storm,
+            CardType.Follower,
+            "【疾驰】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            IsCollectible: false),
+        new(
+            CardIds.SkyConqueringSkytrooperGranAndDjeeta,
+            "征服苍空的骑空士·古兰&姬塔",
+            4,
+            3,
+            2,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】【模式】选择1个能力发动。【奥义】本随从进化。\n（1）对对手的战场上的随机1个随从造成5点伤害。\n（2）抽取2张随从。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Neutral,
+            FanfareModeOptions:
+            [
+                new ModeDefinition(
+                    "对对手战场上的随机1个随从造成5点伤害",
+                    [
+                        new CardEffect(CardEffectKind.DealDamageToRandomEnemyFollower, 5)
+                    ]),
+                new ModeDefinition(
+                    "抽取2张随从",
+                    [
+                        // "抽取2张随从"：只抽随从，不是任意卡。
+                        new CardEffect(CardEffectKind.DrawTraitCards, 2, CardIds.DrawFollowerFilter)
+                    ])
+            ],
+            OathEffects:
+            [
+                new CardEffect(CardEffectKind.EvolveSelfByOath, 1)
+            ]),
+        new(
+            CardIds.DiligentPursuitMiu,
+            "奋厉追赶·米乌",
+            4,
+            3,
+            5,
+            CardKeyword.None,
+            CardType.Follower,
+            "自己的创造物·随从进入战场时，对对手的战场上的随机1个随从造成3点伤害。\n【进化时】召唤1个『古老的创造物』。\n【超进化时】之后，若本次对战中进入战场的自己的创造物·随从的种类为3种或以上，则本随从获得【疾驰】。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.AncientCreation)
+            ],
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters, 3)
+            ],
+            SuperEvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.GainStormIfOwnTraitFollowerKindsEnteredAtLeast, 3, CardIds.CreationTrait)
+            ]),
+        new(
+            CardIds.IndividualShopkeeper,
+            "个性店主",
+            4,
+            3,
+            3,
+            CardKeyword.None,
+            CardType.Follower,
+            "自己的创造物·随从进入战场时，回复自己的主战者1点生命值。\n【进化时】召唤1个『神秘的创造物』。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.MysteriousCreation)
+            ],
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.RestoreOwnLeaderWhenCreationEnters, 1)
+            ]),
+        new(
+            CardIds.MysteriousCreation,
+            "神秘的创造物",
+            3,
+            4,
+            5,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【守护】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
             IsCollectible: false)
     ];
 

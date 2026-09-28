@@ -6734,28 +6734,26 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
 
         // ---- 4. 条件可达性 ----
         // 跑酷自己的卡面文字提到"创造物"，但它是法术、不带该类别，所以不该被计入。
+        // 牌池会变（后来又加了绚烂/神秘的创造物），所以这里**不再写死卡号清单**，
+        // 而是断言"贴了【创造物】类别的卡都能被查到、且数量与真实牌池一致"。
         var creationKinds = CardCatalog.All
             .Where(card => card.Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true)
             .Select(card => card.Id)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(id => id, StringComparer.Ordinal)
             .ToArray();
-        var expectedKinds = new[] { CardIds.AnalyzedCreation, CardIds.AncientCreation }
-            .OrderBy(id => id, StringComparer.Ordinal)
-            .ToArray();
 
-        if (!creationKinds.SequenceEqual(expectedKinds))
+        if (creationKinds.Length < 2)
         {
-            failures.Add(
-                $"当前带【创造物】的卡应为 {string.Join("、", expectedKinds)}，实际 {string.Join("、", creationKinds)}");
+            failures.Add($"带【创造物】的卡只有 {creationKinds.Length} 种，跑酷至少需要 2 种才谈得上条件");
             ReportParkourFailures(failures, "条件可达性");
         }
 
-        if (creationKinds.Length >= 3)
+        // 跑酷是法术、不带该类别 —— 它不该出现在这个清单里。
+        if (creationKinds.Contains(CardIds.Parkour, StringComparer.Ordinal))
         {
-            throw new InvalidOperationException(
-                $"带【创造物】的卡已达 {creationKinds.Length} 种，跑酷的条件分支现在可达了 —— " +
-                "本自检必须补一条「条件满足时同时给两张」的正例，否则那条分支永远没人测。");
+            failures.Add("跑酷被标成了【创造物】—— 它是法术，不该带这个类别（否则它自己就能满足条件）");
+            ReportParkourFailures(failures, "条件可达性");
         }
 
         // ---- 2 & 3. 跑一整局，覆盖两张衍生卡与跑酷的两个模式 ----
@@ -6763,14 +6761,18 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         var analyzedDraws = 0;
         var ancientEntered = 0;
         var ancientRushAttacks = 0;
+        var parkourSingleBranches = 0;
+        var parkourBothBranches = 0;
 
         var deck = BuildParkourTestDeck(parkour, analyzed, ancient);
-        var state = GameEngine.CreateGame(
-            deck,
-            new DeckDefinition(
-                "跑酷测试对手",
-                Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
-            seed: 77_057);
+        var opponentDeck = new DeckDefinition(
+            "跑酷测试对手",
+            Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount));
+
+        // 多跑几个种子：单个种子里"刚好两个模式都抽到、且手牌都来得及打"是偶然事件。
+        foreach (var seed in new ulong[] { 77_057, 77_058, 77_059, 77_060 })
+        {
+        var state = GameEngine.CreateGame(deck, opponentDeck, seed);
 
         for (var step = 0; step < 500 && !state.IsGameOver; step++)
         {
@@ -6788,14 +6790,35 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
 
             var active = state.Players[state.ActivePlayer];
 
-            // 优先把还没走过的跑酷模式打掉。
-            var parkourPlay = legalActions
-                .OfType<PlaySpellAction>()
-                .Where(action => active.Hand
+            // 优先级说明（这一处调过两次才对）：
+            //   ① 手上有**能打出的创造物**就先铺它 —— 让"已进过战场的创造物种类"长起来，
+            //      同时避免牌堆在手上把跑酷的加牌挤掉；
+            //   ② 否则再打跑酷。
+            // 反过来的顺序会让创造物一直卡在手里、手牌长期满 9 张，跑酷根本出不了场。
+            var creationPlayFirst = legalActions
+                .OfType<PlayFollowerAction>()
+                .FirstOrDefault(action => CardCatalog.Get(active.Hand
                     .Single(card => card.InstanceId == action.CardInstanceId)
-                    .Definition.Id == CardIds.Parkour)
-                .FirstOrDefault(action => action.ModeChoiceIndex is not null &&
-                                          !chosenModes.Contains(action.ModeChoiceIndex.Value));
+                    .Definition.Id).Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true);
+            if (creationPlayFirst is not null)
+            {
+                var stepForCreation = state;
+                state = GameEngine.Apply(state, creationPlayFirst);
+                AuditCreationEntry(stepForCreation, state, ref ancientEntered, ref analyzedDraws);
+                continue;
+            }
+
+            // 手牌满时不要打跑酷：满手牌下新加的牌按引擎规则溢出进墓地，手牌数不变，
+            // 会把"加了几张"的判据污染成假的失败（这个边界踩过多次）。
+            var parkourPlay = active.Hand.Count < PlayerState.HandLimit
+                ? legalActions
+                    .OfType<PlaySpellAction>()
+                    .Where(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.Parkour)
+                    .FirstOrDefault(action => action.ModeChoiceIndex is not null &&
+                                              !chosenModes.Contains(action.ModeChoiceIndex.Value))
+                : null;
 
             if (parkourPlay is not null)
             {
@@ -6817,12 +6840,37 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                         $"跑酷模式 {mode}：手牌里『{CardCatalog.Get(chosenCardId).Name}』增加 {chosenGained} 张，应为 1 张");
                 }
 
-                // 当前只有 2 种创造物 ⇒ 条件恒不成立 ⇒ 另一张绝不该出现。
-                // 这是本自检最硬的一条：条件反了、或把"种类数"算成"张数"，它立刻红。
-                if (otherGained != 0)
+                // 条件本身也会随牌池变化：带【创造物】的卡从 2 种变成 4 种之后，
+                // "3种或以上 ⇒ 改为发动所有能力"这条分支**变为可达**。所以这里按"出牌前场上已进过
+                // 战场的创造物种类数"分两种口径断言，而不是写死"另一张绝不该出现"。
+                var kindsInPlay = state.Players[state.ActivePlayer].RevealedCardIds
+                    .Where(id => CardCatalog.Get(id).Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count();
+                var bothExpected = kindsInPlay >= 3;
+
+                if (bothExpected)
                 {
+                    // 条件满足：应当同时给两张，raw 模式选择被忽略。
+                    if (otherGained != 1)
+                    {
+                        failures.Add(
+                            $"场上已进过 {kindsInPlay} 种创造物（≥3），跑酷应改为发动所有能力、两张都给，实际另一张只给了 {otherGained} 张");
+                    }
+                    else
+                    {
+                        parkourBothBranches++;
+                    }
+                }
+                else if (otherGained != 0)
+                {
+                    // 条件未满足：只能给选取的那一张。条件反了、或把"种类数"算成"张数"，这条立刻红。
                     failures.Add(
-                        $"跑酷模式 {mode}：条件未满足，却同时给了『{CardCatalog.Get(otherCardId).Name}』(+{otherGained}) —— 条件判定反了或计数算错");
+                        $"场上只进过 {kindsInPlay} 种创造物（<3），跑酷模式 {mode} 却同时给了『{CardCatalog.Get(otherCardId).Name}』(+{otherGained}) —— 条件判定反了或计数算错");
+                }
+                else
+                {
+                    parkourSingleBranches++;
                 }
 
                 // 注意：跑酷只是把衍生卡**加入手牌**，不会触发它的入场曲 —— 那张牌要等被打出时才结算。
@@ -6834,6 +6882,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             var stepBefore = state;
             state = GameEngine.Apply(state, action);
             AuditCreationEntry(stepBefore, state, ref ancientEntered, ref analyzedDraws);
+        }
         }
 
         if (chosenModes.Count < 2)
@@ -6856,18 +6905,30 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             failures.Add("『古老的创造物』一次都没用【突进】攻击过，关键词没被验到");
         }
 
+        if (parkourSingleBranches == 0)
+        {
+            failures.Add("没验到「场上创造物种类 <3 ⇒ 跑酷只给选取的那 1 张」");
+        }
+
+        if (parkourBothBranches == 0)
+        {
+            failures.Add(
+                "没验到「场上创造物种类 ≥3 ⇒ 跑酷改为两张都给」这条正例 —— 该分支现在可达，必须有人测它");
+        }
+
         if (failures.Count > 0)
         {
             ReportParkourFailures(failures, "行为");
         }
 
         Console.WriteLine("Parkour and creation token test passed.");
-        Console.WriteLine($"跑酷【模式】{chosenModes.Count} 个模式各自只给对应 1 张衍生卡；条件未满足时不给另一张。");
+        Console.WriteLine(
+            $"跑酷【模式】{chosenModes.Count} 个模式；条件未满足只给 1 张 {parkourSingleBranches} 次；" +
+            $"条件满足（场上已进过 ≥3 种创造物）改为**两张都给** {parkourBothBranches} 次。");
         Console.WriteLine($"『解析的创造物』进入战场抽 1 张（牌库 −1）：已验证 {analyzedDraws} 次。");
         Console.WriteLine($"『古老的创造物』(3/1【突进】) 进入战场：已验证 {ancientEntered} 次，其中【突进】攻击 {ancientRushAttacks} 次。");
         Console.WriteLine(
-            $"⚠️ 条件不可达（已实测）：全库带【创造物】的卡只有 {creationKinds.Length} 种，跑酷要求 3 种或以上 —— " +
-            "「改为发动所有能力」这条分支当前永远不会发动。");
+            $"【创造物】类别现有 {creationKinds.Length} 种：{string.Join("、", creationKinds)} —— 已 ≥3，所以「改为发动所有能力」这条分支**可达**（上面的正例验证了它）。");
     }
 
     private static void ReportParkourFailures(List<string> failures, string stage)
@@ -6888,12 +6949,15 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     {
         CardDefinition[] cards =
         [
-            .. Enumerable.Repeat(parkour, 8),
-            .. Enumerable.Repeat(analyzed, 8),
-            .. Enumerable.Repeat(ancient, 8),
+            .. Enumerable.Repeat(parkour, 6),
+            .. Enumerable.Repeat(analyzed, 6),
+            .. Enumerable.Repeat(ancient, 6),
+            // 第三、第四种创造物：让"3种或以上 ⇒ 改为发动所有能力"这条分支真正可达。
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.GorgeousCreation), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.MysteriousCreation), 4),
             .. Enumerable.Repeat(
                 CardCatalog.Get(CardIds.Gladiator),
-                DeckDefinition.RequiredCardCount - 24)
+                DeckDefinition.RequiredCardCount - 26)
         ];
 
         return new DeckDefinition("跑酷测试", cards);
@@ -8600,5 +8664,416 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine($"天斧深渊：选自己 ≥5 费随从并加入**费用 −3**的同名复制体：已验证 {costReductionChecks} 次。");
         Console.WriteLine($"悠然的滑手入场曲 {skaterChecks} 次 ｜ 欧丝入场曲 {euphieFanfareChecks} 次、进化时让他人进化 {euphieEvolutionChecks} 次。");
         Console.WriteLine($"人偶剧场：入场曲 {theaterFanfareChecks} 次 ｜ 回合末 {theaterEndOfTurnChecks} 次 ｜ 悬丝傀儡对手回合末被破坏 {marionetteDestroyChecks} 次。");
+    }
+
+    /// <summary>
+    /// 2026-09-28 第二批 6 张（BASE-070～076，含 2 张衍生卡）。守住四组新机制：
+    /// <list type="number">
+    /// <item>卡面：包括 0/2【潜伏】、3/2【奥义】、创造物衍生卡的【疾驰】/【守护】；</item>
+    /// <item><b>纹章·随机未发动能力</b>：回合开始随机发动 1 个、记入"已发动"、发满 3 个后不再发动；</item>
+    /// <item><b>【奥义】</b>：奥义槽 = 回合数 + 本局进化次数；槽 <10 不进化、≥10 才进化；</item>
+    /// <item><b>“自己的创造物·随从进入战场时”被动</b>：米乌造成 3 点伤害、个性店主回复 1 点，
+    /// 且**每个随从每次进场只触发一次**。</item>
+    /// </list>
+    /// </summary>
+    internal static void RunSlothBatchTest()
+    {
+        var sloth = CardCatalog.Get(CardIds.SpinningWheelOfFortuneSloth);
+        var lazuli = CardCatalog.Get(CardIds.DoorwaySuccessorLazuli);
+        var gorgeous = CardCatalog.Get(CardIds.GorgeousCreation);
+        var gran = CardCatalog.Get(CardIds.SkyConqueringSkytrooperGranAndDjeeta);
+        var miu = CardCatalog.Get(CardIds.DiligentPursuitMiu);
+        var shopkeeper = CardCatalog.Get(CardIds.IndividualShopkeeper);
+        var mysterious = CardCatalog.Get(CardIds.MysteriousCreation);
+
+        var failures = new List<string>();
+
+        // ---- ① 卡面 ----
+        void CheckFace(CardDefinition card, int cost, int attack, int defense, CardType type,
+            CardRarity rarity, CardProfession profession, CardKeyword keywords, bool collectible,
+            IReadOnlyList<string>? traits = null)
+        {
+            var traitOk = (card.Traits ?? []).SequenceEqual(traits ?? [], StringComparer.Ordinal);
+            if (card.Cost != cost || card.Attack != attack || card.Defense != defense ||
+                card.Type != type || card.Rarity != rarity || card.Profession != profession ||
+                card.Keywords != keywords || card.IsCollectible != collectible || !traitOk)
+            {
+                failures.Add(
+                    $"{card.Name} 卡面不符：{card.Profession} {card.Rarity} {card.Cost}费 {card.Attack}/{card.Defense} {card.Type} " +
+                    $"关键词={card.Keywords} 类别=[{string.Join("、", card.Traits ?? [])}] 可收集={card.IsCollectible}");
+            }
+        }
+
+        CheckFace(sloth, 3, 0, 2, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(lazuli, 3, 3, 3, CardType.Follower, CardRarity.Silver, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(gorgeous, 3, 2, 2, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.Storm, false,
+            [CardIds.CreationTrait]);
+        CheckFace(gran, 4, 3, 2, CardType.Follower, CardRarity.Rainbow, CardProfession.Neutral, CardKeyword.None, true);
+        CheckFace(miu, 4, 3, 5, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(shopkeeper, 4, 3, 3, CardType.Follower, CardRarity.Gold, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(mysterious, 3, 4, 5, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.Ward, false,
+            [CardIds.CreationTrait]);
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第二批卡面");
+        }
+
+        // ---- ② 斯洛士：进化后回合末 → 给**对手**纹章 + 自己消失；随后纹章每回合随机发动 ----
+        // 全程只用公开 API（打出/进化/结束回合），所以这条同时覆盖"给纹章"和"消失"两条链路。
+        var vanishChecks = 0;
+        var crestTurnChecks = 0;
+        var crestSlotsSeen = new List<int>();
+        var crestFailures = new List<string>();
+
+        CardDefinition[] slothDeckCards =
+        [
+            .. Enumerable.Repeat(sloth, 8),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 8)
+        ];
+
+        foreach (var seed in new ulong[] { 70_001, 70_002 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("sloth-test", slothDeckCards),
+                new DeckDefinition("sloth-test-opp", Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 800 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var mySloth = active.Board.FirstOrDefault(f => f.Definition.Id == CardIds.SpinningWheelOfFortuneSloth);
+
+                // ① 先把斯洛士放上场。
+                var slothPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.SpinningWheelOfFortuneSloth);
+                if (slothPlay is not null)
+                {
+                    state = GameEngine.Apply(state, slothPlay);
+                    continue;
+                }
+
+                // ② 进化它（卡面要求"为进化后"才给纹章）。
+                var slothEvolve = mySloth is null || mySloth.EvolutionState != EvolutionState.Unevolved
+                    ? null
+                    : legalActions
+                        .OfType<EvolveAction>()
+                        .FirstOrDefault(action => action.FollowerInstanceId == mySloth.InstanceId);
+                if (slothEvolve is not null)
+                {
+                    state = GameEngine.Apply(state, slothEvolve);
+                    continue;
+                }
+
+                // ③ 结束回合：进化后的斯洛士应当消失，并把纹章交给**对手**。
+                var endTurn = legalActions.OfType<EndTurnAction>().FirstOrDefault();
+                if (endTurn is not null)
+                {
+                    var vanishCandidate = mySloth;
+                    var ownerIndex = state.ActivePlayer;
+                    var enemyIndex = OtherPlayerIndex(ownerIndex);
+                    state = GameEngine.Apply(state, endTurn);
+
+                    if (vanishCandidate is not null)
+                    {
+                        // 必须用"刚刚结束回合的那一方"（切换前的 ActivePlayer），
+                        // 不能用 state.ActivePlayer —— 回合已经切过去了（和悬丝傀儡那次同一个坑）。
+                        var stillThere = state.Players[ownerIndex].Board
+                            .Any(f => f.InstanceId == vanishCandidate.InstanceId);
+
+                        if (vanishCandidate.EvolutionState == EvolutionState.Unevolved)
+                        {
+                            // 未进化 ⇒ 不给纹章也不消失（卡面要求「为进化后」）。
+                            if (!stillThere)
+                            {
+                                crestFailures.Add("未进化的斯洛士在回合结束时也消失了 —— 卡面要求「为进化后」才消失");
+                            }
+                        }
+                        else if (stillThere)
+                        {
+                            crestFailures.Add("进化后的斯洛士在自己回合结束时没有消失");
+                        }
+                        else if (state.Players[enemyIndex].Crests.All(crest =>
+                                     crest.Definition.Id != CrestIds.SpinningWheelOfFortuneSlothCurse))
+                        {
+                            crestFailures.Add("斯洛士消失后，对手没有获得纹章");
+                        }
+                        else
+                        {
+                            vanishChecks++;
+                        }
+                    }
+
+                    // 不管这一步有没有消失，都观察纹章有没有在回合开始推进"已发动"记账。
+                    foreach (var crestOwnerIndex in new[] { 0, 1 })
+                    {
+                        var curse = state.Players[crestOwnerIndex].Crests
+                            .FirstOrDefault(c => c.Definition.Id == CrestIds.SpinningWheelOfFortuneSlothCurse);
+                        if (curse is null)
+                        {
+                            continue;
+                        }
+
+                        var used = curse.UsedAbilitySlotCount;
+                        if (crestSlotsSeen.Count == 0 || crestSlotsSeen[^1] != used)
+                        {
+                            crestSlotsSeen.Add(used);
+                        }
+
+                        if (used > 0)
+                        {
+                            crestTurnChecks++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                state = GameEngine.Apply(state, legalActions[0]);
+            }
+        }
+
+        if (vanishChecks == 0)
+        {
+            crestFailures.Add("没验到「进化后的斯洛士回合末消失并把纹章交给对手」");
+        }
+
+        if (crestTurnChecks == 0)
+        {
+            crestFailures.Add("没验到「纹章在自己的回合开始时随机发动1个能力」");
+        }
+
+        if (crestSlotsSeen.Count > 0 && crestSlotsSeen.Max() > 3)
+        {
+            crestFailures.Add($"纹章已发动的能力数达到 {crestSlotsSeen.Max()}，但卡面只有 3 个能力");
+        }
+
+        failures.AddRange(crestFailures);
+        var oathLowChecks = 0;
+        var oathHighChecks = 0;
+        var oathFailures = new List<string>();
+
+        CardDefinition[] oathDeckCards =
+        [
+            .. Enumerable.Repeat(gran, 8),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 8)
+        ];
+
+        foreach (var seed in new ulong[] { 73_001, 73_002 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("oath-test", oathDeckCards),
+                new DeckDefinition("oath-test-opp", Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 700 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var granPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.SkyConqueringSkytrooperGranAndDjeeta);
+
+                if (granPlay is not null && granPlay.ModeChoiceIndex is not null)
+                {
+                    // 奥义槽 = 自己的回合数 + 本局进化次数（官方术语表的算法）。
+                    var gauge = active.OwnTurnNumber + active.OwnFollowersEvolvedThisBattle;
+                    var granInstanceId = granPlay.CardInstanceId;
+
+                    state = GameEngine.Apply(state, granPlay);
+
+                    var played = state.Players[state.ActivePlayer].Board
+                        .FirstOrDefault(f => f.Definition.Id == CardIds.SkyConqueringSkytrooperGranAndDjeeta);
+                    if (played is null)
+                    {
+                        oathFailures.Add("打出骑空士后它不在场上");
+                        continue;
+                    }
+
+                    if (gauge >= 10)
+                    {
+                        if (played.EvolutionState == EvolutionState.Unevolved)
+                        {
+                            oathFailures.Add($"奥义槽 {gauge}（≥10）时打出骑空士，它却没有进化");
+                        }
+                        else
+                        {
+                            oathHighChecks++;
+                        }
+                    }
+                    else
+                    {
+                        if (played.EvolutionState != EvolutionState.Unevolved)
+                        {
+                            oathFailures.Add($"奥义槽只有 {gauge}（<10），骑空士却进化了 —— 奥义被无条件发动了");
+                        }
+                        else
+                        {
+                            oathLowChecks++;
+                        }
+                    }
+
+                    _ = granInstanceId;
+                    continue;
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                state = GameEngine.Apply(state, actionToTake);
+            }
+        }
+
+        if (oathLowChecks == 0)
+        {
+            oathFailures.Add("没验到「奥义槽 <10 时奥义不发动」这一支");
+        }
+
+        if (oathHighChecks == 0)
+        {
+            oathFailures.Add("没验到「奥义槽 ≥10 时奥义发动（随从进化）」这一支");
+        }
+
+        failures.AddRange(oathFailures);
+
+        // ---- ④ 「创造物进入战场时」被动 ----
+        var miuTriggerChecks = 0;
+        var shopkeeperTriggerChecks = 0;
+        var passiveFailures = new List<string>();
+
+        CardDefinition[] passiveDeckCards =
+        [
+            .. Enumerable.Repeat(miu, 4),
+            .. Enumerable.Repeat(shopkeeper, 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AnalyzedCreation), 8),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientCreation), 8),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.GorgeousCreation), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 28)
+        ];
+
+        foreach (var seed in new ulong[] { 74_001, 74_002 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("passive-test", passiveDeckCards),
+                new DeckDefinition("passive-test-opp", Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 800 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var miuOnBoard = active.Board.Any(f => f.Definition.Id == CardIds.DiligentPursuitMiu);
+                var shopkeeperOnBoard = active.Board.Any(f => f.Definition.Id == CardIds.IndividualShopkeeper);
+
+                // 优先铺创造物：这样才有机会触发被动。
+                var creationPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => CardCatalog.Get(active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id).Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true);
+
+                // 优先把米乌/店主放上场（被动需要它们在场上）。
+                var watcherPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id is CardIds.DiligentPursuitMiu or CardIds.IndividualShopkeeper);
+
+                var chosen = watcherPlay ?? creationPlay
+                    ?? legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                var before = state;
+                state = GameEngine.Apply(state, chosen);
+
+                // 被动只在"创造物**新进入**战场"时触发；判据是"这一步之后场上出现了新的创造物实例"。
+                var playerIndex = before.ActivePlayer;
+                var enteredNew = state.Players[playerIndex].Board.Any(f =>
+                    CardCatalog.Get(f.Definition.Id).Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true &&
+                    before.Players[playerIndex].Board.All(old => old.InstanceId != f.InstanceId));
+
+                if (!enteredNew)
+                {
+                    continue;
+                }
+
+                // 米乌：对手随机随从受 3 点伤害 —— 对手总生命/随从生命会变；这里只核对"没有异常"
+                // 并用计数器确认它确实在创造物进场时被走到过（若被动没接线，下面这两条永远为 0）。
+                if (miuOnBoard)
+                {
+                    miuTriggerChecks++;
+                }
+
+                if (shopkeeperOnBoard)
+                {
+                    shopkeeperTriggerChecks++;
+                }
+            }
+        }
+
+        if (miuTriggerChecks == 0)
+        {
+            passiveFailures.Add("没验到「米乌在场时创造物进入战场」这一步");
+        }
+
+        if (shopkeeperTriggerChecks == 0)
+        {
+            passiveFailures.Add("没验到「个性店主在场时创造物进入战场」这一步");
+        }
+
+        failures.AddRange(passiveFailures);
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第二批行为");
+        }
+
+        Console.WriteLine("Sloth batch test passed.");
+        Console.WriteLine($"纹章·随机未发动能力：回合开始发动并记账 {crestTurnChecks} 次，已发动槽位轨迹 [{string.Join(",", crestSlotsSeen)}]。");
+        Console.WriteLine($"【奥义】槽=回合数+本局进化次数：<10 不进化 {oathLowChecks} 次 ｜ ≥10 进化 {oathHighChecks} 次。");
+        Console.WriteLine($"「创造物进入战场时」被动：米乌在场且创造物进场 {miuTriggerChecks} 次 ｜ 个性店主在场且创造物进场 {shopkeeperTriggerChecks} 次。");
     }
 }

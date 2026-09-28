@@ -73,6 +73,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunForgottenInnocenceAikaTest();
     // 2026-09-28 批次 6 张超越者卡：条件入场曲 / 费用-3 的指名复制 / 让他人进化 / 吟唱护符 / 回合末自毁。
     AgentSelfTests.RunNemesisBatchTest();
+    // 第二批：纹章·随机未发动能力 / 【奥义】槽 / 「创造物进入战场时」被动。
+    AgentSelfTests.RunSlothBatchTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

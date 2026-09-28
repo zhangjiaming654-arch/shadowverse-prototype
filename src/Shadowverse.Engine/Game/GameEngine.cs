@@ -103,7 +103,8 @@ public static class GameEngine
             .Append(player.UsedEarlyExtraPlayPoint ? 1 : 0).Append(',')
             .Append(player.UsedLateExtraPlayPoint ? 1 : 0).Append(',')
             .Append(player.AttackedEnemyLeaderThisTurn ? 1 : 0).Append(',')
-            .Append(player.AttackedEnemyLeaderOnPreviousTurn ? 1 : 0).Append(';');
+            .Append(player.AttackedEnemyLeaderOnPreviousTurn ? 1 : 0).Append(',')
+            .Append(player.OwnFollowersEvolvedThisBattle).Append(';');
 
         foreach (var card in player.DeckInternal) { AppendCardFingerprint(builder, card); }
 
@@ -147,7 +148,13 @@ public static class GameEngine
         foreach (var crest in player.CrestsInternal)
         {
             builder.Append('C').Append(crest.Definition.Id).Append(',')
-                .Append(crest.LastOwnLeaderRestoreTriggerTurn).Append(';');
+                .Append(crest.LastOwnLeaderRestoreTriggerTurn).Append(',');
+            foreach (var slot in crest.UsedAbilitySlotsInternal.OrderBy(value => value))
+            {
+                builder.Append(slot).Append('.');
+            }
+
+            builder.Append(';');
         }
 
         builder.Append(';');
@@ -155,6 +162,18 @@ public static class GameEngine
 
         builder.Append(';');
         foreach (var id in player.RevealedCardIdsInternal) { builder.Append(id).Append(','); }
+
+        builder.Append(';');
+        foreach (var id in player.EnteredTraitFollowerInstanceIdsInternal.OrderBy(value => value))
+        {
+            builder.Append(id).Append(',');
+        }
+
+        builder.Append(';');
+        foreach (var id in player.EnteredTraitFollowerKindIdsInternal.OrderBy(value => value, StringComparer.Ordinal))
+        {
+            builder.Append(id).Append(',');
+        }
 
         builder.Append(';');
     }
@@ -167,7 +186,8 @@ public static class GameEngine
         builder.Append(card.Definition.Id).Append(',')
             .Append(card.InstanceId).Append(',')
             .Append(card.HasSuppressedLastWords ? 1 : 0).Append(',')
-            .Append(card.CostReduction).Append(';');
+            .Append(card.CostReduction).Append(',')
+            .Append(card.TemporaryCostReduction).Append(';');
     }
 
     /// <summary>
@@ -274,6 +294,15 @@ public static class GameEngine
                 break;
             default:
                 throw new InvalidOperationException("Unknown action type.");
+        }
+
+        // 「自己的创造物·随从进入战场时」passives (米乌 / 个性店主). Keyed on the follower instance, so it
+        // fires once per entry regardless of how the follower arrived (played, summoned, generated,
+        // transformed) — none of those routes trigger a Fanfare, but this is a passive trigger, not a
+        // Fanfare, so it must still fire.
+        if (!next.IsGameOver)
+        {
+            ApplyEnteringTraitFollowerTriggers(next);
         }
 
         return next;
@@ -790,6 +819,7 @@ public static class GameEngine
         ApplyEnteringFollowerPassiveGrants(state, state.ActivePlayer, follower);
         ApplyFollowerEffect(state, action, card);
         ApplyEnhanceEffects(state, follower, resolvedEnhance);
+        ApplyOathAbilities(state, card.Definition);
     }
 
     private static void ApplyPlayAmulet(GameState state, PlayAmuletAction action)
@@ -861,6 +891,11 @@ public static class GameEngine
                         effect.Amount,
                         suppressLastWords: effect.Kind == CardEffectKind.AddCopyToHandWithoutLastWords);
                     break;
+                case CardEffectKind.FireRandomUnusedNumberedAbility:
+                    // Crest-only: it needs the crest's "already rolled" record. An amulet printing it
+                    // would have nowhere to store that, so fail loudly instead of rolling without memory.
+                    throw new InvalidOperationException(
+                        $"Effect {effect.Kind} needs a crest's ability record and cannot be an amulet effect (amulet {amulet.Definition.Id}).");
                 default:
                     throw new InvalidOperationException(
                         $"Unsupported amulet effect: {effect.Kind} (amulet {amulet.Definition.Id}).");
@@ -1023,6 +1058,15 @@ public static class GameEngine
                         AddCopiesToHand(state, state.ActivePlayer, effect.ReferencedCardId!, 1);
                     }
 
+                    break;
+                case CardEffectKind.DrawTraitCards:
+                    DrawCardsOfType(
+                        state,
+                        state.ActivePlayer,
+                        effect.Amount,
+                        effect.ReferencedCardId == CardIds.DrawFollowerFilter
+                            ? CardType.Follower
+                            : CardType.Spell);
                     break;
                 case CardEffectKind.DealDamageToRandomEnemyFollower:
                     ApplyDamageToRandomEnemyFollower(state, effect.Amount);
@@ -1190,7 +1234,7 @@ public static class GameEngine
     /// reductions the copy accumulated in hand. The reduction itself is unbounded, the paid cost is not.
     /// </summary>
     private static int GetCardCost(CardInstance card, int currentPlayPoints) =>
-        Math.Max(0, GetPlayCost(card.Definition, currentPlayPoints) - card.CostReduction);
+        Math.Max(0, GetPlayCost(card.Definition, currentPlayPoints) - card.CostReduction - card.TemporaryCostReduction);
 
     /// <summary>
     /// The cost a card currently has, wherever it is. Reductions an ability applied while the card sat
@@ -1713,6 +1757,293 @@ public static class GameEngine
     private const string TransformAttackTimingNote =
         "transformed followers count as having just entered play; 【突进】/【疾驰】 decide whether they can attack";
 
+    /// <summary>
+    /// 「自己的创造物·随从进入战场时」 passives (米乌 / 个性店主). Runs after any action that can put
+    /// followers into play, for both sides, keyed on the <b>follower instance</b> — so a follower that
+    /// leaves and re-enters triggers again, and a follower already on the board never re-triggers.
+    /// <para>
+    /// The outer loop re-scans because resolving a passive can itself put new followers into play.
+    /// Termination is guaranteed: each iteration marks the follower it processed, so the unprocessed
+    /// set strictly shrinks and no follower can trigger the passives twice for the same entry.
+    /// </para>
+    /// </summary>
+    private static void ApplyEnteringTraitFollowerTriggers(GameState state)
+    {
+        while (true)
+        {
+            var progressed = false;
+            for (var playerIndex = 0; playerIndex < state.Players.Length && !progressed; playerIndex++)
+            {
+                var player = state.Players[playerIndex];
+                var watchers = player.BoardInternal
+                    .Where(watcher => (watcher.Definition.PassiveEffects ?? [])
+                        .Any(effect => IsEnteringCreationTrigger(effect.Kind)))
+                    .ToArray();
+                if (watchers.Length == 0)
+                {
+                    continue;
+                }
+
+                var entrant = player.BoardInternal.FirstOrDefault(candidate =>
+                    !player.EnteredTraitFollowerInstanceIdsInternal.Contains(candidate.InstanceId) &&
+                    MatchesTraitFilter(candidate.Definition, CardIds.CreationTrait));
+                if (entrant is null)
+                {
+                    continue;
+                }
+
+                player.EnteredTraitFollowerInstanceIdsInternal.Add(entrant.InstanceId);
+                player.EnteredTraitFollowerKindIdsInternal.Add(entrant.Definition.Id);
+                foreach (var watcher in watchers)
+                {
+                    foreach (var effect in watcher.Definition.PassiveEffects ?? [])
+                    {
+                        switch (effect.Kind)
+                        {
+                            case CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters:
+                                ApplyDamageToRandomEnemyFollower(state, effect.Amount);
+                                break;
+                            case CardEffectKind.RestoreOwnLeaderWhenCreationEnters:
+                                RestoreLeaderHealth(state, playerIndex, effect.Amount);
+                                break;
+                        }
+                    }
+                }
+
+                if (state.IsGameOver)
+                {
+                    return;
+                }
+
+                progressed = true;
+            }
+
+            if (!progressed)
+            {
+                return;
+            }
+        }
+    }
+
+    private static bool IsEnteringCreationTrigger(CardEffectKind kind) =>
+        kind is CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters
+            or CardEffectKind.RestoreOwnLeaderWhenCreationEnters;
+
+    /// <summary>
+    /// "本次对战中进入战场的自己的创造物·随从的种类数"：reuses the entry record, counting distinct card ids.
+    /// <para>
+    /// This is the same measure 【跑酷】 needs for its conditional mode — both read the same way, so a
+    /// future card adding a third 创造物 automatically moves both counts (and the self-tests that guard
+    /// them) at once.
+    /// </para>
+    /// </summary>
+    private static int TraitFollowerKindsEnteredThisBattle(PlayerState player, string traitName) =>
+        player.EnteredTraitFollowerKindIdsInternal.Count(cardId =>
+            MatchesTraitFilter(CardCatalog.Get(cardId), traitName));
+
+    /// <summary>
+    /// 「转动的《命运之轮》·斯洛士」: on its controller's turn end, if this follower is evolved, the
+    /// <b>opponent</b> receives the crest this card names and the follower then <b>vanishes</b>.
+    /// <para>
+    /// Vanishing is not destruction: it leaves play with no graveyard entry and no Last Words,
+    /// matching 【消失】 in the official glossary.
+    /// </para>
+    /// </summary>
+    private static void ApplyGrantEnemyCrestAndVanishSelfIfEvolved(
+        GameState state,
+        FollowerInstance follower,
+        string crestId)
+    {
+        if (follower.EvolutionState == EvolutionState.Unevolved)
+        {
+            return;
+        }
+
+        var ownerIndex = state.ActivePlayer;
+        var enemyIndex = OtherPlayer(ownerIndex);
+        if (!state.Players[enemyIndex].CrestsInternal.Any(crest => crest.Definition.Id == crestId))
+        {
+            state.Players[enemyIndex].CrestsInternal.Add(new CrestInstance(CrestCatalog.Get(crestId)));
+        }
+
+        state.Players[ownerIndex].BoardInternal.Remove(follower);
+    }
+
+    /// <summary>
+    /// 「从以下未发动的能力中随机发动1个能力」: rolls uniformly among the numbered slots this crest has
+    /// not spent yet, fires that slot, and records it. Once every slot is spent the ability does nothing.
+    /// </summary>
+    private static void ApplyRandomUnusedNumberedAbility(
+        GameState state,
+        int ownerIndex,
+        CrestInstance crest,
+        string encodedAbilities)
+    {
+        var abilities = ParseNumberedAbilities(encodedAbilities);
+        var available = abilities
+            .Where(ability => !crest.UsedAbilitySlotsInternal.Contains(ability.Slot))
+            .ToArray();
+        if (available.Length == 0)
+        {
+            return;
+        }
+
+        var chosen = available[NextInt(state, available.Length)];
+        crest.UsedAbilitySlotsInternal.Add(chosen.Slot);
+        ApplyNumberedAbility(state, ownerIndex, chosen);
+    }
+
+    /// <summary>
+    /// Decodes the <c>"1=slot;2=slot;…"</c> payload of a numbered-ability effect. Slot forms:
+    /// <c>cost=N</c> (all hand cards cost N less this turn), <c>buff=N</c>/<c>debuff=N</c> (all own
+    /// followers ±N/±N), <c>heal=N</c>, <c>damage=N</c> (own leader), <c>draw=N</c>, <c>evolve</c>.
+    /// </summary>
+    private static IReadOnlyList<(int Slot, string Descriptor)> ParseNumberedAbilities(string encoded)
+    {
+        var result = new List<(int Slot, string Descriptor)>();
+        foreach (var entry in encoded.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = entry.IndexOf('=');
+            if (separator <= 0)
+            {
+                throw new InvalidOperationException(
+                    $"A numbered ability entry must be \"slot=descriptor\", got \"{entry}\".");
+            }
+
+            result.Add((
+                int.Parse(entry[..separator], CultureInfo.InvariantCulture),
+                entry[(separator + 1)..]));
+        }
+
+        return result;
+    }
+
+    private static void ApplyNumberedAbility(
+        GameState state,
+        int ownerIndex,
+        (int Slot, string Descriptor) ability)
+    {
+        var parts = ability.Descriptor.Split(':', 2);
+        var name = parts[0];
+        var amount = parts.Length > 1 ? int.Parse(parts[1], CultureInfo.InvariantCulture) : 0;
+
+        switch (name)
+        {
+            case "cost":
+                ReduceHandCostsUntilEndOfTurn(state.Players[ownerIndex], amount);
+                break;
+            case "buff":
+                IncreaseAllOwnFollowerStats(state, ownerIndex, amount);
+                break;
+            case "debuff":
+                IncreaseAllOwnFollowerStats(state, ownerIndex, -amount);
+                break;
+            case "heal":
+                RestoreLeaderHealth(state, ownerIndex, amount);
+                break;
+            case "damage":
+                DealDamageToLeader(state, ownerIndex, amount);
+                break;
+            case "draw":
+                DrawCards(state, ownerIndex, amount);
+                break;
+            case "evolve":
+                EvolveFollowerByAbility(state, ability.Slot);
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported numbered ability \"{name}\".");
+        }
+    }
+
+    /// <summary>
+    /// 「回合结束前，使自己的所有手牌的**费用-1**」: a temporary reduction that applies to every card in
+    /// hand and is wiped at end of turn, so it never becomes permanent.
+    /// </summary>
+    private static void ReduceHandCostsUntilEndOfTurn(PlayerState player, int amount)
+    {
+        foreach (var card in player.HandInternal)
+        {
+            card.TemporaryCostReduction += amount;
+        }
+    }
+
+    /// <summary>Applies ±N/±N to every follower the given player controls (attack, defence and max).</summary>
+    private static void IncreaseAllOwnFollowerStats(GameState state, int playerIndex, int amount)
+    {
+        foreach (var follower in state.Players[playerIndex].BoardInternal.ToArray())
+        {
+            if (amount >= 0)
+            {
+                follower.Attack += amount;
+                follower.MaxDefense += amount;
+                follower.CurrentDefense += amount;
+            }
+            else
+            {
+                follower.Attack = Math.Max(0, follower.Attack + amount);
+                follower.MaxDefense = Math.Max(0, follower.MaxDefense + amount);
+                follower.CurrentDefense += amount;
+            }
+
+            DestroyFollowerIfNeeded(state, playerIndex, follower);
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 【奥义】槽 = 现在的回合数 + 在手牌中时自己的随从的进化次数。
+    /// The engine approximates the second term with "this player's evolutions this battle", because it
+    /// does not track when a specific card entered the hand.
+    /// </summary>
+    private static int OathGauge(GameState state, int playerIndex) =>
+        state.Players[playerIndex].OwnTurnNumber + state.Players[playerIndex].OwnFollowersEvolvedThisBattle;
+
+    /// <summary>
+    /// 【奥义】/【解放奥义】 on play: resolves the matching ability list when the gauge clears its threshold.
+    /// </summary>
+    private static void ApplyOathAbilities(GameState state, CardDefinition definition)
+    {
+        if ((definition.OathEffects is not { Count: > 0 } && definition.SuperOathEffects is not { Count: > 0 }))
+        {
+            return;
+        }
+
+        var playerIndex = state.ActivePlayer;
+        var gauge = OathGauge(state, playerIndex);
+
+        // 【奥义】/【解放奥义】的共同宿主：刚打出的这张随从（它还在场上、尚未进化）。
+        var host = state.Players[playerIndex].BoardInternal
+            .LastOrDefault(candidate => candidate.Definition.Id == definition.Id);
+
+        if (definition.OathEffects is { Count: > 0 } && gauge >= definition.OathGaugeThreshold)
+        {
+            foreach (var effect in definition.OathEffects)
+            {
+                ApplyEvolutionEffect(state, host, effect, null, null);
+                if (state.IsGameOver)
+                {
+                    return;
+                }
+            }
+        }
+
+        if (definition.SuperOathEffects is { Count: > 0 } && gauge >= 15)
+        {
+            foreach (var effect in definition.SuperOathEffects)
+            {
+                ApplyEvolutionEffect(state, host, effect, null, null);
+                if (state.IsGameOver)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+
     private static void EnsureSpellHasNoTarget(PlaySpellAction action)
     {
         if (action.Target is not null)
@@ -2055,6 +2386,7 @@ public static class GameEngine
         active.EvolutionPoints--;
         active.UsedEvolutionOrSuperEvolutionThisTurn = true;
         StrengthenFollower(follower, 2, EvolutionState.Evolved);
+        active.OwnFollowersEvolvedThisBattle++;
         ApplyEvolutionKeywordChanges(follower);
         ApplyOnEvolveEffects(state, follower);
         ApplyEvolutionEffects(
@@ -2089,7 +2421,7 @@ public static class GameEngine
 
     private static void ApplyEvolutionEffect(
         GameState state,
-        FollowerInstance evolvedFollower,
+        FollowerInstance? evolvedFollower,
         CardEffect effect,
         IReadOnlyList<int>? ownHandCardTargetInstanceIds,
         int? enemyFollowerTargetInstanceId)
@@ -2105,7 +2437,9 @@ public static class GameEngine
             case CardEffectKind.GainStatsToOtherAlliedFollowers:
                 IncreaseOtherAlliedFollowerStats(
                     state,
-                    evolvedFollower.InstanceId,
+                    evolvedFollower?.InstanceId
+                        ?? throw new InvalidOperationException(
+                            "GainStatsToOtherAlliedFollowers needs the evolving follower's instance."),
                     effect.Amount,
                     effect.ReferencedCardId);
                 break;
@@ -2156,6 +2490,24 @@ public static class GameEngine
                 if (enemyFollowerTargetInstanceId is { } evolveTarget)
                 {
                     EvolveFollowerByAbility(state, evolveTarget);
+                }
+
+                break;
+            case CardEffectKind.EvolveSelfByOath:
+                // 【奥义】本随从进化：这条效果由"打出该卡时"的奥义结算触发，那时这张随从刚上场、
+                // 尚未进化，所以按卡号把它找出来进化（不消耗进化点）。
+                if (evolvedFollower is null)
+                {
+                    throw new InvalidOperationException(
+                        "【奥义】本随从进化 requires the playing card's follower; it cannot resolve from an evolution context.");
+                }
+
+                var oathTarget = state.Players[state.ActivePlayer].BoardInternal
+                    .FirstOrDefault(candidate => candidate.Definition.Id == evolvedFollower.Definition.Id &&
+                                                 candidate.EvolutionState == EvolutionState.Unevolved);
+                if (oathTarget is not null)
+                {
+                    EvolveFollowerByAbility(state, oathTarget.InstanceId);
                 }
 
                 break;
@@ -2412,6 +2764,7 @@ public static class GameEngine
         active.SuperEvolutionPoints--;
         active.UsedEvolutionOrSuperEvolutionThisTurn = true;
         StrengthenFollower(follower, 3, EvolutionState.SuperEvolved);
+        state.Players[state.ActivePlayer].OwnFollowersEvolvedThisBattle++;
         ApplyEvolutionKeywordChanges(follower);
         ApplyOnEvolveEffects(state, follower);
         ApplyEvolutionEffects(
@@ -2454,6 +2807,18 @@ public static class GameEngine
                     break;
                 case CardEffectKind.GiveSelfCrest:
                     GiveCrest(state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
+                    break;
+                case CardEffectKind.GainStormIfOwnTraitFollowerKindsEnteredAtLeast:
+                    // 「若本次对战中进入战场的自己的创造物·随从的种类为3种或以上」: counts distinct card
+                    // kinds that actually entered play this battle, reusing the entry record.
+                    var enteredKinds = TraitFollowerKindsEnteredThisBattle(
+                        state.Players[state.ActivePlayer],
+                        effect.ReferencedCardId ?? CardIds.CreationTrait);
+                    if (enteredKinds >= effect.Amount)
+                    {
+                        superEvolvedFollower.GrantedKeywords |= CardKeyword.Storm;
+                    }
+
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported super-evolution effect: {effect.Kind}.");
@@ -2514,6 +2879,7 @@ public static class GameEngine
         }
 
         StrengthenFollower(follower, 2, EvolutionState.Evolved);
+        state.Players[state.ActivePlayer].OwnFollowersEvolvedThisBattle++;
         ApplyOnEvolveEffects(state, follower);
     }
 
@@ -2655,6 +3021,16 @@ public static class GameEngine
     private static void ApplyEndTurn(GameState state)
     {
         var endingPlayer = state.Players[state.ActivePlayer];
+
+        // 「自己的回合结束时，若本随从为进化后，则使对手获得纹章…使本随从消失。」runs before the ordinary
+        // end-of-turn follower effects, because the follower is no longer in play afterwards.
+        foreach (var follower in endingPlayer.BoardInternal.ToArray())
+        {
+            if ((follower.Definition.EndOfOwnTurnEffects ?? []).FirstOrDefault(effect =>
+                    effect.Kind == CardEffectKind.GrantEnemyCrestAndVanishSelfIfEvolved) is { } vanishEffect)
+            {                ApplyGrantEnemyCrestAndVanishSelfIfEvolved(state, follower, vanishEffect.ReferencedCardId!);            }
+        }
+
         ApplyEndOfOwnTurnFollowerEffects(state);
         if (state.IsGameOver)
         {
@@ -2689,10 +3065,20 @@ public static class GameEngine
 
         RemoveEndOfTurnBonuses(endingPlayer);
         RemoveTimedLeaderEffectsExpiringAtEndOfTurn(state, state.ActivePlayer);
+        ClearTemporaryHandCostReductions(endingPlayer);
         endingPlayer.AttackedEnemyLeaderOnPreviousTurn = endingPlayer.AttackedEnemyLeaderThisTurn;
         endingPlayer.AttackedEnemyLeaderThisTurn = false;
         state.ActivePlayer = OtherPlayer(state.ActivePlayer);
         StartTurn(state);
+    }
+
+    /// <summary>「回合结束前」临时减费到期：清空临时部分，永久减费（<c>CostReduction</c>）保留。</summary>
+    private static void ClearTemporaryHandCostReductions(PlayerState player)
+    {
+        foreach (var card in player.HandInternal)
+        {
+            card.TemporaryCostReduction = 0;
+        }
     }
 
     private static void ApplyAttackEffects(GameState state, FollowerInstance attacker)
@@ -2818,6 +3204,15 @@ public static class GameEngine
                 : follower.Definition.UnevolvedEndOfOwnTurnEffects ?? [];
             foreach (var effect in (follower.Definition.EndOfOwnTurnEffects ?? []).Concat(conditionalEffects))
             {
+                if (effect.Kind == CardEffectKind.GrantEnemyCrestAndVanishSelfIfEvolved)
+                {
+                    // Already resolved by the dedicated vanish pass at the top of ApplyEndTurn, which runs
+                    // before this loop — the follower is gone by now. Skipping it here acknowledges that
+                    // it was handled rather than silently dropping it: a card printing this effect
+                    // anywhere else cannot reach the vanish pass at all, and stays unsupported.
+                    continue;
+                }
+
                 switch (effect.Kind)
                 {
                     case CardEffectKind.DealDamageToUpToTwoRandomEnemyFollowers:
@@ -2974,6 +3369,11 @@ public static class GameEngine
                 {
                     case CardEffectKind.DealDamageToOwnLeader:
                         DealDamageToLeader(state, ownerIndex, effect.Amount);
+                        break;
+                    case CardEffectKind.FireRandomUnusedNumberedAbility:
+                        // 「从以下未发动的能力中随机发动1个能力」: the roll is recorded on this crest, so a slot
+                        // already spent is never picked again.
+                        ApplyRandomUnusedNumberedAbility(state, ownerIndex, crest, effect.ReferencedCardId!);
                         break;
                     default:
                         throw new InvalidOperationException($"Unsupported crest start-of-turn effect: {effect.Kind}.");
@@ -3295,6 +3695,30 @@ public static class GameEngine
             player.DeckInternal.RemoveAt(0);
 
             AddCardToHandOrGrave(player, card);
+        }
+    }
+
+    /// <summary>
+    /// 「抽取N张随从」: draws N cards, but skips over cards whose type does not match. Skipped cards keep
+    /// their position in the deck (drawn from position 0 upward), so this never reshuffles the deck and
+    /// stays deterministic. A deck holding fewer matching cards draws only what exists.
+    /// </summary>
+    private static void DrawCardsOfType(GameState state, int playerIndex, int count, CardType requiredType)
+    {
+        var player = state.Players[playerIndex];
+        var drawn = 0;
+        for (var index = 0; index < player.DeckInternal.Count && drawn < count;)
+        {
+            if (player.DeckInternal[index].Definition.Type != requiredType)
+            {
+                index++;
+                continue;
+            }
+
+            var card = player.DeckInternal[index];
+            player.DeckInternal.RemoveAt(index);
+            AddCardToHandOrGrave(player, card);
+            drawn++;
         }
     }
 

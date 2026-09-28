@@ -195,7 +195,58 @@ public enum CardEffectKind
     /// 【进化时】: evolves one other unevolved follower the owner controls, without spending an
     /// evolution point. The chosen follower arrives in the action's follower target.
     /// </summary>
-    EvolveAnotherOwnUnevolvedFollower
+    EvolveAnotherOwnUnevolvedFollower,
+    /// <summary>
+    /// 「转动的《命运之轮》·斯洛士」: when the owner's turn ends while this follower is <b>evolved</b>,
+    /// grants the opponent the crest named by <see cref="CardEffect.ReferencedCardId"/> and then makes
+    /// this follower <b>vanish</b> (removed from play without a graveyard, so Last Words stay silent).
+    /// </summary>
+    GrantEnemyCrestAndVanishSelfIfEvolved,
+    /// <summary>
+    /// Crest ability 「从以下未发动的能力中随机发动1个能力」. <see cref="CardEffect.ReferencedCardId"/>
+    /// carries numbered slots as <c>"1=descriptor;2=descriptor;…"</c>; descriptors are decoded by
+    /// <c>ParseNumberedAbilities</c> in the engine. A slot already spent by this crest is never picked
+    /// again, and when every slot has been spent the ability does nothing.
+    /// </summary>
+    FireRandomUnusedNumberedAbility,
+    /// <summary>
+    /// 【奥义】: resolves <see cref="CardEffect.ReferencedCardId"/>'s numbered abilities when the owner's
+    /// oath gauge (current turn number + followers evolved this battle) is at least
+    /// <see cref="CardEffect.Amount"/>. The gauge's definition comes from the official glossary.
+    /// </summary>
+    ResolveOathGaugeAbilities,
+    /// <summary>
+    /// 「自己的创造物·随从进入战场时」: fires whenever a follower carrying the trait
+    /// <see cref="CardEffect.ReferencedCardId"/> enters the controller's board (entering play by any
+    /// route — summoned, generated, transformed — because this is a passive trigger, not a Fanfare).
+    /// </summary>
+    OnOwnTraitFollowerEntering,
+    /// <summary>
+    /// Passive: while this card is in play, each of the owner's 【创造物】 followers that enters play
+    /// deals <see cref="CardEffect.Amount"/> damage to a random enemy follower, or restores that much
+    /// leader health for the owner. Two separate kinds keep the printed abilities distinguishable.
+    /// </summary>
+    DealDamageToRandomEnemyFollowerWhenCreationEnters,
+    RestoreOwnLeaderWhenCreationEnters,
+    /// <summary>
+    /// Draws <see cref="CardEffect.Amount"/> cards from the deck, but only cards whose type matches
+    /// <see cref="CardEffect.ReferencedCardId"/> (<c>"follower"</c> or <c>"spell"</c>). Non-matching cards
+    /// are skipped and stay on the bottom of the deck in their original order, so the draw never
+    /// silently becomes "draw any card".
+    /// </summary>
+    DrawTraitCards,
+    /// <summary>
+    /// 【超进化时】条件能力: grants 【疾驰】 to this follower when the number of <b>distinct</b> kinds of
+    /// followers carrying the trait <see cref="CardEffect.ReferencedCardId"/> that entered play this
+    /// battle is at least <see cref="CardEffect.Amount"/>.
+    /// </summary>
+    GainStormIfOwnTraitFollowerKindsEnteredAtLeast,
+    /// <summary>
+    /// 【奥义】's 「本随从进化」: evolves the follower this ability was printed on, without spending an
+    /// evolution point. Distinct from <see cref="EvolveSelf"/> because the 【奥义】 path resolves through
+    /// the evolution dispatcher, which has no follower reference of its own.
+    /// </summary>
+    EvolveSelfByOath
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>
@@ -513,7 +564,24 @@ public sealed record CardDefinition(
     /// </summary>
     IReadOnlyList<ModeDefinition>? EvolutionModeOptions = null,
     /// <summary>在手牌中发动: an end-of-turn cost reduction while the card stays in hand.</summary>
-    HandCostReductionDefinition? HandCostReduction = null)
+    HandCostReductionDefinition? HandCostReduction = null,
+    /// <summary>
+    /// 【奥义】: resolved when the card is <b>played</b> and the owner's oath gauge is at least
+    /// <see cref="OathGaugeThreshold"/>. Official glossary: gauge = current turn number + the number of
+    /// times this player's followers evolved while the card sat in hand; approximated here as that
+    /// player's evolutions this battle (the engine does not track per-card hand tenure).
+    /// </summary>
+    IReadOnlyList<CardEffect>? OathEffects = null,
+    /// <summary>The gauge value <see cref="OathEffects"/> needs: 10 for 【奥义】, 15 for 【解放奥义】.</summary>
+    int OathGaugeThreshold = 10,
+    /// <summary>【解放奥义】: resolved in addition to <see cref="OathEffects"/> at gauge 15.</summary>
+    IReadOnlyList<CardEffect>? SuperOathEffects = null,
+    /// <summary>
+    /// 「使对手获得『纹章：X』」: the crest this card hands to the <b>opponent</b> when its end-of-turn
+    /// vanish ability resolves. Stored as an id rather than inline effects so the same crest name can
+    /// have distinct positive and negative versions in <see cref="CrestCatalog"/>.
+    /// </summary>
+    string? GrantedCrestId = null)
 {
     /// <summary>
     /// 【进化时】真正可以选的模式：卡牌自己印的进化模式，或者它重复的【入场曲】模式（两者不会同时有）。
