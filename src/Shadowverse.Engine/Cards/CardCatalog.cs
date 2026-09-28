@@ -76,6 +76,14 @@ public static class CardIds
 
     /// <summary>The token 「诚心的尽小花」 turns a card on the board into.</summary>
     public const string IkuNoKodomo = "BASE-062";
+
+    public const string ForgottenInnocenceAika = "BASE-063";
+
+    /// <summary>
+    /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
+    /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
+    /// </summary>
+    public const string AnyTraitMarker = "*";
 }
 
 public static class CrestIds
@@ -1303,7 +1311,36 @@ public static class CardCatalog
             Effect: null,
             CardRarity.Bronze,
             CardProfession.Nemesis,
-            IsCollectible: false)
+            IsCollectible: false),
+        new(
+            CardIds.ForgottenInnocenceAika,
+            "遗忘的纯真·爱卡",
+            2,
+            2,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】将随机1张与本次对战中被破坏的自己的随从同名的卡牌，以非公开形式加入手牌。\n【进化时】发动与【入场曲】相同的能力。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Neutral,
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately,
+                    1,
+                    CardIds.AnyTraitMarker)
+            ],
+            // 【进化时】发动与【入场曲】相同的能力：本引擎的 EvolutionRepeatsFanfareMode 只用于
+            // 【模式】卡（无【模式】时会直接拒绝），所以不带【模式】的普通入场曲要用同一份效果列表
+            // 明确重复一次 —— 语义上就是"同一个能力再发动一次"，而不是两张不同的效果。
+            EvolutionEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately,
+                    1,
+                    CardIds.AnyTraitMarker)
+            ])
     ];
 
     /// <summary>The ten generated cards that replace the remaining deck after BASE-004 resolves.</summary>
@@ -1516,6 +1553,12 @@ public static class CardCatalog
                 break;
 
             case CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately:
+                if (effect.ReferencedCardId == CardIds.AnyTraitMarker)
+                {
+                    // 「*」 means the card text names no trait, so any destroyed follower qualifies.
+                    break;
+                }
+
                 var destroyedTraitInUse = Definitions.Any(candidate =>
                     candidate.Type == CardType.Follower &&
                     candidate.Traits?.Contains(effect.ReferencedCardId!, StringComparer.Ordinal) == true);

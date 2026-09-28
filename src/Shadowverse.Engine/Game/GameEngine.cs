@@ -2027,6 +2027,14 @@ public static class GameEngine
             case CardEffectKind.RestoreOwnEvolutionPoints:
                 RestoreEvolutionPoints(state.Players[state.ActivePlayer], effect.Amount);
                 break;
+            case CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately:
+                // 「遗忘的纯真·爱卡」【进化时】发动与【入场曲】相同的能力：同一个效果在进化时再跑一次。
+                AddRandomDestroyedTraitFollowerCopyToHandPrivately(
+                    state,
+                    state.ActivePlayer,
+                    effect.ReferencedCardId!,
+                    effect.Amount);
+                break;
             default:
                 throw new InvalidOperationException($"Unsupported evolution effect: {effect.Kind}.");
         }
@@ -2170,7 +2178,8 @@ public static class GameEngine
         {
             var eligible = player.GraveyardInternal
                 .Where(card => card.Definition.Type == CardType.Follower &&
-                               MatchesTraitFilter(card.Definition, traitName))
+                               (traitName == CardIds.AnyTraitMarker ||
+                                MatchesTraitFilter(card.Definition, traitName)))
                 .ToArray();
             if (eligible.Length == 0)
             {

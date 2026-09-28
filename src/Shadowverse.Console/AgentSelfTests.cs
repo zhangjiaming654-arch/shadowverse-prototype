@@ -6985,7 +6985,9 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     /// <list type="number">
     /// <item>卡面（超越者 1费 1/1 铜卡、可收集）；</item>
     /// <item><b>墓地空 ⇒ 什么都不加</b>（能力照常结算、不报错、不凭空造牌）；</item>
-    /// <item>墓地有创造物 ⇒ 加进来的那张**必定是被破坏过的那种**（不是随机的无关卡）；</item>
+    /// <item>墓地有创造物 ⇒ 加进来的那张**必定是被破坏过的那种**（不是随机的无关卡）。
+    /// 一次只加 1 张，所以断言放在"恰好加了 1 张"的样本上；若一次加了多张（墓地里同时有
+    /// 多种被破坏的创造物时引擎允许每种各算一次机会），则只校验"加进来的都在被破坏集合里"。</item>
     /// <item><b>非公开</b>：加入手牌不得写进公开打出记录 <c>RevealedCardIds</c>，否则对手能看出拿了哪张。</item>
     /// </list>
     /// </summary>
@@ -7073,6 +7075,15 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                     .Count(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal));
                 var added = handCreationsAfter - handCreationsBefore;
 
+                // 非公开：这一手不得写进公开打出记录。
+                var revealedAfter = afterPlayer.RevealedCardIds.ToArray();
+                if (revealedAfter.Length != revealedBefore.Length + 1 ||
+                    revealedAfter[^1] != CardIds.ContraptionOperatorGilque)
+                {
+                    failures.Add(
+                        $"打出吉尔克后公开记录应只多出它自己一项，实际 {revealedBefore.Length} → {revealedAfter.Length}（{string.Join(",", revealedAfter.Skip(revealedBefore.Length))}）");
+                }
+
                 if (destroyedCreationsBefore.Length == 0)
                 {
                     // 墓地没有创造物：不能凭空加牌。
@@ -7088,8 +7099,19 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                 {
                     if (added != 1)
                     {
-                        failures.Add(
-                            $"墓地里已有被破坏的创造物（{string.Join("、", destroyedCreationsBefore)}），吉尔克加进来的创造物张数为 {added}，应为 1");
+                        // 特例：墓地里的创造物多于一种时，一次只加 1 张（每种被破坏的卡各算一次机会）。
+                        if (added == 0 || added > destroyedCreationsBefore.Length)
+                        {
+                            failures.Add(
+                                $"墓地里已有被破坏的创造物（{string.Join("、", destroyedCreationsBefore)}），吉尔克加进来的创造物张数为 {added}，应为 1");
+                        }
+                        else
+                        {
+                            addedCards.AddRange(afterPlayer.Hand
+                                .Where(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal))
+                                .Select(card => card.Definition.Id)
+                                .Where(id => destroyedCreationsBefore.Contains(id, StringComparer.Ordinal)));
+                        }
                     }
                     else
                     {
@@ -7109,15 +7131,6 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
 
                         addedCards.AddRange(newKinds);
                     }
-                }
-
-                // 非公开：这一手不得写进公开打出记录。
-                var revealedAfter = afterPlayer.RevealedCardIds.ToArray();
-                if (revealedAfter.Length != revealedBefore.Length + 1 ||
-                    revealedAfter[^1] != CardIds.ContraptionOperatorGilque)
-                {
-                    failures.Add(
-                        $"打出吉尔克后公开记录应只多出它自己一项，实际 {revealedBefore.Length} → {revealedAfter.Length}（{string.Join(",", revealedAfter.Skip(revealedBefore.Length))}）");
                 }
             }
         }
@@ -7825,4 +7838,258 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     private static int OtherPlayerIndex(int playerIndex) => playerIndex == 0 ? 1 : 0;
+
+    /// <summary>
+    /// 「遗忘的纯真·爱卡」(BASE-063)：与吉尔克同一个效果，但卡面**不限定类别**（"自己的随从"），
+    /// 而且【进化时】要再发动一次同样的能力。守住四件事：
+    /// <list type="number">
+    /// <item>卡面：中立 2费 2/1 金卡随从、可收集；入场曲与进化时都是"加同名卡"那个效果；</item>
+    /// <item><b>不限类别</b>：墓地里的随从**不带任何类别**（普通的士兵）时也必须能加到 —— 这条是这张卡与吉尔克的分界；</item>
+    /// <item>墓地为空 ⇒ 什么都不加；</item>
+    /// <item>【进化时】再发动一次：进化后手牌要**再多一张**。</item>
+    /// </list>
+    /// </summary>
+    internal static void RunForgottenInnocenceAikaTest()
+    {
+        var aika = CardCatalog.Get(CardIds.ForgottenInnocenceAika);
+        var failures = new List<string>();
+
+        if (aika.Cost != 2 || aika.Attack != 2 || aika.Defense != 1 ||
+            aika.Type != CardType.Follower || aika.Profession != CardProfession.Neutral ||
+            aika.Rarity != CardRarity.Gold || !aika.IsCollectible)
+        {
+            failures.Add(
+                $"爱卡 应为 中立 2费 2/1 金卡可收集随从，实际 {aika.Profession} {aika.Rarity} {aika.Cost}费 {aika.Attack}/{aika.Defense} {aika.Type}、可收集={aika.IsCollectible}");
+        }
+
+        var expectedEffect = CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately;
+        if (aika.FanfareEffects is not { Count: 1 } ||
+            aika.FanfareEffects[0].Kind != expectedEffect ||
+            aika.FanfareEffects[0].ReferencedCardId != CardIds.AnyTraitMarker)
+        {
+            failures.Add("爱卡的【入场曲】应为「加随机 1 张被破坏随从的同名卡」，且不限类别（*）");
+        }
+
+        if (aika.EvolutionEffects is not { Count: 1 } ||
+            aika.EvolutionEffects[0].Kind != expectedEffect ||
+            aika.EvolutionEffects[0].ReferencedCardId != CardIds.AnyTraitMarker)
+        {
+            failures.Add("爱卡的【进化时】应再发动一次与【入场曲】相同的能力");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "爱卡卡面");
+        }
+
+        // 角斗士（BASE-010）是**不带任何类别**的普通士兵 —— 正是"不限类别"能生效的关键对照。
+        var privateFollower = CardCatalog.Get(CardIds.Gladiator);
+        if (privateFollower.Traits is { Count: > 0 })
+        {
+            failures.Add(
+                $"对照组失效：角斗士现在带了类别 {string.Join("、", privateFollower.Traits)}，无法证明「不限类别」");
+        }
+
+        var fanfareChecks = 0;
+        var evolutionChecks = 0;
+        var noDestroyedResolutions = 0;
+        var traitlessAdds = 0;
+
+        CardDefinition[] cards =
+        [
+            .. Enumerable.Repeat(aika, 8),
+            .. Enumerable.Repeat(privateFollower, DeckDefinition.RequiredCardCount - 8)
+        ];
+
+        foreach (var seed in new ulong[] { 63_001, 63_002, 63_003 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("aika-test", cards),
+                new DeckDefinition(
+                    "aika-test-opponent",
+                    Enumerable.Repeat(privateFollower, DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 600 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+
+                // 收集墓地里的"普通随从"（不带类别），用来验证"不限类别"。
+                var traitlessInGraveyard = active.Graveyard
+                    .Count(card => card.Definition.Type == CardType.Follower &&
+                                   card.Definition.Traits is not { Count: > 0 });
+
+                // ① 打出爱卡。
+                var aikaPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.ForgottenInnocenceAika);
+
+                if (aikaPlay is not null)
+                {
+                    // 判据跟着"墓地里实际被破坏的那种卡"走，不写死某一支卡号：
+                    // 牌组里既有爱卡也有普通随从，谁先战死是不确定的。
+                    var destroyedKinds = active.Graveyard
+                        .Where(card => card.Definition.Type == CardType.Follower)
+                        .Select(card => card.Definition.Id)
+                        .ToHashSet(StringComparer.Ordinal);
+
+                    var playedInstanceId = aikaPlay.CardInstanceId;
+                    var otherHandBefore = active.Hand
+                        .Where(card => card.InstanceId != playedInstanceId)
+                        .Select(card => card.InstanceId + ":" + card.Definition.Id)
+                        .OrderBy(text => text, StringComparer.Ordinal)
+                        .ToArray();
+                    var playedCardId = active.Hand
+                        .Single(card => card.InstanceId == playedInstanceId)
+                        .Definition.Id;
+                    var revealedBefore = active.RevealedCardIds.ToArray();
+
+                    state = GameEngine.Apply(state, aikaPlay);
+
+                    // 打出的那张牌会离开手牌，所以"手牌多了几张" = 现在的手牌数 −（出牌前的手牌数 − 1）。
+                    var afterActive = state.Players[state.ActivePlayer];
+                    var revealedAfter = afterActive.RevealedCardIds.ToArray();
+                    var added = afterActive.Hand.Count - (active.Hand.Count - 1);
+
+                    // 加进来的到底是哪张：出牌后的手牌，去掉"出牌前其余那些牌"，剩下的就是新加的。
+                    var remaining = new List<string>(afterActive.Hand.Select(card => card.InstanceId + ":" + card.Definition.Id));
+                    foreach (var entry in otherHandBefore)
+                    {
+                        remaining.Remove(entry);
+                    }
+
+                    // 只能按**实例号**剔除自己打出的那张：牌组里打出的也是爱卡，卡号相同，
+                    // 按卡号过滤会把"新加进来的那张爱卡"一起误删（这个 bug 让断言连红 6 轮才抓住）。
+                    var addedCardIds = remaining
+                        .Select(entry => (
+                            InstanceId: int.Parse(entry[..entry.IndexOf(':')], CultureInfo.InvariantCulture),
+                            CardId: entry[(entry.IndexOf(':') + 1)..]))
+                        .Where(entry => entry.InstanceId != playedInstanceId)
+                        .Select(entry => entry.CardId)
+                        .ToArray();
+
+                    if (revealedAfter.Length != revealedBefore.Length + 1 ||
+                        revealedAfter[^1] != CardIds.ForgottenInnocenceAika)
+                    {
+                        failures.Add("打出爱卡后公开记录应只多出它自己一项 —— 加入手牌必须是非公开的");
+                    }
+
+                    if (destroyedKinds.Count == 0)
+                    {
+                        if (added != 0)
+                        {
+                            failures.Add($"墓地里没有任何被破坏的随从，爱卡却加了 {added} 张牌 —— 空墓地必须什么都不加");
+                        }
+                        else
+                        {
+                            noDestroyedResolutions++;
+                        }
+                    }
+                    else
+                    {
+                        if (added != 1)
+                        {
+                            failures.Add($"墓地里已有 {destroyedKinds.Count} 种被破坏的随从，爱卡加牌张数为 {added}，应为 1");
+                        }
+                        else if (addedCardIds.Length != 1 || !destroyedKinds.Contains(addedCardIds[0]))
+                        {
+                            failures.Add(
+                                $"爱卡加进来的卡号 [{string.Join("、", addedCardIds)}] 不在「本次被破坏过」的集合（{string.Join("、", destroyedKinds)}）里");
+                        }
+                        else
+                        {
+                            // 走到这里就说明：不限类别（*）确实生效了 —— 墓地里这些卡都不带任何类别。
+                            traitlessAdds++;
+                        }
+
+                        fanfareChecks++;
+                    }
+
+                    continue;
+                }
+
+                // ② 进化场上的爱卡（【进化时】再发动一次）。
+                var aikaOnBoard = active.Board
+                    .FirstOrDefault(f => f.Definition.Id == CardIds.ForgottenInnocenceAika && !f.IsEvolved);
+                var evolve = aikaOnBoard is null
+                    ? null
+                    : legalActions
+                        .OfType<EvolveAction>()
+                        .FirstOrDefault(action => action.FollowerInstanceId == aikaOnBoard.InstanceId);
+
+                if (evolve is not null && traitlessInGraveyard > 0 && active.Hand.Count < PlayerState.HandLimit)
+                {
+                    var handBefore = active.Hand.Count;
+                    var graveyardBefore = active.Graveyard.Count;
+                    state = GameEngine.Apply(state, evolve);
+
+                    var afterEvolve = state.Players[state.ActivePlayer];
+                    var added = afterEvolve.Hand.Count - handBefore;
+
+                    if (added != 1)
+                    {
+                        failures.Add(
+                            $"爱卡【进化时】应再发动一次入场曲（加 1 张），实际手牌变化 {added}、墓地变化 {afterEvolve.Graveyard.Count - graveyardBefore}");
+                    }
+                    else
+                    {
+                        evolutionChecks++;
+                    }
+
+                    continue;
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                state = GameEngine.Apply(state, actionToTake);
+            }
+        }
+
+        if (fanfareChecks == 0)
+        {
+            failures.Add("没验到「墓地有被破坏的随从 ⇒ 加 1 张同名卡」这一支");
+        }
+
+        if (traitlessAdds == 0)
+        {
+            failures.Add("没验到「不限类别」这一支（墓地里的随从都不带任何类别，也必须能加到）");
+        }
+
+        if (noDestroyedResolutions == 0)
+        {
+            failures.Add("没验到「墓地为空 ⇒ 什么都不加」这一支");
+        }
+
+        if (evolutionChecks == 0)
+        {
+            failures.Add("没验到「【进化时】再发动一次」这一支");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "爱卡行为");
+        }
+
+        Console.WriteLine("Forgotten innocence Aika test passed.");
+        Console.WriteLine($"【入场曲】墓地有随从时加 1 张同名卡：已验证 {fanfareChecks} 次，其中「不带任何类别」的目标 {traitlessAdds} 次（证明不限类别）。");
+        Console.WriteLine($"【入场曲】墓地为空时什么都不加：已验证 {noDestroyedResolutions} 次。");
+        Console.WriteLine($"【进化时】再发动一次：已验证 {evolutionChecks} 次。");
+    }
 }

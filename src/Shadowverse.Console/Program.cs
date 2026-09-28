@@ -69,6 +69,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunContraptionOperatorGilqueTest();
     // 变身（诚心的尽小花）：消滅原卡而非破坏 ⇒ 不触发【谢幕曲】、不进墓地、不继承加成。
     AgentSelfTests.RunTransformFollowerTest();
+    // 爱卡：与吉尔克同一效果但不限类别，且【进化时】要再发动一次。
+    AgentSelfTests.RunForgottenInnocenceAikaTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();
