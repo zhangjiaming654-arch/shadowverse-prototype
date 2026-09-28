@@ -978,6 +978,55 @@ internal static void RunCausalContinuation(string[] args)
         return;
     }
 
+    // [DIR-9 第 4 条] V4 因果 CSV 的跨进程重放
+    if (HasOption(args, "--v4-causal-replay"))
+    {
+        var replayRows = ParseIntegerOption(args, "--v4-causal-replay-rows", defaultValue: 4, minimum: 1, maximum: 50);
+        var replaySourceText = ReadOptionValue(args, "--v4-causal-source-seed");
+        var replaySourceSeed = string.IsNullOrWhiteSpace(replaySourceText) ? 8_675_309_001UL : ulong.Parse(replaySourceText);
+        var replayProbeText = ReadOptionValue(args, "--v4-causal-probe-seed");
+        var replayProbeSeed = string.IsNullOrWhiteSpace(replayProbeText) ? 3_141_592_653_589_793UL : ulong.Parse(replayProbeText);
+        var csv = Path.Combine(config.OutputDirectory, "v4-causal.csv");
+        try
+        {
+            var ok = V4CausalReplay.Run(csv, replayRows, replaySourceSeed, replayProbeSeed, Console.WriteLine);
+            Environment.ExitCode = ok ? 0 : 1;
+        }
+        catch (InvalidOperationException exception)
+        {
+            Console.Error.WriteLine($"V4 因果重放中止：{exception.Message}");
+            Environment.ExitCode = 1;
+        }
+
+        return;
+    }
+    // [DIR-9] V4 因果测量路径：独立文件名（v4-causal*），**不覆盖** 3.0 的任何产物。
+    if (HasOption(args, "--v4-causal-formal"))
+    {
+        var v4Games = ParseIntegerOption(args, "--v4-causal-games", defaultValue: 1, minimum: 1, maximum: 500);
+        var v4SourceText = ReadOptionValue(args, "--v4-causal-source-seed");
+        var v4SourceSeed = string.IsNullOrWhiteSpace(v4SourceText) ? 8_675_309_001UL : ulong.Parse(v4SourceText);
+        var v4ProbeText = ReadOptionValue(args, "--v4-causal-probe-seed");
+        var v4ProbeSeed = string.IsNullOrWhiteSpace(v4ProbeText) ? 3_141_592_653_589_793UL : ulong.Parse(v4ProbeText);
+        var v4SeedsText = ReadOptionValue(args, "--v4-causal-continuation-seeds");
+        var v4Seeds = string.IsNullOrWhiteSpace(v4SeedsText)
+            ? new List<ulong> { 2_718_281_828_459_045UL, 1_414_213_562_373_095UL }
+            : v4SeedsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(text => ulong.Parse(text)).ToList();
+        var v4Config = new V4CausalProbe.Config(
+            v4Games, v4SourceSeed, v4ProbeSeed, v4Seeds, config.OutputDirectory, HasOption(args, "--v4-causal-resume"));
+        try
+        {
+            Environment.ExitCode = V4CausalProbe.RunFormal(v4Config, Console.WriteLine);
+        }
+        catch (InvalidOperationException exception)
+        {
+            Console.Error.WriteLine($"V4 因果测量中止：{exception.Message}");
+            Environment.ExitCode = 1;
+        }
+
+        return;
+    }
     // [DIR-6] 4.0 原型（InformationSetTurnMctsAgentV4）的验收入口。
     if (HasOption(args, "--v4-tree-check"))
     {

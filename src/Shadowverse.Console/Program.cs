@@ -356,7 +356,9 @@ if (ConsoleTools.HasOption(args, "--causal-continuation")
     || ConsoleTools.HasOption(args, "--causal-entry-check")
     // [DIR-6] 4.0 原型（信息集树）的验收入口
     || ConsoleTools.HasOption(args, "--v4-tree-check")
-    || ConsoleTools.HasOption(args, "--v4-wiring"))
+    || ConsoleTools.HasOption(args, "--v4-wiring")
+    || ConsoleTools.HasOption(args, "--v4-causal-formal")
+    || ConsoleTools.HasOption(args, "--v4-causal-replay"))
 {
     ConsoleTools.RunCausalContinuation(args);
     return;
