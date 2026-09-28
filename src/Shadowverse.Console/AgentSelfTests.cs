@@ -7349,16 +7349,27 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                         scenarioFailures.Add("变身出来的『伊鞠的小鬼』处于进化状态 —— 不得继承原随从的进化状态");
                     }
 
-                    // 【突进】必须是"马上能用"的：这一步之后立刻要能攻击。
-                    var rushed = GameEngine.GetLegalActions(after).Any(action => action switch
+                    // 变身出来的随从**当作刚进入战场**，所以它当回合能不能攻击完全由它自己的
+                    // 【突进】/【疾驰】决定（已由卡牌设计者确认）：
+                    //   「变身」条的"从下一回合开始可攻击"是**默认规则**（刚进战场当回合不能攻击），
+                    //   「突进」条的"进入战场的回合也能攻击随从"正是那条默认规则的**例外**。
+                    // 所以『伊鞠的小鬼』（自带【突进】）变身后当回合应能攻击**随从**、但不能打主战者。
+                    var legalAfter = GameEngine.GetLegalActions(after);
+                    var canAttackFollowerNow = legalAfter.Any(action =>
+                        action is AttackFollowerAction attack && attack.AttackerInstanceId == transformed.InstanceId);
+                    var canAttackLeaderNow = legalAfter.Any(action =>
+                        action is AttackLeaderAction attackLeader && attackLeader.AttackerInstanceId == transformed.InstanceId);
+
+                    if (!canAttackFollowerNow)
                     {
-                        AttackFollowerAction attack => attack.AttackerInstanceId == transformed.InstanceId,
-                        AttackLeaderAction attackLeader => attackLeader.AttackerInstanceId == transformed.InstanceId,
-                        _ => false
-                    });
-                    if (!rushed)
+                        scenarioFailures.Add(
+                            "变身出来的『伊鞠的小鬼』自带【突进】，却当回合攻击不了随从 —— 【突进】应当照常生效");
+                    }
+
+                    if (canAttackLeaderNow)
                     {
-                        scenarioFailures.Add("变身出来的『伊鞠的小鬼』带【突进】，但在同一回合内攻击不了 —— 【突进】必须立刻生效");
+                        scenarioFailures.Add(
+                            "变身出来的『伊鞠的小鬼』当回合就能攻击主战者 —— 它只有【突进】，打主战者需要【疾驰】");
                     }
                 }
 

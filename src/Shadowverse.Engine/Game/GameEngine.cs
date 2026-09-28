@@ -1699,6 +1699,20 @@ public static class GameEngine
         return new FollowerInstance(card, state.TurnNumber);
     }
 
+    /// <summary>
+    /// 【变身】出来的随从**当作刚进入战场**，所以它当回合能不能攻击，完全由它自己印的
+    /// 【突进】/【疾驰】决定 —— 这与官网术语表并不冲突：
+    /// <list type="bullet">
+    /// <item>「变身」条：「变身为随从时，从下一回合开始，可攻击对手的主战者或随从。」这是**默认规则**
+    /// （刚进战场的随从当回合不能攻击），与下面这条并列。</item>
+    /// <item>「突进」条：「在进入战场的回合也能攻击随从的能力。」—— 这正是那条默认规则的**例外**。</item>
+    /// </list>
+    /// 所以『伊鞠的小鬼』（自带【突进】）变身后当回合可以攻击**随从**，但仍然不能打主战者（那需要【疾驰】）。
+    /// 这条读法由卡牌设计者确认过。
+    /// </summary>
+    private const string TransformAttackTimingNote =
+        "transformed followers count as having just entered play; 【突进】/【疾驰】 decide whether they can attack";
+
     private static void EnsureSpellHasNoTarget(PlaySpellAction action)
     {
         if (action.Target is not null)
