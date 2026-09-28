@@ -71,6 +71,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunTransformFollowerTest();
     // 爱卡：与吉尔克同一效果但不限类别，且【进化时】要再发动一次。
     AgentSelfTests.RunForgottenInnocenceAikaTest();
+    // 2026-09-28 批次 6 张超越者卡：条件入场曲 / 费用-3 的指名复制 / 让他人进化 / 吟唱护符 / 回合末自毁。
+    AgentSelfTests.RunNemesisBatchTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

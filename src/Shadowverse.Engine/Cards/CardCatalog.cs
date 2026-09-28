@@ -79,6 +79,21 @@ public static class CardIds
 
     public const string ForgottenInnocenceAika = "BASE-063";
 
+    public const string AncientAxeYozeta = "BASE-064";
+
+    /// <summary>The spell 「古旧天斧·尤泽塔」 adds to the hand — cost 0, reduces a follower's cost by 3.</summary>
+    public const string AncientAxeAbyss = "BASE-065";
+
+    public const string LeisurelySkater = "BASE-066";
+
+    public const string YourSeniorEuphie = "BASE-067";
+
+    /// <summary>【吟唱_2】amulet that hands out 悬丝傀儡 tokens.</summary>
+    public const string MarionetteTheater = "BASE-068";
+
+    /// <summary>0-cost 【突进】 token that destroys itself at the end of the opponent's turn.</summary>
+    public const string Marionette = "BASE-069";
+
     /// <summary>
     /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
     /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
@@ -1340,7 +1355,120 @@ public static class CardCatalog
                     CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately,
                     1,
                     CardIds.AnyTraitMarker)
-            ])
+            ]),
+        new(
+            CardIds.AncientAxeYozeta,
+            "古旧天斧·尤泽塔",
+            2,
+            2,
+            1,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【入场曲】若自己的战场上有原始费用为5或以上的随从，则将1张『天斧深渊』加入手牌。\n【突进】",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            Traits: ["侵蚀者"],
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.AddCardToHandIfOwnFollowerPrintedCostAtLeast,
+                    5,
+                    CardIds.AncientAxeAbyss)
+            ]),
+        new(
+            CardIds.AncientAxeAbyss,
+            "天斧深渊",
+            0,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Spell,
+            "选择自己的战场上的1个原始费用为5或以上的随从，将1张与其同名的卡牌以非公开形式加入手牌，使其费用-3。",
+            new CardEffect(
+                CardEffectKind.AddCopyOfTargetFollowerToHandPrivatelyWithCostReduction,
+                5,
+                SecondaryAmount: 3),
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            Traits: ["侵蚀者"],
+            IsCollectible: false),
+        new(
+            CardIds.LeisurelySkater,
+            "悠然的滑手",
+            2,
+            2,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】将1张『古老的创造物』加入手牌。\n【进化时】发动与【入场曲】相同的能力。",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.AncientCreation)
+            ],
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.AncientCreation)
+            ]),
+        new(
+            CardIds.YourSeniorEuphie,
+            "你的前辈·欧丝",
+            2,
+            2,
+            2,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】将1张『解析的创造物』加入手牌。\n【进化时】选择自己的战场上的1个进化前的其他随从，使其进化。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.AnalyzedCreation)
+            ],
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.EvolveAnotherOwnUnevolvedFollower, 1)
+            ]),
+        new(
+            CardIds.MarionetteTheater,
+            "人偶剧场",
+            2,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Amulet,
+            "【入场曲】将1张『悬丝傀儡』加入手牌。\n【吟唱_2】自己的回合结束时，将1张『悬丝傀儡』加入手牌。",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Nemesis,
+            Countdown: 2,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.Marionette)
+            ],
+            EndOfOwnTurnEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.Marionette)
+            ]),
+        new(
+            CardIds.Marionette,
+            "悬丝傀儡",
+            0,
+            1,
+            1,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【突进】\n对手的回合结束时，破坏本卡牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: ["人偶"],
+            DestroysAtEndOfOpponentTurn: true,
+            IsCollectible: false)
     ];
 
     /// <summary>The ten generated cards that replace the remaining deck after BASE-004 resolves.</summary>
@@ -1578,6 +1706,21 @@ public static class CardCatalog
                         $"Card {card.Id} transforms into {effect.ReferencedCardId}, which is not a catalog follower.");
                 }
 
+                break;
+
+            case CardEffectKind.AddCardToHandIfOwnFollowerPrintedCostAtLeast:
+                if (!DefinitionsById.ContainsKey(effect.ReferencedCardId!))
+                {
+                    throw new InvalidOperationException(
+                        $"Card {card.Id} references unknown card ID {effect.ReferencedCardId}.");
+                }
+
+                break;
+
+            case CardEffectKind.AddCopyOfTargetFollowerToHandPrivatelyWithCostReduction:
+            case CardEffectKind.EvolveAnotherOwnUnevolvedFollower:
+                // These name a follower on the board through the action's target, not through the
+                // catalog, so there is no referenced card ID to check.
                 break;
 
             case CardEffectKind.GiveEnemyCrest:

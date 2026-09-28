@@ -8092,4 +8092,502 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine($"【入场曲】墓地为空时什么都不加：已验证 {noDestroyedResolutions} 次。");
         Console.WriteLine($"【进化时】再发动一次：已验证 {evolutionChecks} 次。");
     }
+
+    /// <summary>
+    /// 批次 2026-09-28 的 6 张超越者卡。守住五件事：
+    /// <list type="number">
+    /// <item>卡面：费用/身材/稀有度/类型/关键词（悬丝傀儡是 0 费 1/1【突进】衍生卡）；</item>
+    /// <item>尤泽塔的**条件入场曲**：场上没有原始费用 ≥5 的随从 ⇒ 不加牌；有 ⇒ 加 1 张『天斧深渊』；</item>
+    /// <item>天斧深渊：只能选自己场上原始费用 ≥5 的随从，加入手牌的复制体**费用 −3**（不是加牌本身的费用）；</item>
+    /// <item>欧丝的【进化时】：让**另一个**进化前的随从进化（不消耗进化点）；</item>
+    /// <item>人偶剧场：入场曲给 1 张悬丝傀儡，且**自己的回合结束时**再给 1 张（【吟唱_2】）；
+    /// 以及悬丝傀儡在**对手回合结束时**被破坏。</item>
+    /// </list>
+    /// <para>
+    /// 卡牌身份一律按**实例号**追踪（上一轮按卡号追踪连红 6 轮）；"加牌"类断言都先确认手牌没满，
+    /// 因为满手牌时新加的牌按引擎规则溢出进墓地、手牌数不变。
+    /// </para>
+    /// </summary>
+    internal static void RunNemesisBatchTest()
+    {
+        var yozeta = CardCatalog.Get(CardIds.AncientAxeYozeta);
+        var abyss = CardCatalog.Get(CardIds.AncientAxeAbyss);
+        var skater = CardCatalog.Get(CardIds.LeisurelySkater);
+        var euphie = CardCatalog.Get(CardIds.YourSeniorEuphie);
+        var theater = CardCatalog.Get(CardIds.MarionetteTheater);
+        var marionette = CardCatalog.Get(CardIds.Marionette);
+
+        var failures = new List<string>();
+
+        // ---- ① 卡面 ----
+        void CheckFace(CardDefinition card, int cost, int attack, int defense, CardType type,
+            CardRarity rarity, CardKeyword keywords, bool collectible)
+        {
+            if (card.Cost != cost || card.Attack != attack || card.Defense != defense ||
+                card.Type != type || card.Rarity != rarity || card.Profession != CardProfession.Nemesis ||
+                card.Keywords != keywords || card.IsCollectible != collectible)
+            {
+                failures.Add(
+                    $"{card.Name} 卡面不符：{card.Profession} {card.Rarity} {card.Cost}费 {card.Attack}/{card.Defense} {card.Type} " +
+                    $"关键词={card.Keywords} 可收集={card.IsCollectible}（期望 {rarity} {cost}费 {attack}/{defense} {type} 关键词={keywords} 可收集={collectible}）");
+            }
+        }
+
+        CheckFace(yozeta, 2, 2, 1, CardType.Follower, CardRarity.Rainbow, CardKeyword.Rush, true);
+        CheckFace(abyss, 0, 0, 0, CardType.Spell, CardRarity.Rainbow, CardKeyword.None, false);
+        CheckFace(skater, 2, 2, 1, CardType.Follower, CardRarity.Silver, CardKeyword.None, true);
+        CheckFace(euphie, 2, 2, 2, CardType.Follower, CardRarity.Rainbow, CardKeyword.None, true);
+        CheckFace(theater, 2, 0, 0, CardType.Amulet, CardRarity.Silver, CardKeyword.None, true);
+        CheckFace(marionette, 0, 1, 1, CardType.Follower, CardRarity.Bronze, CardKeyword.Rush, false);
+
+        if (theater.Countdown != 2)
+        {
+            failures.Add($"人偶剧场 的【吟唱】应为 2，实际 {theater.Countdown?.ToString() ?? "无"}");
+        }
+
+        if (!marionette.DestroysAtEndOfOpponentTurn)
+        {
+            failures.Add("悬丝傀儡 应带「对手的回合结束时，破坏本卡牌」");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "批次卡面");
+        }
+
+        // ---- ② + ③ 尤泽塔 / 天斧深渊 ----
+        var conditionMet = 0;
+        var conditionNotMet = 0;
+        var costReductionChecks = 0;
+
+        // 8 张尤泽塔 + 8 张天斧深渊 + 角斗士（低费）或歌莉娅（4费，用作"高费"目标需要 ≥5，
+        // 所以高费侧用奥莉薇 7 费）+ 巨人。
+        var olivia = CardCatalog.Get(CardIds.ValiantFallenAngelOlivia);
+        var gladiator = CardCatalog.Get(CardIds.Gladiator);
+
+        CardDefinition[] yozetaDeckCards =
+        [
+            .. Enumerable.Repeat(yozeta, 8),
+            .. Enumerable.Repeat(abyss, 8),
+            .. Enumerable.Repeat(olivia, 8),
+            .. Enumerable.Repeat(gladiator, DeckDefinition.RequiredCardCount - 24)
+        ];
+
+        foreach (var seed in new ulong[] { 64_001, 64_002, 64_003, 64_004 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("nemesis-batch-yozeta", yozetaDeckCards),
+                new DeckDefinition("nemesis-batch-opponent", Enumerable.Repeat(gladiator, DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 600 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+
+                // (a) 打尤泽塔：按"出牌前场上有没有原始费用 ≥5 的随从"断言加不加『天斧深渊』。
+                var yozetaPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.AncientAxeYozeta);
+
+                if (yozetaPlay is not null && active.Hand.Count < PlayerState.HandLimit)
+                {
+                    var hasExpensive = active.Board.Any(f => f.Definition.Cost >= 5);
+                    var abyssBefore = active.Hand.Count(card => card.Definition.Id == CardIds.AncientAxeAbyss);
+
+                    state = GameEngine.Apply(state, yozetaPlay);
+
+                    var abyssAfter = state.Players[state.ActivePlayer].Hand
+                        .Count(card => card.Definition.Id == CardIds.AncientAxeAbyss);
+                    var gained = abyssAfter - abyssBefore;
+
+                    if (hasExpensive)
+                    {
+                        if (gained != 1)
+                        {
+                            failures.Add($"场上有原始费用≥5的随从时，尤泽塔应加 1 张『天斧深渊』，实际 {gained} 张");
+                        }
+                        else
+                        {
+                            conditionMet++;
+                        }
+                    }
+                    else
+                    {
+                        if (gained != 0)
+                        {
+                            failures.Add($"场上没有原始费用≥5的随从，尤泽塔却加了 {gained} 张『天斧深渊』—— 条件未满足时不能给牌");
+                        }
+                        else
+                        {
+                            conditionNotMet++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                // (b) 打天斧深渊：目标必须是自己的、原始费用 ≥5 的随从。
+                var abyssPlay = legalActions
+                    .OfType<PlaySpellAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.AncientAxeAbyss);
+
+                if (abyssPlay is not null && active.Hand.Count < PlayerState.HandLimit)
+                {
+                    if (abyssPlay.Target is not FollowerTarget abyssTarget)
+                    {
+                        failures.Add("天斧深渊 必须要求选择一个目标随从");
+                    }
+                    else
+                    {
+                        var target = active.Board
+                            .SingleOrDefault(f => f.InstanceId == abyssTarget.FollowerInstanceId);
+                        if (target is null)
+                        {
+                            failures.Add("天斧深渊 的目标不在自己场上 —— 它只能选自己的随从");
+                        }
+                        else if (target.Definition.Cost < 5)
+                        {
+                            failures.Add($"天斧深渊 选到了原始费用 {target.Definition.Cost} 的随从，低于要求的 5");
+                        }
+                        else
+                        {
+                            var targetCardId = target.Definition.Id;
+                            var beforeCopies = active.Hand.Count(card => card.Definition.Id == targetCardId);
+
+                            state = GameEngine.Apply(state, abyssPlay);
+
+                            var afterHand = state.Players[state.ActivePlayer].Hand;
+                            var newCopies = afterHand
+                                .Where(card => card.Definition.Id == targetCardId)
+                                .ToArray();
+
+                            if (newCopies.Length - beforeCopies != 1)
+                            {
+                                failures.Add($"天斧深渊 应加入 1 张同名卡，实际增加 {newCopies.Length - beforeCopies} 张");
+                            }
+                            else
+                            {
+                                // 加入手牌的那张必须带费用 −3。
+                                var addedCopy = newCopies
+                                    .First(card => active.Hand.All(old => old.InstanceId != card.InstanceId));
+                                if (addedCopy.CostReduction != 3)
+                                {
+                                    failures.Add(
+                                        $"天斧深渊 加入的复制体费用减免应为 3，实际 {addedCopy.CostReduction}（卡面费用 {addedCopy.Definition.Cost}）");
+                                }
+                                else
+                                {
+                                    costReductionChecks++;
+                                }
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                state = GameEngine.Apply(state, actionToTake);
+            }
+        }
+
+        if (conditionMet == 0)
+        {
+            failures.Add("没验到「场上有≥5费随从 ⇒ 尤泽塔加 1 张天斧深渊」这一支");
+        }
+
+        if (conditionNotMet == 0)
+        {
+            failures.Add("没验到「场上没有≥5费随从 ⇒ 尤泽塔什么都不加」这一支");
+        }
+
+        if (costReductionChecks == 0)
+        {
+            failures.Add("没验到「天斧深渊 使加入手牌的复制体费用 −3」这一支");
+        }
+
+        // ---- ④ + ⑤ 悠然的滑手 / 欧丝 / 人偶剧场 / 悬丝傀儡 ----
+        var skaterChecks = 0;
+        var euphieFanfareChecks = 0;
+        var euphieEvolutionChecks = 0;
+        var theaterFanfareChecks = 0;
+        var theaterEndOfTurnChecks = 0;
+        var marionetteDestroyChecks = 0;
+
+        CardDefinition[] tokenDeckCards =
+        [
+            .. Enumerable.Repeat(skater, 6),
+            .. Enumerable.Repeat(euphie, 6),
+            .. Enumerable.Repeat(theater, 6),
+            .. Enumerable.Repeat(gladiator, DeckDefinition.RequiredCardCount - 18)
+        ];
+
+        foreach (var seed in new ulong[] { 66_001, 66_002, 66_003 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("nemesis-batch-tokens", tokenDeckCards),
+                new DeckDefinition("nemesis-batch-opponent-2", Enumerable.Repeat(gladiator, DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 700 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var handNotFull = active.Hand.Count < PlayerState.HandLimit;
+
+                // 先手把悬丝傀儡打到场上：它不是靠"随机出牌"能可靠铺上去的（0 费随从在
+                // 手牌里时 AI 的选择不保证会用到它），而"对手回合结束时被破坏"必须真的在场才验得到。
+                var marionettePlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.Marionette);
+                if (marionettePlay is not null)
+                {
+                    state = GameEngine.Apply(state, marionettePlay);
+                    continue;
+                }
+
+                // 滑手：入场曲给 1 张『古老的创造物』（它自己有【进化时】重复一次，见 (b)）。
+                var skaterPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.LeisurelySkater);
+                if (skaterPlay is not null && handNotFull)
+                {
+                    var before = active.Hand.Count(card => card.Definition.Id == CardIds.AncientCreation);
+                    state = GameEngine.Apply(state, skaterPlay);
+                    var after = state.Players[state.ActivePlayer].Hand
+                        .Count(card => card.Definition.Id == CardIds.AncientCreation);
+                    if (after - before != 1)
+                    {
+                        failures.Add($"悠然的滑手【入场曲】应加 1 张『古老的创造物』，实际 {after - before} 张");
+                    }
+                    else
+                    {
+                        skaterChecks++;
+                    }
+
+                    continue;
+                }
+
+                // 欧丝：入场曲给『解析的创造物』；进化时让另一个进化前的随从进化。
+                var euphiePlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.YourSeniorEuphie);
+                if (euphiePlay is not null && handNotFull)
+                {
+                    var before = active.Hand.Count(card => card.Definition.Id == CardIds.AnalyzedCreation);
+                    state = GameEngine.Apply(state, euphiePlay);
+                    var after = state.Players[state.ActivePlayer].Hand
+                        .Count(card => card.Definition.Id == CardIds.AnalyzedCreation);
+                    if (after - before != 1)
+                    {
+                        failures.Add($"你的前辈·欧丝【入场曲】应加 1 张『解析的创造物』，实际 {after - before} 张");
+                    }
+                    else
+                    {
+                        euphieFanfareChecks++;
+                    }
+
+                    continue;
+                }
+
+                var euphieOnBoard = active.Board
+                    .FirstOrDefault(f => f.Definition.Id == CardIds.YourSeniorEuphie &&
+                                         f.EvolutionState == EvolutionState.Unevolved);
+                var euphieEvolve = euphieOnBoard is null
+                    ? null
+                    : legalActions
+                        .OfType<EvolveAction>()
+                        .FirstOrDefault(action => action.FollowerInstanceId == euphieOnBoard.InstanceId);
+
+                if (euphieEvolve is not null && euphieEvolve.EnemyFollowerTargetInstanceId is { } evolveTargetId)
+                {
+                    var targetBefore = active.Board
+                        .SingleOrDefault(f => f.InstanceId == evolveTargetId);
+
+                    state = GameEngine.Apply(state, euphieEvolve);
+
+                    var targetAfter = state.Players[state.ActivePlayer].Board
+                        .SingleOrDefault(f => f.InstanceId == evolveTargetId);
+
+                    if (targetBefore is null || targetAfter is null ||
+                        targetAfter.EvolutionState == EvolutionState.Unevolved)
+                    {
+                        failures.Add("你的前辈·欧丝【进化时】没能让选中的随从进化");
+                    }
+                    else if (targetAfter.Attack != targetBefore.Attack + 2 ||
+                             targetAfter.MaxDefense != targetBefore.MaxDefense + 2)
+                    {
+                        failures.Add(
+                            $"欧丝【进化时】进化的随从应 +2/+2，实际 {targetBefore.Attack}/{targetBefore.MaxDefense} → {targetAfter.Attack}/{targetAfter.MaxDefense}");
+                    }
+                    else
+                    {
+                        euphieEvolutionChecks++;
+                    }
+
+                    continue;
+                }
+
+                // 人偶剧场：入场曲给 1 张悬丝傀儡。
+                var theaterPlay = legalActions
+                    .OfType<PlayAmuletAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.MarionetteTheater);
+                if (theaterPlay is not null && handNotFull)
+                {
+                    var before = active.Hand.Count(card => card.Definition.Id == CardIds.Marionette);
+                    state = GameEngine.Apply(state, theaterPlay);
+                    var after = state.Players[state.ActivePlayer].Hand
+                        .Count(card => card.Definition.Id == CardIds.Marionette);
+                    if (after - before != 1)
+                    {
+                        failures.Add($"人偶剧场【入场曲】应加 1 张『悬丝傀儡』，实际 {after - before} 张");
+                    }
+                    else
+                    {
+                        theaterFanfareChecks++;
+                    }
+
+                    continue;
+                }
+
+                // 回合结束：人偶剧场（吟唱_2）再给 1 张；同时悬丝傀儡应在"它主人的对手回合"结束时被破坏。
+                var endTurn = legalActions.OfType<EndTurnAction>().FirstOrDefault();
+                if (endTurn is not null)
+                {
+                    var theaterOnBoard = active.Amulets
+                        .FirstOrDefault(a => a.Definition.Id == CardIds.MarionetteTheater);
+
+                    // 手牌里已有的悬丝傀儡实例号：打出其中一张会让手牌数 −1，
+                    // 所以判据必须看"**新出现**的那一张"，不能用总数（又踩了一次同一个坑）。
+                    var marionettesInHandBefore = active.Hand
+                        .Where(card => card.Definition.Id == CardIds.Marionette)
+                        .Select(card => card.InstanceId)
+                        .ToHashSet();
+
+                    // 「对手的回合结束时，破坏本卡牌」：`state.ActivePlayer` 是在切换**之前**读的，
+                    // 所以"正在结束回合的那一方"= 当前的 ActivePlayer。它场上的悬丝傀儡这一步应当被破坏。
+                    var endingPlayerIndex = state.ActivePlayer;
+                    var endingMarionettes = state.Players[endingPlayerIndex].Board
+                        .Where(f => f.Definition.Id == CardIds.Marionette)
+                        .Select(f => f.InstanceId)
+                        .ToArray();
+
+                    state = GameEngine.Apply(state, endTurn);
+
+                    if (theaterOnBoard is not null && handNotFull)
+                    {
+                        var handedOut = state.Players[OtherPlayerIndex(state.ActivePlayer)].Hand
+                            .Count(card => card.Definition.Id == CardIds.Marionette &&
+                                           !marionettesInHandBefore.Contains(card.InstanceId));
+                        if (handedOut != 1)
+                        {
+                            failures.Add($"人偶剧场【吟唱_2】的回合末效果应新给 1 张『悬丝傀儡』，实际新给 {handedOut} 张");
+                        }
+                        else
+                        {
+                            theaterEndOfTurnChecks++;
+                        }
+                    }
+
+                    if (endingMarionettes.Length > 0)
+                    {
+                        var survivors = state.Players[endingPlayerIndex].Board
+                            .Count(f => endingMarionettes.Contains(f.InstanceId));
+                        if (survivors != 0)
+                        {
+                            failures.Add($"悬丝傀儡 在对手回合结束时还有 {survivors} 个留在场上没被破坏");
+                        }
+                        else
+                        {
+                            marionetteDestroyChecks++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                state = GameEngine.Apply(state, legalActions[0]);
+            }
+        }
+
+        if (skaterChecks == 0)
+        {
+            failures.Add("没验到「悠然的滑手【入场曲】加 1 张古老的创造物」");
+        }
+
+        if (euphieFanfareChecks == 0)
+        {
+            failures.Add("没验到「你的前辈·欧丝【入场曲】加 1 张解析的创造物」");
+        }
+
+        if (euphieEvolutionChecks == 0)
+        {
+            failures.Add("没验到「欧丝【进化时】让另一个随从进化」");
+        }
+
+        if (theaterFanfareChecks == 0)
+        {
+            failures.Add("没验到「人偶剧场【入场曲】加 1 张悬丝傀儡」");
+        }
+
+        if (theaterEndOfTurnChecks == 0)
+        {
+            failures.Add("没验到「人偶剧场回合末再加 1 张悬丝傀儡」");
+        }
+
+        if (marionetteDestroyChecks == 0)
+        {
+            failures.Add("没验到「悬丝傀儡在对手回合结束时被破坏」");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "批次行为");
+        }
+
+        Console.WriteLine("Nemesis batch test passed.");
+        Console.WriteLine($"尤泽塔条件入场曲：条件满足加牌 {conditionMet} 次 ｜ 条件不满足不加牌 {conditionNotMet} 次。");
+        Console.WriteLine($"天斧深渊：选自己 ≥5 费随从并加入**费用 −3**的同名复制体：已验证 {costReductionChecks} 次。");
+        Console.WriteLine($"悠然的滑手入场曲 {skaterChecks} 次 ｜ 欧丝入场曲 {euphieFanfareChecks} 次、进化时让他人进化 {euphieEvolutionChecks} 次。");
+        Console.WriteLine($"人偶剧场：入场曲 {theaterFanfareChecks} 次 ｜ 回合末 {theaterEndOfTurnChecks} 次 ｜ 悬丝傀儡对手回合末被破坏 {marionetteDestroyChecks} 次。");
+    }
 }

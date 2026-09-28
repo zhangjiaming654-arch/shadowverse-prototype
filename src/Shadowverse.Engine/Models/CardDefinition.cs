@@ -175,7 +175,27 @@ public enum CardEffectKind
     /// followers that arrived before the current turn.
     /// </para>
     /// </summary>
-    TransformInto
+    TransformInto,
+    /// <summary>
+    /// 【入场曲】: if the owner already controls a follower whose <b>printed</b> cost is at least
+    /// <see cref="CardEffect.Amount"/>, adds <c>Amount</c> copies of the card named by
+    /// <see cref="CardEffect.ReferencedCardId"/> to the hand. "Printed cost" is
+    /// <see cref="CardDefinition.Cost"/> — cost reduction only ever applies to a card sitting in hand,
+    /// never to a follower in play.
+    /// </summary>
+    AddCardToHandIfOwnFollowerPrintedCostAtLeast,
+    /// <summary>
+    /// 选择自己战场上的1个原始费用 ≥ <see cref="CardEffect.Amount"/> 的随从，把与它同名的1张卡
+    /// **非公开**加入手牌，并使其费用 −<see cref="CardEffect.SecondaryAmount"/>。
+    /// The target arrives in <see cref="GameAction"/>'s follower target and is validated during
+    /// resolution, so an illegal target fails loudly instead of silently doing nothing.
+    /// </summary>
+    AddCopyOfTargetFollowerToHandPrivatelyWithCostReduction,
+    /// <summary>
+    /// 【进化时】: evolves one other unevolved follower the owner controls, without spending an
+    /// evolution point. The chosen follower arrives in the action's follower target.
+    /// </summary>
+    EvolveAnotherOwnUnevolvedFollower
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>
@@ -468,6 +488,15 @@ public sealed record CardDefinition(
     CardKeyword EvolutionGrantedKeywords = CardKeyword.None,
     CardKeyword EvolutionRemovedKeywords = CardKeyword.None,
     bool BanishesWhenLeavingBoard = false,
+    /// <summary>
+    /// 「对手的回合结束时，破坏本卡牌」: the follower destroys itself when the <b>opponent's</b> turn ends.
+    /// <para>
+    /// This is a destruction (it goes to the graveyard and Last Words would fire), unlike
+    /// <see cref="BanishesWhenLeavingBoard"/>. Implemented as a printed flag rather than an effect so
+    /// the token needs no end-of-turn effect slot of its own.
+    /// </para>
+    /// </summary>
+    bool DestroysAtEndOfOpponentTurn = false,
     IReadOnlyList<CardEffect>? OnEvolveEffects = null,
     /// <summary>
     /// Abilities that apply continuously while this follower is in play, such as granting 【突进】 to

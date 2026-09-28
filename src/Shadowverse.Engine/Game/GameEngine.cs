@@ -633,6 +633,23 @@ public static class GameEngine
             evolutionEffects);
         var enemyTargetOptions = GetEvolutionEnemyTargetOptions(state, evolutionEffects);
 
+        // 「你的前辈·欧丝」【进化时】选择自己战场上1个进化前的其他随从：为每个合法目标展开一个动作。
+        // 目标走 EnemyFollowerTargetInstanceId 这条既有通道（超级进化用它承载"另一个自己随从"）。
+        if (evolutionEffects.Any(effect => effect.Kind == CardEffectKind.EvolveAnotherOwnUnevolvedFollower))
+        {
+            var otherTargetOptions = state.Players[state.ActivePlayer].Board
+                .Where(candidate => candidate.InstanceId != follower.InstanceId &&
+                                    candidate.EvolutionState == EvolutionState.Unevolved)
+                .Select(candidate => (int?)candidate.InstanceId)
+                .ToArray();
+
+            return otherTargetOptions
+                .SelectMany(otherTarget => modeOptions.SelectMany(modeChoice =>
+                    handTargetOptions.Select(ownHandTargets =>
+                        (GameAction)new EvolveAction(follower.InstanceId, modeChoice, ownHandTargets, otherTarget))))
+                .ToArray();
+        }
+
         return enemyTargetOptions
             .SelectMany(enemyTarget => modeOptions.SelectMany(modeChoice => handTargetOptions.Select(ownHandTargets =>
                 (GameAction)new EvolveAction(follower.InstanceId, modeChoice, ownHandTargets, enemyTarget))))
@@ -798,7 +815,62 @@ public static class GameEngine
 
         active.CurrentPlayPoints -= playCost;
         active.HandInternal.Remove(card);
-        active.AmuletsInternal.Add(new AmuletInstance(card));
+
+        // 【入场曲】: an amulet's Fanfare resolves on play. This engine had no amulet with a Fanfare
+        // before 人偶剧场, so the fanfare was silently dropped — the effect list was never consulted.
+        var amulet = new AmuletInstance(card);
+        active.AmuletsInternal.Add(amulet);
+        ApplyAmuletEffects(state, state.ActivePlayer, amulet, card.Definition.FanfareEffects);
+    }
+
+    /// <summary>
+    /// Resolves an amulet's printed effect list — its 【入场曲】 on play, and its
+    /// <see cref="CardDefinition.EndOfOwnTurnEffects"/> at the end of its controller's turn.
+    /// <para>
+    /// Unknown kinds throw instead of being ignored: silently skipping a printed ability is how the
+    /// missing amulet Fanfare above stayed invisible.
+    /// </para>
+    /// </summary>
+    private static void ApplyAmuletEffects(
+        GameState state,
+        int ownerIndex,
+        AmuletInstance amulet,
+        IReadOnlyList<CardEffect>? effects)
+    {
+        if (effects is null)
+        {
+            return;
+        }
+
+        foreach (var effect in effects)
+        {
+            switch (effect.Kind)
+            {
+                case CardEffectKind.DealDamageToAllFollowersWithoutTrait:
+                    DealDamageToAllFollowersWithoutTrait(state, effect.ReferencedCardId!, effect.Amount);
+                    break;
+                case CardEffectKind.DrawCards:
+                    DrawCards(state, ownerIndex, effect.Amount);
+                    break;
+                case CardEffectKind.AddCopyToHand:
+                case CardEffectKind.AddCopyToHandWithoutLastWords:
+                    AddCopiesToHand(
+                        state,
+                        ownerIndex,
+                        effect.ReferencedCardId!,
+                        effect.Amount,
+                        suppressLastWords: effect.Kind == CardEffectKind.AddCopyToHandWithoutLastWords);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported amulet effect: {effect.Kind} (amulet {amulet.Definition.Id}).");
+            }
+
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
     }
 
     /// <summary>
@@ -943,6 +1015,14 @@ public static class GameEngine
                         state.ActivePlayer,
                         effect.ReferencedCardId!,
                         effect.Amount);
+                    break;
+                case CardEffectKind.AddCardToHandIfOwnFollowerPrintedCostAtLeast:
+                    if (state.Players[state.ActivePlayer].Board.Any(candidate =>
+                            candidate.Definition.Cost >= effect.Amount))
+                    {
+                        AddCopiesToHand(state, state.ActivePlayer, effect.ReferencedCardId!, 1);
+                    }
+
                     break;
                 case CardEffectKind.DealDamageToRandomEnemyFollower:
                     ApplyDamageToRandomEnemyFollower(state, effect.Amount);
@@ -1311,6 +1391,17 @@ public static class GameEngine
             ];
         }
 
+        var costCondition = effects.FirstOrDefault(effect =>
+            effect.Kind == CardEffectKind.AddCopyOfTargetFollowerToHandPrivatelyWithCostReduction);
+        if (costCondition is not null)
+        {
+            // 「天斧深渊」: only the caster's own followers whose printed cost clears the threshold.
+            return state.Players[state.ActivePlayer].Board
+                .Where(follower => follower.Definition.Cost >= costCondition.Amount)
+                .Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId))
+                .ToArray();
+        }
+
         if (effects.Any(effect => effect.Kind == CardEffectKind.DestroyEnemyFollower))
         {
             return selectableEnemyFollowers
@@ -1445,6 +1536,13 @@ public static class GameEngine
                         state,
                         action.Target,
                         effect.ReferencedCardId!);
+                    break;
+                case CardEffectKind.AddCopyOfTargetFollowerToHandPrivatelyWithCostReduction:
+                    ApplyAddCopyOfTargetFollowerToHandPrivately(
+                        state,
+                        action.Target as FollowerTarget,
+                        effect.Amount,
+                        effect.SecondaryAmount);
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported spell effect: {effect.Kind}.");
@@ -2035,6 +2133,18 @@ public static class GameEngine
                     effect.ReferencedCardId!,
                     effect.Amount);
                 break;
+            case CardEffectKind.EvolveAnotherOwnUnevolvedFollower:
+                // 「你的前辈·欧丝」【进化时】选择自己战场上1个进化前的其他随从，使其进化。
+                // 目标通过 EvolveAction 的 EnemyFollowerTargetInstanceId 通道传入（本引擎用它承载
+                // "指定一个自己随从"的选择，与超级进化的 SuperEvolveAnotherUnevolvedFollower 一致）。
+                // 注意：能力造成的进化只发「本随从进化时」，不发【进化时】—— 与既有约定一致。
+                // 没有合法目标时（自己场上没有其他进化前的随从）该效果不结算，进化本身仍然完成。
+                if (enemyFollowerTargetInstanceId is { } evolveTarget)
+                {
+                    EvolveFollowerByAbility(state, evolveTarget);
+                }
+
+                break;
             default:
                 throw new InvalidOperationException($"Unsupported evolution effect: {effect.Kind}.");
         }
@@ -2537,6 +2647,19 @@ public static class GameEngine
             return;
         }
 
+        // 「对手的回合结束时，破坏本卡牌」：these belong to the player whose turn is *ending* — i.e. the
+        // active player's followers self-destruct while the opponent's turn ends. Destroying means it
+        // goes to the graveyard and Last Words would fire, unlike 【消滅】.
+        foreach (var follower in endingPlayer.BoardInternal.ToArray()
+                     .Where(candidate => candidate.Definition.DestroysAtEndOfOpponentTurn))
+        {
+            DestroyFollower(state, state.ActivePlayer, follower);
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
+
         ApplyEndOfOwnTurnAmuletEffects(state);
         if (state.IsGameOver)
         {
@@ -2656,21 +2779,16 @@ public static class GameEngine
         var owner = state.Players[ownerIndex];
         foreach (var amulet in owner.AmuletsInternal.ToArray())
         {
-            foreach (var effect in amulet.Definition.EndOfOwnTurnEffects ?? [])
+            // An amulet that left play earlier this step must not resolve again.
+            if (owner.AmuletsInternal.All(current => current.InstanceId != amulet.InstanceId))
             {
-                switch (effect.Kind)
-                {
-                    case CardEffectKind.DealDamageToAllFollowersWithoutTrait:
-                        DealDamageToAllFollowersWithoutTrait(state, effect.ReferencedCardId!, effect.Amount);
-                        break;
-                    default:
-                        throw new InvalidOperationException($"Unsupported amulet end-of-turn effect: {effect.Kind}.");
-                }
+                continue;
+            }
 
-                if (state.IsGameOver)
-                {
-                    return;
-                }
+            ApplyAmuletEffects(state, ownerIndex, amulet, amulet.Definition.EndOfOwnTurnEffects);
+            if (state.IsGameOver)
+            {
+                return;
             }
         }
     }
@@ -3440,16 +3558,53 @@ public static class GameEngine
         int playerIndex,
         string cardId,
         int count,
-        bool suppressLastWords = false)
+        bool suppressLastWords = false,
+        int costReduction = 0)
     {
         var definition = CardCatalog.Get(cardId);
         for (var copy = 0; copy < count; copy++)
         {
-            AddCardToHand(
-                state,
-                playerIndex,
-                new CardInstance(state.NextInstanceId++, definition, suppressLastWords));
+            var card = new CardInstance(state.NextInstanceId++, definition, suppressLastWords)
+            {
+                CostReduction = costReduction
+            };
+            AddCardToHand(state, playerIndex, card);
         }
+    }
+
+    /// <summary>
+    /// 「天斧深渊」: picks one own follower whose <b>printed</b> cost is at least
+    /// <paramref name="minimumPrintedCost"/>, adds a private same-name copy to the hand and gives that
+    /// copy a cost reduction. The follower itself is untouched, so this is a copy, not a return.
+    /// </summary>
+    private static void ApplyAddCopyOfTargetFollowerToHandPrivately(
+        GameState state,
+        FollowerTarget? target,
+        int minimumPrintedCost,
+        int costReduction)
+    {
+        if (target is null)
+        {
+            throw new InvalidOperationException("This effect needs one of your own followers as its target.");
+        }
+
+        var follower = state.Players[state.ActivePlayer].BoardInternal
+            .SingleOrDefault(candidate => candidate.InstanceId == target.FollowerInstanceId)
+            ?? throw new InvalidOperationException("The chosen follower is not on the active player's board.");
+
+        if (follower.Definition.Cost < minimumPrintedCost)
+        {
+            throw new InvalidOperationException(
+                $"The chosen follower's printed cost is {follower.Definition.Cost}, below the required {minimumPrintedCost}.");
+        }
+
+        AddCopiesToHand(
+            state,
+            state.ActivePlayer,
+            follower.Definition.Id,
+            1,
+            suppressLastWords: false,
+            costReduction);
     }
 
     private static void CheckLeaderDefeat(GameState state, int defeatedPlayer)
