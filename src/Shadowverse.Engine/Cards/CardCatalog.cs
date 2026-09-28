@@ -69,6 +69,8 @@ public static class CardIds
 
     /// <summary>The trait that <see cref="Parkour"/> counts across the battle.</summary>
     public const string CreationTrait = "创造物";
+
+    public const string ContraptionOperatorGilque = "BASE-060";
 }
 
 public static class CrestIds
@@ -1252,7 +1254,26 @@ public static class CardCatalog
             CardRarity.Bronze,
             CardProfession.Nemesis,
             Traits: [CardIds.CreationTrait],
-            IsCollectible: false)
+            IsCollectible: false),
+        new(
+            CardIds.ContraptionOperatorGilque,
+            "机械操纵者·吉尔克",
+            1,
+            1,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】将随机1张与本次对战中破坏的自己的创造物·随从同名的卡牌，以非公开形式加入手牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately,
+                    1,
+                    CardIds.CreationTrait)
+            ])
     ];
 
     /// <summary>The ten generated cards that replace the remaining deck after BASE-004 resolves.</summary>
@@ -1462,6 +1483,18 @@ public static class CardCatalog
 
             case CardEffectKind.ParkourChoiceOrAllModes:
                 ValidateParkourModes(card, effect);
+                break;
+
+            case CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately:
+                var destroyedTraitInUse = Definitions.Any(candidate =>
+                    candidate.Type == CardType.Follower &&
+                    candidate.Traits?.Contains(effect.ReferencedCardId!, StringComparer.Ordinal) == true);
+                if (!destroyedTraitInUse)
+                {
+                    throw new InvalidOperationException(
+                        $"Card {card.Id} references unknown follower trait {effect.ReferencedCardId}.");
+                }
+
                 break;
 
             case CardEffectKind.GiveEnemyCrest:

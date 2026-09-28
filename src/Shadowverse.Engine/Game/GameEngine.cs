@@ -937,6 +937,13 @@ public static class GameEngine
                 case CardEffectKind.RecallFollowerFromGraveyard:
                     RecallFollowersFromGraveyard(state, state.ActivePlayer, effect.Amount, effect.MaximumCost);
                     break;
+                case CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately:
+                    AddRandomDestroyedTraitFollowerCopyToHandPrivately(
+                        state,
+                        state.ActivePlayer,
+                        effect.ReferencedCardId!,
+                        effect.Amount);
+                    break;
                 case CardEffectKind.DealDamageToRandomEnemyFollower:
                     ApplyDamageToRandomEnemyFollower(state, effect.Amount);
                     break;
@@ -2006,6 +2013,45 @@ public static class GameEngine
     private static bool MatchesTraitFilter(CardDefinition definition, string? traitName) =>
         string.IsNullOrWhiteSpace(traitName) ||
         definition.Traits?.Contains(traitName, StringComparer.Ordinal) == true;
+
+    /// <summary>
+    /// 「机械操纵者·吉尔克」: adds a private copy of a card that shares the name of a random one of the
+    /// owner's own followers of <paramref name="traitName"/> destroyed this battle.
+    /// <para>
+    /// "Destroyed this battle" is read straight off the graveyard: <see cref="DestroyFollower"/> puts the
+    /// follower's own <see cref="CardInstance"/> there and the graveyard is never emptied in this
+    /// prototype, so it is an exact record. A follower that <b>vanishes</b> instead
+    /// (<see cref="CardDefinition.BanishesWhenLeavingBoard"/>) is never destroyed and so never counts.
+    /// </para>
+    /// <para>
+    /// The addition is deliberately <b>not</b> written to the public play record, and the card enters the
+    /// hand rather than play, so the opponent learns nothing about which card it was
+    /// (<see cref="RecordRevealedCards"/> only covers cards played in public).
+    /// </para>
+    /// </summary>
+    private static void AddRandomDestroyedTraitFollowerCopyToHandPrivately(
+        GameState state,
+        int ownerIndex,
+        string traitName,
+        int count)
+    {
+        var player = state.Players[ownerIndex];
+        for (var index = 0; index < count; index++)
+        {
+            var eligible = player.GraveyardInternal
+                .Where(card => card.Definition.Type == CardType.Follower &&
+                               MatchesTraitFilter(card.Definition, traitName))
+                .ToArray();
+            if (eligible.Length == 0)
+            {
+                // Nothing of that trait has been destroyed yet: the ability adds nothing and is not an error.
+                return;
+            }
+
+            var chosen = eligible[NextInt(state, eligible.Length)];
+            AddCopiesToHand(state, ownerIndex, chosen.Definition.Id, 1);
+        }
+    }
 
     /// <summary>
     /// Summons different kinds of follower taken randomly from the deck. The chosen copies leave the

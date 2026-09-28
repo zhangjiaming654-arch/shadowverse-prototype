@@ -6978,4 +6978,222 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             }
         }
     }
+
+    /// <summary>
+    /// 「机械操纵者·吉尔克」。【入场曲】把"与本次对战中破坏的自己的创造物·随从同名的 1 张卡"
+    /// 以非公开形式加入手牌。守住四件事：
+    /// <list type="number">
+    /// <item>卡面（超越者 1费 1/1 铜卡、可收集）；</item>
+    /// <item><b>墓地空 ⇒ 什么都不加</b>（能力照常结算、不报错、不凭空造牌）；</item>
+    /// <item>墓地有创造物 ⇒ 加进来的那张**必定是被破坏过的那种**（不是随机的无关卡）；</item>
+    /// <item><b>非公开</b>：加入手牌不得写进公开打出记录 <c>RevealedCardIds</c>，否则对手能看出拿了哪张。</item>
+    /// </list>
+    /// </summary>
+    internal static void RunContraptionOperatorGilqueTest()
+    {
+        var gilque = CardCatalog.Get(CardIds.ContraptionOperatorGilque);
+        var failures = new List<string>();
+
+        if (gilque.Cost != 1 || gilque.Attack != 1 || gilque.Defense != 1 ||
+            gilque.Type != CardType.Follower || gilque.Profession != CardProfession.Nemesis ||
+            gilque.Rarity != CardRarity.Bronze || !gilque.IsCollectible)
+        {
+            failures.Add(
+                $"吉尔克 应为 超越者 1费 1/1 铜卡可收集随从，实际 {gilque.Profession} {gilque.Rarity} {gilque.Cost}费 {gilque.Attack}/{gilque.Defense} {gilque.Type}、可收集={gilque.IsCollectible}");
+        }
+
+        if (gilque.FanfareEffects is null || gilque.FanfareEffects.Count != 1 ||
+            gilque.FanfareEffects[0].Kind != CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately ||
+            gilque.FanfareEffects[0].ReferencedCardId != CardIds.CreationTrait)
+        {
+            failures.Add("吉尔克的【入场曲】应为「按【创造物】类别取墓地」的那一个效果");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "吉尔克卡面");
+        }
+
+        var creationIds = new[] { CardIds.AnalyzedCreation, CardIds.AncientCreation };
+
+        // 两个种子各跑一局：一个局面很难同时破坏两种创造物，两局更容易同时覆盖到两种。
+        var noDestroyedResolutions = 0;
+        var addedCards = new List<string>();
+        var gilquePlays = 0;
+
+        foreach (var seed in new ulong[] { 60_060, 60_061 })
+        {
+            var state = GameEngine.CreateGame(
+                BuildGilqueTestDeck(gilque),
+                new DeckDefinition(
+                    "吉尔克测试对手",
+                    Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 600 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var action = PickGilqueTestAction(legalActions, state);
+                var before = state;
+
+                // 判据必须在"打出吉尔克"之前取：这一刻墓地就是"本次对战中已被破坏的创造物"的全集。
+                var destroyedCreationsBefore = before.Players[before.ActivePlayer].Graveyard
+                    .Where(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal))
+                    .Select(card => card.Definition.Id)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                var handCreationsBefore = before.Players[before.ActivePlayer].Hand
+                    .Count(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal));
+                var revealedBefore = before.Players[before.ActivePlayer].RevealedCardIds.ToArray();
+
+                state = GameEngine.Apply(state, action);
+
+                if (action is not PlayFollowerAction play ||
+                    before.Players[before.ActivePlayer].Hand.All(card => card.InstanceId != play.CardInstanceId) ||
+                    before.Players[before.ActivePlayer].Hand
+                        .Single(card => card.InstanceId == play.CardInstanceId).Definition.Id != CardIds.ContraptionOperatorGilque)
+                {
+                    continue;
+                }
+
+                gilquePlays++;
+                var afterPlayer = state.Players[before.ActivePlayer];
+                var handCreationsAfter = afterPlayer.Hand
+                    .Count(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal));
+                var added = handCreationsAfter - handCreationsBefore;
+
+                if (destroyedCreationsBefore.Length == 0)
+                {
+                    // 墓地没有创造物：不能凭空加牌。
+                    if (added != 0)
+                    {
+                        failures.Add(
+                            $"墓地里没有任何被破坏的创造物，吉尔克却往手牌加了 {added} 张创造物 —— 空墓地必须什么都不加");
+                    }
+
+                    noDestroyedResolutions++;
+                }
+                else
+                {
+                    if (added != 1)
+                    {
+                        failures.Add(
+                            $"墓地里已有被破坏的创造物（{string.Join("、", destroyedCreationsBefore)}），吉尔克加进来的创造物张数为 {added}，应为 1");
+                    }
+                    else
+                    {
+                        // 加进来的那张必须是"被破坏过的那种"，而不是别的创造物。
+                        var handCreations = afterPlayer.Hand
+                            .Where(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal))
+                            .Select(card => card.Definition.Id)
+                            .ToArray();
+                        var newKinds = handCreations
+                            .Where(id => destroyedCreationsBefore.Contains(id, StringComparer.Ordinal))
+                            .Distinct(StringComparer.Ordinal)
+                            .ToArray();
+                        if (newKinds.Length == 0)
+                        {
+                            failures.Add("吉尔克加进来的创造物不在「本次被破坏过」的集合里");
+                        }
+
+                        addedCards.AddRange(newKinds);
+                    }
+                }
+
+                // 非公开：这一手不得写进公开打出记录。
+                var revealedAfter = afterPlayer.RevealedCardIds.ToArray();
+                if (revealedAfter.Length != revealedBefore.Length + 1 ||
+                    revealedAfter[^1] != CardIds.ContraptionOperatorGilque)
+                {
+                    failures.Add(
+                        $"打出吉尔克后公开记录应只多出它自己一项，实际 {revealedBefore.Length} → {revealedAfter.Length}（{string.Join(",", revealedAfter.Skip(revealedBefore.Length))}）");
+                }
+            }
+        }
+
+        if (gilquePlays == 0)
+        {
+            failures.Add("吉尔克一次都没被打出，入场曲没被验到");
+        }
+
+        if (noDestroyedResolutions == 0)
+        {
+            failures.Add("没验到「墓地为空 ⇒ 什么都不加」这一支（该分支是这张卡的重要边界）");
+        }
+
+        if (addedCards.Count == 0)
+        {
+            failures.Add("没验到「墓地有创造物 ⇒ 加一张同名卡」这一支");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "吉尔克行为");
+        }
+
+        Console.WriteLine("Contraption operator Gilque test passed.");
+        Console.WriteLine(
+            $"【入场曲】墓地为空时什么都不加：已验证 {noDestroyedResolutions} 次（{gilquePlays} 次打出吉尔克）。");
+        Console.WriteLine(
+            $"【入场曲】加入 1 张与「被破坏的创造物」同名的卡：已验证 {addedCards.Count} 次，覆盖 {string.Join("、", addedCards.Distinct(StringComparer.Ordinal))}。");
+        Console.WriteLine("非公开：加入手牌不写入公开打出记录（RevealedCardIds 只多出吉尔克自己）。");
+    }
+
+    /// <summary>吉尔克 + 两张创造物 + 送死用的一费随从，凑成 40 张。</summary>
+    private static DeckDefinition BuildGilqueTestDeck(CardDefinition gilque)
+    {
+        CardDefinition[] cards =
+        [
+            .. Enumerable.Repeat(gilque, 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AnalyzedCreation), 6),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientCreation), 6),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 22)
+        ];
+
+        return new DeckDefinition("吉尔克测试", cards);
+    }
+
+    /// <summary>优先打出创造物（好让它们去送死）、其次打出吉尔克，否则交易或结束回合。</summary>
+    private static GameAction PickGilqueTestAction(IReadOnlyList<GameAction> legalActions, GameState state)
+    {
+        var simplePlay = legalActions
+            .OfType<PlayFollowerAction>()
+            .Where(action => action.HandCardTargetInstanceId is null &&
+                             action.EnemyFollowerTargetInstanceIds is null &&
+                             action.ModeChoiceIndex is null &&
+                             action.OwnHandCardTargetInstanceIds is null)
+            .ToArray();
+
+        var creationPlay = simplePlay.FirstOrDefault(action => state.Players[state.ActivePlayer].Hand
+            .Single(card => card.InstanceId == action.CardInstanceId)
+            .Definition.Id is CardIds.AnalyzedCreation or CardIds.AncientCreation);
+        if (creationPlay is not null)
+        {
+            return creationPlay;
+        }
+
+        var gilquePlay = simplePlay.FirstOrDefault(action => state.Players[state.ActivePlayer].Hand
+            .Single(card => card.InstanceId == action.CardInstanceId)
+            .Definition.Id == CardIds.ContraptionOperatorGilque);
+        if (gilquePlay is not null)
+        {
+            return gilquePlay;
+        }
+
+        return legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+               ?? legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+               ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+               ?? legalActions[0];
+    }
 }

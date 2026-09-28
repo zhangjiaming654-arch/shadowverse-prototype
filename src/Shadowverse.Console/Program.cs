@@ -65,6 +65,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     // 跑酷 + 两张创造物衍生卡：法术的【模式】通道（每个模式生成一个动作）、衍生卡入场曲与关键词、
     // 以及"3 种创造物"条件的可达性（当前不可达；卡池一变就要求补正例）。
     AgentSelfTests.RunParkourAndCreationTest();
+    // 吉尔克：按"本次对战中破坏的创造物"加同名卡，且必须是**非公开**加入（不写进公开打出记录）。
+    AgentSelfTests.RunContraptionOperatorGilqueTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

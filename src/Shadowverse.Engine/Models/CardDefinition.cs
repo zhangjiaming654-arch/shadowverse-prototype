@@ -141,7 +141,18 @@ public enum CardEffectKind
     /// cannot be modelled as a plain effect list.
     /// </para>
     /// </summary>
-    ParkourChoiceOrAllModes
+    ParkourChoiceOrAllModes,
+    /// <summary>
+    /// Adds one card to the hand that is a copy of a card sharing the name of a random one of the
+    /// owner's own followers of the trait in <see cref="CardEffect.ReferencedCardId"/> that have been
+    /// destroyed this battle. The addition is private: the added card's identity is deliberately not
+    /// written to the public play record, so the opponent cannot tell which card was taken.
+    /// <para>
+    /// An empty graveyard for that trait resolves as "nothing happens" rather than an error — the card
+    /// is still playable, it simply adds nothing.
+    /// </para>
+    /// </summary>
+    AddRandomDestroyedTraitFollowerCopyToHandPrivately
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>
