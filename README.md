@@ -81,18 +81,20 @@ Running the console with no arguments prints one full match report; everything e
 
 ## Current data
 
-- The catalog holds 56 cards, `BASE-001` through `BASE-056`: 42 followers, 13 spells, and 1
-  amulet. 44 are collectible; the other 12 are generated cards that stay in the catalog but cannot
+- The catalog holds 59 cards, `BASE-001` through `BASE-059`: 44 followers, 14 spells, and 1
+  amulet. 45 are collectible; the other 14 are generated cards that stay in the catalog but cannot
   be built into a normal deck.
 - Card IDs are never reused, and the console prints the ID the next card would receive
-  (`BASE-057` today).
+  (`BASE-060` today).
 - A saved deck may hold fewer than 40 cards while it is being assembled, and the editor can save it;
   a match still requires a complete 40-card deck, and the console says so instead of starting one.
 - `CardCatalog` validates itself the first time it is used: every definition, duplicate IDs, and
   every effect that names another card, a crest, or a trait. A bad entry fails immediately with
   the offending card ID instead of failing halfway through a match.
-- Saved decks live in `data/deck-library.json`. It currently holds `DECK-001` and `DECK-002`,
-  both complete 40-card decks; the next new deck starts from the highest number in use.
+- Saved decks live in `data/deck-library.json`. It currently holds three complete 40-card decks
+  (`DECK-001` 剑斗士卡组 / `DECK-002` 郭龙 / `DECK-003` 中速梦); `DECK-001` is banned from every
+  match because it stacks ten copies of a single card, and the next new deck starts from the highest
+  number in use.
 - Snapshots taken before each maintenance pass live in `artifacts/maintenance/`.
 
 ## Adding a card

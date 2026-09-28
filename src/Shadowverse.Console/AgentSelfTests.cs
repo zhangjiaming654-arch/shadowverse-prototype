@@ -6682,4 +6682,300 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     return DeckCatalog.Create(deckId, $"{savedDeck.Name} {playerLabel}");
 }
 
+    /// <summary>
+    /// 「跑酷」+ 两张创造物衍生卡。守住四件事：
+    /// <list type="number">
+    /// <item>两张衍生卡的卡面（费用/身材/【突进】/【衍生卡】标记）不能被改错；</item>
+    /// <item>『解析的创造物』进入战场时真的抽 1 张（用出牌瞬间的牌库减少量做硬判据）；</item>
+    /// <item>跑酷的【模式】真的"每个模式生成一个可选动作"，且条件未满足时**只给选取的那 1 张**；</item>
+    /// <item>条件本身：当前卡池只有 2 种带【创造物】的卡，所以"3 种或以上"那条分支**不可达**。
+    /// 若卡池变化使它可达，本自检必须失败并提示补一条正例 —— 否则那条分支永远没人测。</item>
+    /// </list>
+    /// </summary>
+    internal static void RunParkourAndCreationTest()
+    {
+        var parkour = CardCatalog.Get(CardIds.Parkour);
+        var analyzed = CardCatalog.Get(CardIds.AnalyzedCreation);
+        var ancient = CardCatalog.Get(CardIds.AncientCreation);
+
+        var failures = new List<string>();
+
+        // ---- 1. 卡面 ----
+        if (parkour.Cost != 1 || parkour.Type != CardType.Spell || parkour.Profession != CardProfession.Nemesis)
+        {
+            failures.Add($"跑酷 应为 超越者 1费 法术，实际 {parkour.Profession} {parkour.Cost}费 {parkour.Type}");
+        }
+
+        if (analyzed.Cost != 1 || analyzed.Attack != 1 || analyzed.Defense != 1 ||
+            analyzed.Profession != CardProfession.Nemesis || analyzed.IsCollectible)
+        {
+            failures.Add(
+                $"解析的创造物 应为 超越者 1费 1/1 衍生卡，实际 {analyzed.Profession} {analyzed.Cost}费 {analyzed.Attack}/{analyzed.Defense}、可收集={analyzed.IsCollectible}");
+        }
+
+        if (ancient.Cost != 1 || ancient.Attack != 3 || ancient.Defense != 1 ||
+            ancient.Profession != CardProfession.Nemesis || ancient.IsCollectible ||
+            !ancient.Keywords.HasFlag(CardKeyword.Rush))
+        {
+            failures.Add(
+                $"古老的创造物 应为 超越者 1费 3/1 带【突进】的衍生卡，实际 {ancient.Profession} {ancient.Cost}费 {ancient.Attack}/{ancient.Defense}、关键词={ancient.Keywords}、可收集={ancient.IsCollectible}");
+        }
+
+        if (analyzed.Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) != true ||
+            ancient.Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) != true)
+        {
+            failures.Add("两张创造物都必须带【创造物】类别，否则跑酷的计数条件恒为 0");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "卡面");
+        }
+
+        // ---- 4. 条件可达性 ----
+        // 跑酷自己的卡面文字提到"创造物"，但它是法术、不带该类别，所以不该被计入。
+        var creationKinds = CardCatalog.All
+            .Where(card => card.Traits?.Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true)
+            .Select(card => card.Id)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+        var expectedKinds = new[] { CardIds.AnalyzedCreation, CardIds.AncientCreation }
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+
+        if (!creationKinds.SequenceEqual(expectedKinds))
+        {
+            failures.Add(
+                $"当前带【创造物】的卡应为 {string.Join("、", expectedKinds)}，实际 {string.Join("、", creationKinds)}");
+            ReportParkourFailures(failures, "条件可达性");
+        }
+
+        if (creationKinds.Length >= 3)
+        {
+            throw new InvalidOperationException(
+                $"带【创造物】的卡已达 {creationKinds.Length} 种，跑酷的条件分支现在可达了 —— " +
+                "本自检必须补一条「条件满足时同时给两张」的正例，否则那条分支永远没人测。");
+        }
+
+        // ---- 2 & 3. 跑一整局，覆盖两张衍生卡与跑酷的两个模式 ----
+        var chosenModes = new List<int>();
+        var analyzedDraws = 0;
+        var ancientEntered = 0;
+        var ancientRushAttacks = 0;
+
+        var deck = BuildParkourTestDeck(parkour, analyzed, ancient);
+        var state = GameEngine.CreateGame(
+            deck,
+            new DeckDefinition(
+                "跑酷测试对手",
+                Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+            seed: 77_057);
+
+        for (var step = 0; step < 500 && !state.IsGameOver; step++)
+        {
+            if (state.Phase == GamePhase.Mulligan)
+            {
+                state = GameEngine.Apply(state, new MulliganAction([]));
+                continue;
+            }
+
+            var legalActions = GameEngine.GetLegalActions(state);
+            if (legalActions.Count == 0)
+            {
+                break;
+            }
+
+            var active = state.Players[state.ActivePlayer];
+
+            // 优先把还没走过的跑酷模式打掉。
+            var parkourPlay = legalActions
+                .OfType<PlaySpellAction>()
+                .Where(action => active.Hand
+                    .Single(card => card.InstanceId == action.CardInstanceId)
+                    .Definition.Id == CardIds.Parkour)
+                .FirstOrDefault(action => action.ModeChoiceIndex is not null &&
+                                          !chosenModes.Contains(action.ModeChoiceIndex.Value));
+
+            if (parkourPlay is not null)
+            {
+                var mode = parkourPlay.ModeChoiceIndex!.Value;
+                var chosenCardId = mode == 0 ? CardIds.AnalyzedCreation : CardIds.AncientCreation;
+                var otherCardId = mode == 0 ? CardIds.AncientCreation : CardIds.AnalyzedCreation;
+                var before = active.Hand.Select(card => card.Definition.Id).ToArray();
+
+                state = GameEngine.Apply(state, parkourPlay);
+                chosenModes.Add(mode);
+
+                var afterHand = state.Players[state.ActivePlayer].Hand.Select(card => card.Definition.Id).ToArray();
+                var chosenGained = afterHand.Count(id => id == chosenCardId) - before.Count(id => id == chosenCardId);
+                var otherGained = afterHand.Count(id => id == otherCardId) - before.Count(id => id == otherCardId);
+
+                if (chosenGained != 1)
+                {
+                    failures.Add(
+                        $"跑酷模式 {mode}：手牌里『{CardCatalog.Get(chosenCardId).Name}』增加 {chosenGained} 张，应为 1 张");
+                }
+
+                // 当前只有 2 种创造物 ⇒ 条件恒不成立 ⇒ 另一张绝不该出现。
+                // 这是本自检最硬的一条：条件反了、或把"种类数"算成"张数"，它立刻红。
+                if (otherGained != 0)
+                {
+                    failures.Add(
+                        $"跑酷模式 {mode}：条件未满足，却同时给了『{CardCatalog.Get(otherCardId).Name}』(+{otherGained}) —— 条件判定反了或计数算错");
+                }
+
+                // 注意：跑酷只是把衍生卡**加入手牌**，不会触发它的入场曲 —— 那张牌要等被打出时才结算。
+                // 所以"抽 1 张"必须在衍生卡真正进入战场的那一步验（见 AuditCreationEntry）。
+                continue;
+            }
+
+            var action = PickParkourTestAction(legalActions, state, ref ancientRushAttacks);
+            var stepBefore = state;
+            state = GameEngine.Apply(state, action);
+            AuditCreationEntry(stepBefore, state, ref ancientEntered, ref analyzedDraws);
+        }
+
+        if (chosenModes.Count < 2)
+        {
+            failures.Add($"跑酷【模式】只走了 {chosenModes.Count} 个模式（应覆盖 2 个）—— 模式动作没生成全");
+        }
+
+        if (analyzedDraws == 0)
+        {
+            failures.Add("『解析的创造物』一次都没通过跑酷进入战场，入场曲抽牌没被验到");
+        }
+
+        if (ancientEntered == 0)
+        {
+            failures.Add("『古老的创造物』一次都没进入战场");
+        }
+
+        if (ancientRushAttacks == 0)
+        {
+            failures.Add("『古老的创造物』一次都没用【突进】攻击过，关键词没被验到");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "行为");
+        }
+
+        Console.WriteLine("Parkour and creation token test passed.");
+        Console.WriteLine($"跑酷【模式】{chosenModes.Count} 个模式各自只给对应 1 张衍生卡；条件未满足时不给另一张。");
+        Console.WriteLine($"『解析的创造物』进入战场抽 1 张（牌库 −1）：已验证 {analyzedDraws} 次。");
+        Console.WriteLine($"『古老的创造物』(3/1【突进】) 进入战场：已验证 {ancientEntered} 次，其中【突进】攻击 {ancientRushAttacks} 次。");
+        Console.WriteLine(
+            $"⚠️ 条件不可达（已实测）：全库带【创造物】的卡只有 {creationKinds.Length} 种，跑酷要求 3 种或以上 —— " +
+            "「改为发动所有能力」这条分支当前永远不会发动。");
+    }
+
+    private static void ReportParkourFailures(List<string> failures, string stage)
+    {
+        foreach (var failure in failures)
+        {
+            Console.WriteLine("  ✗ " + failure);
+        }
+
+        throw new InvalidOperationException($"跑酷/创造物{stage}自检失败（{failures.Count} 项）。");
+    }
+
+    /// <summary>跑酷、两张创造物和其他低费随从混成一副 40 张的测试卡组。</summary>
+    private static DeckDefinition BuildParkourTestDeck(
+        CardDefinition parkour,
+        CardDefinition analyzed,
+        CardDefinition ancient)
+    {
+        CardDefinition[] cards =
+        [
+            .. Enumerable.Repeat(parkour, 8),
+            .. Enumerable.Repeat(analyzed, 8),
+            .. Enumerable.Repeat(ancient, 8),
+            .. Enumerable.Repeat(
+                CardCatalog.Get(CardIds.Gladiator),
+                DeckDefinition.RequiredCardCount - 24)
+        ];
+
+        return new DeckDefinition("跑酷测试", cards);
+    }
+
+    /// <summary>先出创造物，其次用【突进】攻击，否则随便出一张或结束回合。</summary>
+    private static GameAction PickParkourTestAction(
+        IReadOnlyList<GameAction> legalActions,
+        GameState state,
+        ref int ancientRushAttacks)
+    {
+        var creationPlay = legalActions
+            .OfType<PlayFollowerAction>()
+            .Where(action => action.HandCardTargetInstanceId is null &&
+                             action.EnemyFollowerTargetInstanceIds is null &&
+                             action.ModeChoiceIndex is null &&
+                             action.OwnHandCardTargetInstanceIds is null)
+            .FirstOrDefault(action => state.Players[state.ActivePlayer].Hand
+                .Single(card => card.InstanceId == action.CardInstanceId)
+                .Definition.Id is CardIds.AnalyzedCreation or CardIds.AncientCreation);
+
+        if (creationPlay is not null)
+        {
+            return creationPlay;
+        }
+
+        var rushAttack = legalActions
+            .OfType<AttackFollowerAction>()
+            .FirstOrDefault(action => state.Players[state.ActivePlayer].Board
+                .Any(follower => follower.InstanceId == action.AttackerInstanceId &&
+                                 follower.Definition.Id == CardIds.AncientCreation));
+        if (rushAttack is not null)
+        {
+            ancientRushAttacks++;
+            return rushAttack;
+        }
+
+        return legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+               ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+               ?? legalActions[0];
+    }
+
+    /// <summary>
+    /// 数两张创造物进入战场的次数，并核对『解析的创造物』的入场曲**真的抽了 1 张**。
+    /// <para>
+    /// 抽牌判据用<b>同一个玩家自己的牌库减少量</b>：这一步如果只是"打出解析的创造物"，
+    /// 那牌库减少 1 只可能来自它的入场曲（打出随从本身不碰牌库）。反过来，如果入场曲没接线，
+    /// 牌库减少量会是 0，这一条立刻红。为了让判据干净，只在该玩家这一步恰好进了 1 张解析的创造物时断言。
+    /// </para>
+    /// </summary>
+    private static void AuditCreationEntry(
+        GameState before,
+        GameState after,
+        ref int ancientEntered,
+        ref int analyzedDraws)
+    {
+        for (var player = 0; player < 2; player++)
+        {
+            var entered = after.Players[player].Board
+                .Where(follower => before.Players[player].Board.All(previous => previous.InstanceId != follower.InstanceId))
+                .ToArray();
+
+            foreach (var follower in entered)
+            {
+                if (follower.Definition.Id == CardIds.AncientCreation)
+                {
+                    ancientEntered++;
+                }
+            }
+
+            if (entered.Count(follower => follower.Definition.Id == CardIds.AnalyzedCreation) != 1)
+            {
+                continue;
+            }
+
+            analyzedDraws++;
+            var deckDrop = before.Players[player].Deck.Count - after.Players[player].Deck.Count;
+            if (deckDrop != 1)
+            {
+                throw new InvalidOperationException(
+                    $"『解析的创造物』进入战场时牌库减少了 {deckDrop}，应为 1 —— 入场曲抽 1 张没生效（或抽了不止 1 张）。");
+            }
+        }
+    }
 }

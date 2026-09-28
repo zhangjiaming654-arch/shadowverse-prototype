@@ -1582,7 +1582,7 @@ internal static string ActionSignature(ActionLogEntry entry)
             $"P:{play.CardInstanceId}:{play.HandCardTargetInstanceId?.ToString() ?? "NONE"}:{string.Join(',', play.EnemyFollowerTargetInstanceIds ?? [])}:{play.ModeChoiceIndex?.ToString() ?? "NONE"}:{string.Join(',', play.OwnHandCardTargetInstanceIds ?? [])}",
         PlayAmuletAction playAmulet => $"A:{playAmulet.CardInstanceId}",
         PlayAccelerateAction accelerate => $"ACC:{accelerate.CardInstanceId}",
-        PlaySpellAction playSpell => $"S:{playSpell.CardInstanceId}:{SpellTargetSignature(playSpell.Target)}",
+        PlaySpellAction playSpell => $"S:{playSpell.CardInstanceId}:{SpellTargetSignature(playSpell.Target)}:{playSpell.ModeChoiceIndex?.ToString() ?? "NONE"}",
         EvolveAction evolve =>
             $"EVO:{evolve.FollowerInstanceId}:{evolve.ModeChoiceIndex?.ToString() ?? "NONE"}:{string.Join(',', evolve.OwnHandCardTargetInstanceIds ?? [])}",
         SuperEvolveAction superEvolve =>

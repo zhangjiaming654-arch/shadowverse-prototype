@@ -206,7 +206,7 @@ public static class DecisionQualityProbe
         PlayAmuletAction amulet => $"amulet[{amulet.CardInstanceId}]",
         PlayCrystallizeAction crystallize => $"crystallize[{crystallize.CardInstanceId}]",
         PlayAccelerateAction accelerate => $"accelerate[{accelerate.CardInstanceId}]",
-        PlaySpellAction spell => $"spell[{spell.CardInstanceId};{Target(spell.Target)};{Ids(spell.OwnHandCardTargetInstanceIds)}]",
+        PlaySpellAction spell => $"spell[{spell.CardInstanceId};{Target(spell.Target)};{Ids(spell.OwnHandCardTargetInstanceIds)};{spell.ModeChoiceIndex}]",
         EvolveAction evolve => $"evolve[{evolve.FollowerInstanceId};{evolve.ModeChoiceIndex};{Ids(evolve.OwnHandCardTargetInstanceIds)};{evolve.EnemyFollowerTargetInstanceId}]",
         SuperEvolveAction super => $"super[{super.FollowerInstanceId};{super.OtherFollowerTargetInstanceId};{super.ModeChoiceIndex};{Ids(super.OwnHandCardTargetInstanceIds)};{super.EnemyFollowerTargetInstanceId}]",
         UseExtraPlayPointAction => "extra-pp",

@@ -128,7 +128,20 @@ public enum CardEffectKind
     /// Destroys a random one of the owner's own cards that has Last Words and a random enemy follower.
     /// The whole effect does nothing when the owner has no card with Last Words in play.
     /// </summary>
-    ShatterRandomLastWordsCardAndEnemyFollower
+    ShatterRandomLastWordsCardAndEnemyFollower,
+    /// <summary>
+    /// 「跑酷」式【模式】: normally the player picks one mode and only that one resolves, but when the
+    /// player has already brought <c>Threshold</c> or more <b>distinct</b> cards of a trait into play
+    /// this battle, every mode resolves instead.
+    /// <para>
+    /// <see cref="CardEffect.ReferencedCardId"/> carries the whole definition as
+    /// <c>"trait|threshold|cardId1|cardId2"</c>: the trait to count across the battle, how many
+    /// distinct kinds are required, then one card ID per mode in mode order. Keeping it in a single
+    /// string is deliberate — this is one effect whose modes are conditional, not two effects, so it
+    /// cannot be modelled as a plain effect list.
+    /// </para>
+    /// </summary>
+    ParkourChoiceOrAllModes
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>

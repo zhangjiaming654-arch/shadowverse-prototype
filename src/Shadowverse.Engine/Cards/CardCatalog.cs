@@ -1,3 +1,4 @@
+using System.Globalization;
 using Shadowverse.Engine.Models;
 
 namespace Shadowverse.Engine.Cards;
@@ -60,6 +61,14 @@ public static class CardIds
     public const string DeathHostMacmillan = "BASE-054";
     public const string IstanbulDeadVersusMalchiget = "BASE-055";
     public const string NetherLieutenant = "BASE-056";
+    public const string Parkour = "BASE-057";
+
+    /// <summary>The two 「创造物」 tokens that <see cref="Parkour"/> adds to the hand.</summary>
+    public const string AnalyzedCreation = "BASE-058";
+    public const string AncientCreation = "BASE-059";
+
+    /// <summary>The trait that <see cref="Parkour"/> counts across the battle.</summary>
+    public const string CreationTrait = "创造物";
 }
 
 public static class CrestIds
@@ -1196,7 +1205,54 @@ public static class CardCatalog
                     1,
                     CardIds.NetherLieutenant,
                     SecondaryAmount: 1)
-            ])
+            ]),
+        new(
+            CardIds.Parkour,
+            "跑酷",
+            1,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Spell,
+            "【模式】选择1个能力发动。若本次对战中进入战场的自己的创造物·随从的种类为3种或以上，则改为发动所有能力。\n（1）将1张『解析的创造物』加入手牌。\n（2）将1张『古老的创造物』加入手牌。",
+            new CardEffect(
+                CardEffectKind.ParkourChoiceOrAllModes,
+                3,
+                $"{CardIds.CreationTrait}|3|{CardIds.AnalyzedCreation}|{CardIds.AncientCreation}"),
+            CardRarity.Bronze,
+            CardProfession.Nemesis),
+        new(
+            CardIds.AnalyzedCreation,
+            "解析的创造物",
+            1,
+            1,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "本随从进入战场时，抽取1张卡牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DrawCards, 1)
+            ],
+            IsCollectible: false),
+        new(
+            CardIds.AncientCreation,
+            "古老的创造物",
+            1,
+            3,
+            1,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【突进】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            IsCollectible: false)
     ];
 
     /// <summary>The ten generated cards that replace the remaining deck after BASE-004 resolves.</summary>
@@ -1404,6 +1460,10 @@ public static class CardCatalog
 
                 break;
 
+            case CardEffectKind.ParkourChoiceOrAllModes:
+                ValidateParkourModes(card, effect);
+                break;
+
             case CardEffectKind.GiveEnemyCrest:
             case CardEffectKind.GiveSelfCrest:
                 _ = CrestCatalog.Get(effect.ReferencedCardId!);
@@ -1442,6 +1502,41 @@ public static class CardCatalog
                 }
 
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Checks the <c>"trait|threshold|cardId1|cardId2…"</c> payload of a conditional 【模式】 effect:
+    /// the trait must actually be in use by some card, and every mode must name a real card. A typo
+    /// here would otherwise only surface in the middle of a match.
+    /// </summary>
+    private static void ValidateParkourModes(CardDefinition card, CardEffect effect)
+    {
+        var parts = effect.ReferencedCardId!.Split('|');
+        if (parts.Length < 3 ||
+            !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var threshold) ||
+            threshold < 1)
+        {
+            throw new InvalidOperationException(
+                $"Card {card.Id} has a conditional mode payload that is not \"trait|threshold|cardIds\": " +
+                $"\"{effect.ReferencedCardId}\".");
+        }
+
+        var traitInUse = Definitions.Any(candidate =>
+            candidate.Traits?.Contains(parts[0], StringComparer.Ordinal) == true);
+        if (!traitInUse)
+        {
+            throw new InvalidOperationException(
+                $"Card {card.Id} counts the trait {parts[0]}, but no card carries it.");
+        }
+
+        foreach (var referencedId in parts.Skip(2))
+        {
+            if (!DefinitionsById.ContainsKey(referencedId))
+            {
+                throw new InvalidOperationException(
+                    $"Card {card.Id} references unknown mode card ID {referencedId}.");
+            }
         }
     }
 

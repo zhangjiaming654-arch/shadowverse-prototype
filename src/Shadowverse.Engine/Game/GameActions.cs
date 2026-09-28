@@ -42,11 +42,13 @@ public sealed record EnemyFollowerTarget(int FollowerInstanceId) : SpellTarget;
 /// <summary>
 /// Plays a spell. OwnHandCardTargetInstanceIds is used by spells that ask the
 /// player to choose cards from their own hand, such as discard effects.
+/// ModeChoiceIndex chooses one 【模式】 when the spell prints a mode ability.
 /// </summary>
 public sealed record PlaySpellAction(
     int CardInstanceId,
     SpellTarget? Target,
-    IReadOnlyList<int>? OwnHandCardTargetInstanceIds = null) : GameAction;
+    IReadOnlyList<int>? OwnHandCardTargetInstanceIds = null,
+    int? ModeChoiceIndex = null) : GameAction;
 
 /// <summary>
 /// ModeChoiceIndex is used when evolution repeats a selectable Fanfare mode.

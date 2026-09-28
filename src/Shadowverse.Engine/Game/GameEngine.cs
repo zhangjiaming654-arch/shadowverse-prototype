@@ -1,3 +1,4 @@
+using System.Globalization;
 using Shadowverse.Engine.Cards;
 using Shadowverse.Engine.Models;
 
@@ -1209,11 +1210,31 @@ public static class GameEngine
 
         var ownHandTargetOptions = GetSpellHandTargetOptions(state, spell, effects);
         var spellTargetOptions = GetSpellTargetOptions(state, effects);
+        var modeChoiceOptions = GetSpellModeChoiceOptions(effects);
 
         return ownHandTargetOptions
-            .SelectMany(ownHandTargets => spellTargetOptions.Select(target =>
-                (GameAction)new PlaySpellAction(spell.InstanceId, target, ownHandTargets)))
+            .SelectMany(ownHandTargets => spellTargetOptions.SelectMany(target =>
+                modeChoiceOptions.Select(modeChoice =>
+                    (GameAction)new PlaySpellAction(spell.InstanceId, target, ownHandTargets, modeChoice))))
             .ToArray();
+    }
+
+    /// <summary>
+    /// 【模式】on a spell: one action per printed mode. A spell whose mode is conditional on the
+    /// battle so far (<see cref="CardEffectKind.ParkourChoiceOrAllModes"/>) still offers exactly the
+    /// printed modes; the condition decides whether the other modes also resolve, not what the
+    /// player may pick.
+    /// </summary>
+    private static IReadOnlyList<int?> GetSpellModeChoiceOptions(IReadOnlyList<CardEffect> effects)
+    {
+        var modeCount = effects
+            .Where(effect => effect.Kind == CardEffectKind.ParkourChoiceOrAllModes)
+            .Select(effect => ParseParkourModes(effect.ReferencedCardId!).CardIds.Count)
+            .FirstOrDefault();
+
+        return modeCount == 0
+            ? [null]
+            : Enumerable.Range(0, modeCount).Select(index => (int?)index).ToArray();
     }
 
     private static IReadOnlyList<IReadOnlyList<int>?> GetSpellHandTargetOptions(
@@ -1388,6 +1409,14 @@ public static class GameEngine
                 case CardEffectKind.DealDamageToAllFollowersByFollowerCount:
                     EnsureSpellHasNoTarget(action);
                     DealDamageToAllFollowersByFollowerCount(state);
+                    break;
+                case CardEffectKind.ParkourChoiceOrAllModes:
+                    EnsureSpellHasNoTarget(action);
+                    ApplyParkourChoiceOrAllModes(
+                        state,
+                        effect.ReferencedCardId!,
+                        effect.Amount,
+                        action.ModeChoiceIndex);
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported spell effect: {effect.Kind}.");
@@ -3142,6 +3171,71 @@ public static class GameEngine
                     throw new InvalidOperationException($"Unsupported Last Words effect: {effect.Kind}.");
             }
         }
+    }
+
+    /// <summary>
+    /// 「跑酷」: the player picks one printed mode, unless the battle so far already brought
+    /// <c>Threshold</c> or more <b>distinct</b> cards of the given trait into play — in that case every
+    /// printed mode resolves and <paramref name="modeChoiceIndex"/> is ignored.
+    /// </summary>
+    private static void ApplyParkourChoiceOrAllModes(
+        GameState state,
+        string encodedModes,
+        int threshold,
+        int? modeChoiceIndex)
+    {
+        var modes = ParseParkourModes(encodedModes);
+        var distinctKinds = CountDistinctTraitKindsThisBattle(state, state.ActivePlayer, modes.Trait);
+
+        if (distinctKinds >= threshold)
+        {
+            // Condition met: every mode resolves.
+            for (var index = 0; index < modes.CardIds.Count; index++)
+            {
+                AddCopiesToHand(state, state.ActivePlayer, modes.CardIds[index], 1);
+            }
+
+            return;
+        }
+
+        if (modeChoiceIndex is null || modeChoiceIndex.Value < 0 || modeChoiceIndex.Value >= modes.CardIds.Count)
+        {
+            throw new InvalidOperationException("A valid mode must be selected for this spell.");
+        }
+
+        AddCopiesToHand(state, state.ActivePlayer, modes.CardIds[modeChoiceIndex.Value], 1);
+    }
+
+    /// <summary>
+    /// Counts how many <b>distinct</b> cards of a trait the player has brought into play this battle.
+    /// This reuses the public play record that already exists for card identification, so the count
+    /// needs no extra state and is copied, fingerprinted and observable for free.
+    /// </summary>
+    private static int CountDistinctTraitKindsThisBattle(
+        GameState state,
+        int playerIndex,
+        string traitName) =>
+        state.Players[playerIndex].RevealedCardIdsInternal
+            .Where(cardId => MatchesTraitFilter(CardCatalog.Get(cardId), traitName))
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+    /// <summary>
+    /// Decodes the <c>"trait|threshold|cardId1|cardId2…"</c> payload of a
+    /// <see cref="CardEffectKind.ParkourChoiceOrAllModes"/> effect. The trait and threshold are
+    /// carried even though the engine does not need them to run the effect, so that
+    /// <see cref="CardCatalog"/> can validate the referenced trait without hard-coding card IDs.
+    /// </summary>
+    private static (string Trait, int Threshold, IReadOnlyList<string> CardIds) ParseParkourModes(string encoded)
+    {
+        var parts = encoded.Split('|');
+        if (parts.Length < 3)
+        {
+            throw new InvalidOperationException(
+                $"A conditional mode payload needs \"trait|threshold|cardIds\", got \"{encoded}\".");
+        }
+
+        return (parts[0], int.Parse(parts[1], CultureInfo.InvariantCulture), parts.Skip(2).ToArray());
     }
 
     private static void AddCardToHand(GameState state, int playerIndex, CardInstance card)

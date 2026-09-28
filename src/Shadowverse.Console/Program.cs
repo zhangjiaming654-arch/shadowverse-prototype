@@ -62,6 +62,9 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunGalatadeTest();
     AgentSelfTests.RunIstanbulDeadTest();
     AgentSelfTests.RunNetherLieutenantTest();
+    // 跑酷 + 两张创造物衍生卡：法术的【模式】通道（每个模式生成一个动作）、衍生卡入场曲与关键词、
+    // 以及"3 种创造物"条件的可达性（当前不可达；卡池一变就要求补正例）。
+    AgentSelfTests.RunParkourAndCreationTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

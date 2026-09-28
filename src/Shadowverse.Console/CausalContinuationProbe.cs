@@ -2392,7 +2392,7 @@ public static class CausalContinuationProbe
         PlayAmuletAction amulet => $"amulet[{amulet.CardInstanceId}]",
         PlayCrystallizeAction crystallize => $"crystallize[{crystallize.CardInstanceId}]",
         PlayAccelerateAction accelerate => $"accelerate[{accelerate.CardInstanceId}]",
-        PlaySpellAction spell => $"spell[{spell.CardInstanceId};{Target(spell.Target)};{Ids(spell.OwnHandCardTargetInstanceIds)}]",
+        PlaySpellAction spell => $"spell[{spell.CardInstanceId};{Target(spell.Target)};{Ids(spell.OwnHandCardTargetInstanceIds)};{spell.ModeChoiceIndex}]",
         EvolveAction evolve => $"evolve[{evolve.FollowerInstanceId};{evolve.ModeChoiceIndex};{Ids(evolve.OwnHandCardTargetInstanceIds)};{evolve.EnemyFollowerTargetInstanceId}]",
         SuperEvolveAction superEvolve => $"super[{superEvolve.FollowerInstanceId};{superEvolve.OtherFollowerTargetInstanceId};{superEvolve.ModeChoiceIndex};{Ids(superEvolve.OwnHandCardTargetInstanceIds)};{superEvolve.EnemyFollowerTargetInstanceId}]",
         UseExtraPlayPointAction => "extra-pp",

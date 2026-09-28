@@ -539,7 +539,7 @@ public sealed class InformationSetTurnMctsAgentV4 : IStateAwarePlayerAgent
             PlayAmuletAction amulet => $"amulet[{amulet.CardInstanceId}]",
             PlayCrystallizeAction crystallize => $"crystallize[{crystallize.CardInstanceId}]",
             PlayAccelerateAction accelerate => $"accelerate[{accelerate.CardInstanceId}]",
-            PlaySpellAction spell => $"spell[{spell.CardInstanceId};{spell.Target?.ToString() ?? "-"};{Ids(spell.OwnHandCardTargetInstanceIds)}]",
+            PlaySpellAction spell => $"spell[{spell.CardInstanceId};{spell.Target?.ToString() ?? "-"};{Ids(spell.OwnHandCardTargetInstanceIds)};{spell.ModeChoiceIndex}]",
             EvolveAction evolve =>
                 $"evolve[{evolve.FollowerInstanceId};{evolve.ModeChoiceIndex};{Ids(evolve.OwnHandCardTargetInstanceIds)};"
                 + $"{evolve.EnemyFollowerTargetInstanceId}]",
