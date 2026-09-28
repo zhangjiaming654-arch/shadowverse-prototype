@@ -7196,4 +7196,633 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
                ?? legalActions[0];
     }
+
+    /// <summary>
+    /// 【变身】（「诚心的尽小花」）。守住四件事，全部照 Shadowverse EVOLVE 総合ルール §5.16/§5.6
+    /// "banish 原卡 + 在该区域生成衍生物"：
+    /// <list type="number">
+    /// <item>变身对象被换掉、新随从站进**同一个位置**，且双方场上随从总数不变；</item>
+    /// <item><b>不是破坏</b>：原卡不进墓地，且它的【谢幕曲】<b>不发</b>（这条是【变身】存在的意义）；</item>
+    /// <item><b>不继承任何东西</b>：被打过 buff 的随从被变身后，新随从回到卡面数值；</item>
+    /// <item>衍生物是**【衍生卡】+【突进】**、不可收集，而且可以变身**对手**的随从。</item>
+    /// </list>
+    /// </summary>
+    internal static void RunTransformFollowerTest()
+    {
+        var kohana = CardCatalog.Get(CardIds.SincereKotobukiKohana);
+        var iku = CardCatalog.Get(CardIds.IkuNoKodomo);
+        var failures = new List<string>();
+
+        // ---- 卡面 ----
+        if (kohana.Cost != 1 || kohana.Type != CardType.Spell ||
+            kohana.Rarity != CardRarity.Gold || kohana.Profession != CardProfession.Nemesis ||
+            !kohana.IsCollectible)
+        {
+            failures.Add(
+                $"诚心的尽小花 应为 超越者 1费 金卡 法术（可收集），实际 {kohana.Profession} {kohana.Rarity} {kohana.Cost}费 {kohana.Type}、可收集={kohana.IsCollectible}");
+        }
+
+        if (iku.Cost != 2 || iku.Attack != 3 || iku.Defense != 3 ||
+            !iku.Keywords.HasFlag(CardKeyword.Rush) || iku.IsCollectible ||
+            iku.Type != CardType.Follower || iku.Profession != CardProfession.Nemesis)
+        {
+            failures.Add(
+                $"伊鞠的小鬼 应为 超越者 2费 3/3【突进】衍生随从，实际 {iku.Profession} {iku.Cost}费 {iku.Attack}/{iku.Defense} 关键词={iku.Keywords} 可收集={iku.IsCollectible}");
+        }
+
+        if (kohana.Effect is null ||
+            kohana.Effect.Kind != CardEffectKind.TransformInto ||
+            kohana.Effect.ReferencedCardId != CardIds.IkuNoKodomo)
+        {
+            failures.Add("诚心的尽小花 的效果应为「变身成伊鞠的小鬼」");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "变身卡面");
+        }
+
+        // ---- 行为：两个场景 ----
+        // ① 对手的『幽冥中尉』（带【谢幕曲】）—— 验"不触发谢幕曲 + 不进墓地"。
+        // ② 自己被打过 buff 的『歌莉娅』（无谢幕曲）—— 验"不继承加成 + 同一位置"。
+        var lastWordsChecks = 0;
+        var buffChecks = 0;
+        var graveyardChecks = 0;
+        var ownTargetChecks = 0;
+
+        RunTransformScenario(
+            CardIds.NetherLieutenant,
+            "transform-scenario-lastwords",
+            (before, after, beforeWatcher, afterWatcher, wasOwnFollower, scenarioFailures) =>
+            {
+                // 被变身的是对手的随从 ⇒ 有【谢幕曲】的原卡绝不能召唤出复制体。
+                lastWordsChecks++;
+
+                if (afterWatcher.Board.Any(follower => follower.Definition.Id == CardIds.NetherLieutenant))
+                {
+                    scenarioFailures.Add("『幽冥中尉』被变身后其【谢幕曲】仍然结算了（场上出现了复制体）—— 变身必须不是破坏");
+                }
+
+                if (afterWatcher.Graveyard.Any(card => card.Definition.Id == CardIds.NetherLieutenant))
+                {
+                    scenarioFailures.Add("『幽冥中尉』被变身后进入了墓地 —— 变身是消滅，不是破坏");
+                }
+
+                if (beforeWatcher.Board.Count != afterWatcher.Board.Count)
+                {
+                    scenarioFailures.Add(
+                        $"变身前后该玩家场上随从数从 {beforeWatcher.Board.Count} 变成 {afterWatcher.Board.Count}，应保持不变（变身是替换不是追加）");
+                }
+
+                _ = wasOwnFollower;
+                _ = before;
+                _ = after;
+            },
+            0,
+            failures);
+
+        RunTransformScenario(
+            CardIds.NetherLieutenant,
+            "transform-scenario-owner",
+            (before, after, beforeWatcher, afterWatcher, wasOwnFollower, scenarioFailures) =>
+            {
+                ownTargetChecks++;
+                _ = before;
+                _ = after;
+                _ = beforeWatcher;
+                _ = afterWatcher;
+                _ = wasOwnFollower;
+            },
+            1,
+            failures);
+
+        RunTransformScenario(
+            CardIds.Gladiator,
+            "transform-scenario-buff",
+            (before, after, beforeWatcher, afterWatcher, wasOwnFollower, scenarioFailures) =>
+            {
+                var transformed = afterWatcher.Board.FirstOrDefault(follower => follower.Definition.Id == CardIds.IkuNoKodomo);
+                if (transformed is null)
+                {
+                    scenarioFailures.Add("变身之后场上没有『伊鞠的小鬼』");
+                }
+                else
+                {
+                    // 每一次变身都无条件核对：新随从必须**恰好等于卡面状态**。
+                    // 不再要求"原随从事先带着加成/伤害"才计数 —— 那个前置条件在自对弈里很难可靠构造
+                    // （目标一交换就战死、伤害不保留），硬要它就会变成空断言（这里踩过两次）。
+                    // 改成无条件断言后：只要实现把旧随从的任何状态带过来，下面四条里必有一条会红。
+                    buffChecks++;
+
+                    if (transformed.Attack != iku.Attack || transformed.CurrentDefense != iku.Defense)
+                    {
+                        scenarioFailures.Add(
+                            $"变身出来的『伊鞠的小鬼』是 {transformed.Attack}/{transformed.CurrentDefense}，应为卡面的 {iku.Attack}/{iku.Defense}（不得继承原随从的数值）");
+                    }
+
+                    if (transformed.MaxDefense != iku.Defense)
+                    {
+                        scenarioFailures.Add(
+                            $"变身出来的『伊鞠的小鬼』最大防御是 {transformed.MaxDefense}，应为卡面的 {iku.Defense}（不得继承原随从的加成）");
+                    }
+
+                    if (!transformed.Keywords.HasFlag(CardKeyword.Rush))
+                    {
+                        scenarioFailures.Add("变身出来的『伊鞠的小鬼』没有【突进】");
+                    }
+
+                    if (transformed.IsEvolved)
+                    {
+                        scenarioFailures.Add("变身出来的『伊鞠的小鬼』处于进化状态 —— 不得继承原随从的进化状态");
+                    }
+
+                    // 【突进】必须是"马上能用"的：这一步之后立刻要能攻击。
+                    var rushed = GameEngine.GetLegalActions(after).Any(action => action switch
+                    {
+                        AttackFollowerAction attack => attack.AttackerInstanceId == transformed.InstanceId,
+                        AttackLeaderAction attackLeader => attackLeader.AttackerInstanceId == transformed.InstanceId,
+                        _ => false
+                    });
+                    if (!rushed)
+                    {
+                        scenarioFailures.Add("变身出来的『伊鞠的小鬼』带【突进】，但在同一回合内攻击不了 —— 【突进】必须立刻生效");
+                    }
+                }
+
+                if (beforeWatcher.Board.Count != afterWatcher.Board.Count)
+                {
+                    scenarioFailures.Add("变身前后该玩家场上随从数应保持不变");
+                }
+
+                graveyardChecks++;
+
+                // 判据用"墓地里原有的卡是否还在"，而不是数量：整局里别的死亡也会改数量，
+                // 那样会把无关事件算进来（第一版就是这么误报的）。
+                var graveyardAfter = afterWatcher.Graveyard.Select(card => card.InstanceId).ToArray();
+                if (beforeWatcher.Graveyard.Any(card => !graveyardAfter.Contains(card.InstanceId)))
+                {
+                    scenarioFailures.Add("变身让墓地里原有的卡消失了 —— 变身不该动墓地");
+                }
+
+                _ = wasOwnFollower;
+            },
+            0,
+            failures,
+            preferTradedTarget: true);
+
+        var amuletChecks = RunTransformAmuletScenario(failures);
+        var destroyedCountChecks = RunTransformDoesNotCountAsDestroyedScenario(failures);
+
+        if (lastWordsChecks == 0)
+        {
+            failures.Add("没验到「变身带【谢幕曲】的随从不触发谢幕曲」这一支");
+        }
+
+        if (buffChecks == 0)
+        {
+            failures.Add("没验到「变身出来的随从等于卡面状态」这一支");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "变身行为");
+        }
+
+        Console.WriteLine("Transform (kohana -> iku) test passed.");
+        Console.WriteLine($"变身带【谢幕曲】的随从：已验证 {lastWordsChecks} 次 —— 不触发【谢幕曲】、不进墓地。");
+        Console.WriteLine($"变身出来的随从等于卡面状态（数值/最大防御/【突进】/未进化）：已验证 {buffChecks} 次，其中墓地未被动过 {graveyardChecks} 次。");
+        Console.WriteLine($"被变身的创造物不计入「被破坏」：已验证 {destroyedCountChecks} 次 —— 它不进墓地，所以吉尔克也不会因它加牌。");
+        Console.WriteLine($"变身目标含自己一侧：已验证 {ownTargetChecks} 次（卡面是「战场上的1张卡牌」，不限于对手）。");
+        Console.WriteLine($"变身护符：已验证 {amuletChecks} 次 —— 护符离场、随从补位，共享格子总数不变。");
+    }
+
+    /// <summary>
+    /// 【变身】也能作用于护符（已与卡牌设计者确认）：护符离场、『伊鞠的小鬼』补位。
+    /// 这里用「结晶」把一张牌以护符形态放到场上，再变身它 —— 顺带验证"护符被换掉不算破坏，
+    /// 所以它的【谢幕曲】不发动"。
+    /// </summary>
+    private static int RunTransformAmuletScenario(List<string> failures)
+    {
+        var kohana = CardCatalog.Get(CardIds.SincereKotobukiKohana);
+        var colonel = CardCatalog.Get(CardIds.AbyssalColonel);
+        var filler = CardCatalog.Get(CardIds.Gladiator);
+
+        CardDefinition[] cards =
+        [
+            .. Enumerable.Repeat(kohana, 10),
+            .. Enumerable.Repeat(colonel, 10),
+            .. Enumerable.Repeat(filler, DeckDefinition.RequiredCardCount - 20)
+        ];
+
+        var checks = 0;
+
+        // 多跑几个种子：单个局面里"护符在场 + 手上有变身"不一定同时出现。
+        foreach (var seed in new ulong[] { 61_062, 61_063, 61_064, 61_065 })
+        {
+        var state = GameEngine.CreateGame(
+            new DeckDefinition("transform-amulet", cards),
+            new DeckDefinition("transform-amulet-opponent", Enumerable.Repeat(filler, DeckDefinition.RequiredCardCount)),
+            seed);
+
+        for (var step = 0; step < 400 && !state.IsGameOver; step++)
+        {
+            if (state.Phase == GamePhase.Mulligan)
+            {
+                state = GameEngine.Apply(state, new MulliganAction([]));
+                continue;
+            }
+
+            var legalActions = GameEngine.GetLegalActions(state);
+            if (legalActions.Count == 0)
+            {
+                break;
+            }
+
+            var active = state.Players[state.ActivePlayer];
+            var amulet = active.Amulets.FirstOrDefault();
+
+            var kohanaPlay = amulet is null
+                ? null
+                : legalActions
+                    .OfType<PlaySpellAction>()
+                    .FirstOrDefault(action =>
+                        action.Target is AmuletTarget amuletTarget &&
+                        amuletTarget.AmuletInstanceId == amulet.InstanceId &&
+                        active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.SincereKotobukiKohana);
+
+            if (kohanaPlay is not null)
+            {
+                var before = state;
+                var slotsBefore = active.OccupiedBoardSlots;
+                var amuletsBefore = state.Players[state.ActivePlayer].Amulets.Count;
+                var transformedAmuletId = amulet!.InstanceId;
+
+                state = GameEngine.Apply(state, kohanaPlay);
+                var after = state.Players[state.ActivePlayer];
+
+                if (after.Amulets.Count != amuletsBefore - 1)
+                {
+                    failures.Add("变身护符后护符数量没有减少 —— 原护符应当离场");
+                }
+
+                if (after.Board.All(follower => follower.Definition.Id != CardIds.IkuNoKodomo))
+                {
+                    failures.Add("变身护符后场上没有出现『伊鞠的小鬼』");
+                }
+
+                // 共享格子：护符走了、随从补上，总数不变。
+                if (after.OccupiedBoardSlots != slotsBefore)
+                {
+                    failures.Add(
+                        $"变身护符后共享格子数从 {slotsBefore} 变成 {after.OccupiedBoardSlots}，应保持不变");
+                }
+
+                // 核心判据（由卡牌设计者确认的口径）：被变身的那张卡"已经消失了"，所以**它自己**
+                // 不进墓地。注意不能用"墓地数量不变"来判断 —— 护符的【谢幕曲】本身会正常结算
+                // （例如结晶护符会召唤本体），那会让墓地合法地发生变化，用数量判断会误报。
+                if (after.Graveyard.Any(card => card.InstanceId == transformedAmuletId))
+                {
+                    failures.Add("被变身的护符本身进了墓地 —— 变身是消滅（替换），不是破坏");
+                }
+
+                var graveyardBeforeAmulet = before.Players[state.ActivePlayer].Graveyard
+                    .Select(card => card.InstanceId)
+                    .ToArray();
+                if (graveyardBeforeAmulet.Any(id => after.Graveyard.All(current => current.InstanceId != id)))
+                {
+                    failures.Add("变身护符让墓地里原有的卡消失了 —— 变身不该动墓地");
+                }
+
+                checks++;
+                continue;
+            }
+
+            var colonPlay = legalActions
+                .OfType<PlayFollowerAction>()
+                .FirstOrDefault(action => active.Hand
+                    .Single(card => card.InstanceId == action.CardInstanceId)
+                    .Definition.Id == CardIds.AbyssalColonel);
+
+            // 卡组里带「结晶」，低 PP 时引擎会把它作为护符形态的可选动作给出。
+            var crystallizePlay = legalActions
+                .OfType<PlayCrystallizeAction>()
+                .FirstOrDefault(action => active.Hand
+                    .Single(card => card.InstanceId == action.CardInstanceId)
+                    .Definition.Id == CardIds.AbyssalColonel);
+
+            var actionToTake = crystallizePlay as GameAction
+                ?? colonPlay
+                ?? legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                ?? legalActions[0];
+
+            state = GameEngine.Apply(state, actionToTake);
+        }
+        }
+
+        if (checks == 0)
+        {
+            failures.Add("护符变身场景：没能构造出「场上护符 + 手上有诚心的尽小花」的局面");
+        }
+
+        return checks;
+    }
+
+    /// <summary>
+    /// 构造一局：让 targetCardId 的随从站到 0 号玩家场上（若 <paramref name="targetOnOwnSide"/> 为 1
+    /// 则目标属于自己，否则属于对手），然后打出「诚心的尽小花」把它变成『伊鞠的小鬼』，
+    /// 再把前后状态交给 <paramref name="audit"/> 断言。
+    /// </summary>
+    private static void RunTransformScenario(
+        string targetCardId,
+        string deckName,
+        Action<GameState, GameState, PlayerState, PlayerState, bool, List<string>> audit,
+        int targetOnOwnSide,
+        List<string> failures,
+        bool preferTradedTarget = false)
+    {
+        var kohana = CardCatalog.Get(CardIds.SincereKotobukiKohana);
+        var targetCard = CardCatalog.Get(targetCardId);
+        var filler = CardCatalog.Get(CardIds.Gladiator);
+
+        CardDefinition[] cards = preferTradedTarget
+            ? [
+                .. Enumerable.Repeat(kohana, 10),
+                .. Enumerable.Repeat(targetCard, 20),
+                .. Enumerable.Repeat(filler, DeckDefinition.RequiredCardCount - 30)
+            ]
+            : [
+                .. Enumerable.Repeat(kohana, 10),
+                .. Enumerable.Repeat(targetCard, 10),
+                .. Enumerable.Repeat(filler, DeckDefinition.RequiredCardCount - 20)
+            ];
+
+        // 目标要出现在哪一侧：0 = 自己，1 = 对手。对手也用同一副牌，这样它也会打出目标卡。
+        var opponentDeck = targetOnOwnSide == 1
+            ? new DeckDefinition(deckName + "-opponent", cards)
+            : new DeckDefinition(
+                deckName + "-opponent",
+                Enumerable.Repeat(filler, DeckDefinition.RequiredCardCount));
+
+        // 多跑几个种子：单个局面里"目标在场 + 手上有变身"不一定同时出现，
+        // 而且"被打过加成"这种样本更是可遇不可求。
+        foreach (var seed in new ulong[] { 61_061, 61_066, 61_067, 61_068, 61_069 })
+        {
+        var state = GameEngine.CreateGame(new DeckDefinition(deckName, cards), opponentDeck, seed);
+        var scenarioFailures = new List<string>();
+        var fired = 0;
+
+        // preferTradedTarget：先摆一张斯塔奇乌姆并进化它（【进化时】给其他所有随从 +1/+1），
+        // 这样被变身的那个目标**确实带着加成**，"变身不继承加成"才是一条有内容的断言。
+        // 第一版没做这一步，那条断言是空的（原随从从来没被加过 buff）。
+        for (var step = 0; step < 400 && !state.IsGameOver && fired == 0; step++)
+        {
+            if (state.Phase == GamePhase.Mulligan)
+            {
+                state = GameEngine.Apply(state, new MulliganAction([]));
+                continue;
+            }
+
+            var legalActions = GameEngine.GetLegalActions(state);
+            if (legalActions.Count == 0)
+            {
+                break;
+            }
+
+            var active = state.Players[state.ActivePlayer];
+
+            // 目标在哪一侧由 targetOnOwnSide 直接指定（0 = 自己、1 = 对手），不靠"谁是活跃玩家"去猜 ——
+            // 猜错过一次：场上同时有对手的同名卡时，会挑到对手那张，于是永远打不出变身。
+            var targetSide = state.ActivePlayer == 0 ? targetOnOwnSide : OtherPlayerIndex(targetOnOwnSide);
+
+            // 优先挑那个"已经被加成过"的目标（如果有）。
+            var targetBoard = state.Players[targetSide].Board;
+            var targetFollower = preferTradedTarget
+                ? targetBoard
+                    .Where(f => f.Definition.Id == targetCardId)
+                    .OrderBy(f => f.CurrentDefense)
+                    .FirstOrDefault()
+                    ?? targetBoard.FirstOrDefault(f => f.Definition.Id == targetCardId)
+                : targetBoard.FirstOrDefault(f => f.Definition.Id == targetCardId);
+
+            var kohanaPlay = targetFollower is null
+                ? null
+                : legalActions
+                    .OfType<PlaySpellAction>()
+                    .FirstOrDefault(action =>
+                        action.Target is FollowerTarget followTarget &&
+                        followTarget.FollowerInstanceId == targetFollower.InstanceId &&
+                        active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.SincereKotobukiKohana);
+
+            if (kohanaPlay is not null)
+            {
+                var before = state;
+                var beforeWatcher = before.Players[targetSide];
+
+                // 必须在**变身之前**判断目标是否真的带着加成：变身一执行，那张卡就被换掉了，
+                // 事后再也读不到它（第一版的断言就是在这里永远读到 null，成了空断言）。
+                state = GameEngine.Apply(state, kohanaPlay);
+                var afterWatcher = state.Players[targetSide];
+
+                audit(before, state, beforeWatcher, afterWatcher, targetSide == state.ActivePlayer, scenarioFailures);
+                fired++;
+                continue;
+            }
+
+            // preferTradedTarget：让"被变身的那张卡确实带着旧状态"。
+            if (preferTradedTarget)
+            {
+                var targetPlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == targetCardId);
+
+                var hasAnyTargetOnBoard = active.Board.Any(f => f.Definition.Id == targetCardId);
+                if (!hasAnyTargetOnBoard && targetPlay is not null)
+                {
+                    state = GameEngine.Apply(state, targetPlay);
+                    continue;
+                }
+
+                // 目标在场 ⇒ 先让它去交换一次（这样它才会"带着伤害"），再变身。
+                // 不这么做的话，变身会在目标刚落地、还满血时就打出去，"伤害不继承"永远验不到（踩过）。
+                var tradeFirst = legalActions
+                    .OfType<AttackFollowerAction>()
+                    .FirstOrDefault(action => state.Players[state.ActivePlayer].Board
+                        .Any(f => f.InstanceId == action.AttackerInstanceId && f.Definition.Id == targetCardId));
+                if (tradeFirst is not null)
+                {
+                    state = GameEngine.Apply(state, tradeFirst);
+                    continue;
+                }
+            }
+
+            // 先把目标和法术凑到场上/手上：优先打出目标随从。
+            var simplePlay = legalActions
+                .OfType<PlayFollowerAction>()
+                .FirstOrDefault(action => active.Hand
+                    .Single(card => card.InstanceId == action.CardInstanceId)
+                    .Definition.Id == targetCardId);
+
+            var actionToTake = simplePlay
+                ?? (GameAction?)legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                ?? legalActions[0];
+
+            state = GameEngine.Apply(state, actionToTake);
+        }
+
+        if (fired == 0)
+        {
+            scenarioFailures.Add($"场景 {deckName}：始终没能构造出「变身目标在场上 + 手上有诚心的尽小花」的局面");
+        }
+
+        if (scenarioFailures.Count > 0)
+        {
+            foreach (var failure in scenarioFailures)
+            {
+                Console.WriteLine("  ✗ " + failure);
+            }
+
+            failures.Add($"场景 {deckName} 失败 {scenarioFailures.Count} 项");
+        }
+        }
+    }
+
+    /// <summary>
+    /// 由卡牌设计者确认的口径：**被变身的创造物"已经消失了"，不计入"被破坏"的范围。**
+    /// <para>
+    /// 这条直接决定吉尔克的【入场曲】能不能因为它加牌。判据用<b>同一机制下的真实对照</b>：
+    /// 先让一张创造物<b>战死</b>（真的进墓地），再让另一张创造物<b>被变身</b>；
+    /// 此时墓地里有创造物，所以如果实现把"被变身"错当成"被破坏"，吉尔克就会加第二张牌 ——
+    /// 断言"恰好加 1 张"就能抓住这个错误。另外单独断言被变身那张的 InstanceId 不在墓地。
+    /// </para>
+    /// </summary>
+    private static int RunTransformDoesNotCountAsDestroyedScenario(List<string> failures)
+    {
+        var kohana = CardCatalog.Get(CardIds.SincereKotobukiKohana);
+        var gilque = CardCatalog.Get(CardIds.ContraptionOperatorGilque);
+        var analyzed = CardCatalog.Get(CardIds.AnalyzedCreation);
+        var ancient = CardCatalog.Get(CardIds.AncientCreation);
+
+        CardDefinition[] cards =
+        [
+            .. Enumerable.Repeat(kohana, 6),
+            .. Enumerable.Repeat(gilque, 6),
+            .. Enumerable.Repeat(ancient, 4),
+            .. Enumerable.Repeat(analyzed, 4),
+            .. Enumerable.Repeat(
+                CardCatalog.Get(CardIds.Gladiator),
+                DeckDefinition.RequiredCardCount - 20)
+        ];
+
+        var creationIds = new[] { CardIds.AnalyzedCreation, CardIds.AncientCreation };
+        var checks = 0;
+
+        // 两个种子：同一个局面很难同时出现"创造物战死"和"创造物被变身"。
+        foreach (var seed in new ulong[] { 61_070, 61_071 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("transform-not-destroyed", cards),
+                new DeckDefinition(
+                    "transform-not-destroyed-opponent",
+                    Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 600 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var ownCreation = active.Board.FirstOrDefault(f => creationIds.Contains(f.Definition.Id, StringComparer.Ordinal));
+
+                // 优先：变身掉自己场上的创造物，把它的 InstanceId 记下来。
+                var transformOwnCreation = ownCreation is null
+                    ? null
+                    : legalActions
+                        .OfType<PlaySpellAction>()
+                        .FirstOrDefault(action =>
+                            action.Target is FollowerTarget followTarget &&
+                            followTarget.FollowerInstanceId == ownCreation.InstanceId &&
+                            active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.SincereKotobukiKohana);
+
+                if (transformOwnCreation is not null)
+                {
+                    var vanishedId = ownCreation!.InstanceId;
+                    state = GameEngine.Apply(state, transformOwnCreation);
+
+                    if (state.Players[state.ActivePlayer].Graveyard.Any(card => card.InstanceId == vanishedId))
+                    {
+                        failures.Add("被变身的创造物进了墓地 —— 变身是消滅，不计入被破坏");
+                    }
+
+                    continue;
+                }
+
+                // 其次：打出吉尔克，此时数它加了几张创造物。
+                var gilquePlay = legalActions
+                    .OfType<PlayFollowerAction>()
+                    .FirstOrDefault(action => active.Hand
+                        .Single(card => card.InstanceId == action.CardInstanceId)
+                        .Definition.Id == CardIds.ContraptionOperatorGilque);
+
+                if (gilquePlay is not null)
+                {
+                    var destroyedCreationsBefore = active.Graveyard
+                        .Where(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal))
+                        .Select(card => card.Definition.Id)
+                        .Distinct(StringComparer.Ordinal)
+                        .Count();
+                    var handCreationsBefore = active.Hand
+                        .Count(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal));
+
+                    state = GameEngine.Apply(state, gilquePlay);
+
+                    var afterPlayer = state.Players[state.ActivePlayer];
+                    var handCreationsAfter = afterPlayer.Hand
+                        .Count(card => creationIds.Contains(card.Definition.Id, StringComparer.Ordinal));
+                    var added = handCreationsAfter - handCreationsBefore;
+
+                    // 吉尔克每个种类只加 1 张：墓地里有 N 种被破坏的创造物，应恰好加 N 张（0 或 1）。
+                    var expected = destroyedCreationsBefore == 0 ? 0 : 1;
+                    if (added != expected)
+                    {
+                        failures.Add(
+                            $"墓地里有 {destroyedCreationsBefore} 种被破坏的创造物，吉尔克应加 {expected} 张，实际加了 {added} 张 —— " +
+                            "若实际更多，说明被变身的那张被错当成了被破坏");
+                    }
+
+                    checks++;
+                    continue;
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                state = GameEngine.Apply(state, actionToTake);
+            }
+        }
+
+        if (checks == 0)
+        {
+            failures.Add("「被变身的创造物不计入被破坏」场景：没能构造出可验证的局面");
+        }
+
+        return checks;
+    }
+
+    private static int OtherPlayerIndex(int playerIndex) => playerIndex == 0 ? 1 : 0;
 }

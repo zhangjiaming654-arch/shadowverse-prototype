@@ -1296,6 +1296,21 @@ public static class GameEngine
             .Where(follower => !follower.HasAura)
             .ToArray();
 
+        if (effects.Any(effect => effect.Kind == CardEffectKind.TransformInto))
+        {
+            // 【变身】 prints "choose 1 card on the board" without naming a side or a card type, so both
+            // sides are legal and an amulet is a legal answer too (confirmed with the card's designer).
+            // 【光环】 still shields a follower from the *opponent's* effects, but it must not stop its
+            // own controller from transforming it.
+            return
+            [
+                .. selectableEnemyFollowers.Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId)),
+                .. state.Players[state.ActivePlayer].Board.Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId)),
+                .. state.Players[OtherPlayer(state.ActivePlayer)].Amulets.Select(amulet => (SpellTarget)new AmuletTarget(amulet.InstanceId)),
+                .. state.Players[state.ActivePlayer].Amulets.Select(amulet => (SpellTarget)new AmuletTarget(amulet.InstanceId))
+            ];
+        }
+
         if (effects.Any(effect => effect.Kind == CardEffectKind.DestroyEnemyFollower))
         {
             return selectableEnemyFollowers
@@ -1425,6 +1440,12 @@ public static class GameEngine
                         effect.Amount,
                         action.ModeChoiceIndex);
                     break;
+                case CardEffectKind.TransformInto:
+                    ApplyTransformInto(
+                        state,
+                        action.Target,
+                        effect.ReferencedCardId!);
+                    break;
                 default:
                     throw new InvalidOperationException($"Unsupported spell effect: {effect.Kind}.");
             }
@@ -1469,6 +1490,115 @@ public static class GameEngine
         }
 
         return effects;
+    }
+
+    /// <summary>
+    /// 【变身】: banishes the chosen card on the board — a follower <b>or</b> an amulet — and creates the
+    /// referenced follower in its place, under the same owner.
+    /// <para>
+    /// Faithful to the rules, the replaced card is <b>not</b> destroyed: it is removed from the board
+    /// outright, so it never reaches a graveyard and its Last Words do not fire. The replacement is a
+    /// brand-new card built from the catalog, so it inherits nothing from what it replaced, and it
+    /// arrives through the normal summon path (no Fanfare) — which still lets a 【突进】 follower attack
+    /// immediately, because this engine only restricts followers that arrived before this turn.
+    /// </para>
+    /// <para>
+    /// <b>Interaction with "destroyed this battle" conditions</b> (confirmed with the card's designer):
+    /// a transformed card "has already vanished", so it does <b>not</b> count as destroyed. Because this
+    /// method removes it from the board without ever touching the graveyard, conditions that read the
+    /// graveyard — such as 「机械操纵者·吉尔克」 — are correct for free and need no special case.
+    /// </para>
+    /// </summary>
+    private static void ApplyTransformInto(GameState state, SpellTarget? target, string intoCardId)
+    {
+        var definition = CardCatalog.Get(intoCardId);
+        if (definition.Type != CardType.Follower)
+        {
+            throw new InvalidOperationException(
+                $"A transform can only produce a follower, but {intoCardId} is not a follower.");
+        }
+
+        switch (target)
+        {
+            case FollowerTarget followerTarget:
+            {
+                // Locate the target first: its owner is whichever side actually holds it.
+                var ownerIndex = -1;
+                var slot = -1;
+                for (var player = 0; player < 2 && ownerIndex < 0; player++)
+                {
+                    var board = state.Players[player].BoardInternal;
+                    for (var index = 0; index < board.Count; index++)
+                    {
+                        if (board[index].InstanceId != followerTarget.FollowerInstanceId)
+                        {
+                            continue;
+                        }
+
+                        ownerIndex = player;
+                        slot = index;
+                        break;
+                    }
+                }
+
+                if (ownerIndex < 0)
+                {
+                    throw new InvalidOperationException("The follower to transform is not on the board.");
+                }
+
+                // Banish, not destroy: no graveyard, no Last Words. Keep the slot so board order holds.
+                state.Players[ownerIndex].BoardInternal.RemoveAt(slot);
+                var replacement = CreateSummonedFollower(state, definition);
+                state.Players[ownerIndex].BoardInternal.Insert(slot, replacement);
+                ApplyEnteringFollowerPassiveGrants(state, ownerIndex, replacement);
+                return;
+            }
+
+            case AmuletTarget amuletTarget:
+            {
+                var ownerIndex = -1;
+                var slot = -1;
+                for (var player = 0; player < 2 && ownerIndex < 0; player++)
+                {
+                    var amulets = state.Players[player].AmuletsInternal;
+                    for (var index = 0; index < amulets.Count; index++)
+                    {
+                        if (amulets[index].InstanceId != amuletTarget.AmuletInstanceId)
+                        {
+                            continue;
+                        }
+
+                        ownerIndex = player;
+                        slot = index;
+                        break;
+                    }
+                }
+
+                if (ownerIndex < 0)
+                {
+                    throw new InvalidOperationException("The amulet to transform is not on the board.");
+                }
+
+                // The amulet simply leaves; it is not destroyed, so its Countdown Last Words stay silent.
+                state.Players[ownerIndex].AmuletsInternal.RemoveAt(slot);
+
+                // An amulet has no follower slot to inherit, so the follower is appended.
+                var replacement = CreateSummonedFollower(state, definition);
+                state.Players[ownerIndex].BoardInternal.Add(replacement);
+                ApplyEnteringFollowerPassiveGrants(state, ownerIndex, replacement);
+                return;
+            }
+
+            default:
+                throw new InvalidOperationException("A transform effect needs a card on the board to transform.");
+        }
+    }
+
+    /// <summary>Builds a follower exactly the way this engine summons a token: fresh card, no Fanfare.</summary>
+    private static FollowerInstance CreateSummonedFollower(GameState state, CardDefinition definition)
+    {
+        var card = new CardInstance(state.NextInstanceId++, definition);
+        return new FollowerInstance(card, state.TurnNumber);
     }
 
     private static void EnsureSpellHasNoTarget(PlaySpellAction action)

@@ -40,6 +40,21 @@ public sealed record EnemyLeaderTarget : SpellTarget;
 public sealed record EnemyFollowerTarget(int FollowerInstanceId) : SpellTarget;
 
 /// <summary>
+/// A follower on either side of the board. Used by effects whose card text says "choose 1 card on the
+/// board" without restricting whose it is, such as 【变身】. The engine decides whether a given side is
+/// legal for a given effect — an effect that may only touch the opponent's board must reject the
+/// owner's own followers itself, because <see cref="EnemyFollowerTarget"/> is not used for these.
+/// </summary>
+public sealed record FollowerTarget(int FollowerInstanceId) : SpellTarget;
+
+/// <summary>
+/// An amulet on either side of the shared board. Used when a card's text says "choose 1 card on the
+/// board" and an amulet is a legal answer, such as 【变身】: transforming an amulet into a follower
+/// removes the amulet and puts the follower in its place.
+/// </summary>
+public sealed record AmuletTarget(int AmuletInstanceId) : SpellTarget;
+
+/// <summary>
 /// Plays a spell. OwnHandCardTargetInstanceIds is used by spells that ask the
 /// player to choose cards from their own hand, such as discard effects.
 /// ModeChoiceIndex chooses one 【模式】 when the spell prints a mode ability.

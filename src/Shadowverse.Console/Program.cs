@@ -67,6 +67,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunParkourAndCreationTest();
     // 吉尔克：按"本次对战中破坏的创造物"加同名卡，且必须是**非公开**加入（不写进公开打出记录）。
     AgentSelfTests.RunContraptionOperatorGilqueTest();
+    // 变身（诚心的尽小花）：消滅原卡而非破坏 ⇒ 不触发【谢幕曲】、不进墓地、不继承加成。
+    AgentSelfTests.RunTransformFollowerTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

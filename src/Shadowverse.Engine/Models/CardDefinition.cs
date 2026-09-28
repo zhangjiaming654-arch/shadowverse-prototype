@@ -152,7 +152,30 @@ public enum CardEffectKind
     /// is still playable, it simply adds nothing.
     /// </para>
     /// </summary>
-    AddRandomDestroyedTraitFollowerCopyToHandPrivately
+    AddRandomDestroyedTraitFollowerCopyToHandPrivately,
+    /// <summary>
+    /// 【变身】: replaces one card on the board — a follower <b>or</b> an amulet, on either side — with a
+    /// freshly created follower named by <see cref="CardEffect.ReferencedCardId"/>, in the same slot
+    /// and under the same owner.
+    /// <para>
+    /// The rules model this as "<b>banish</b> the target, then <b>create</b> a token in that zone"
+    /// (Shadowverse EVOLVE Comprehensive Rules §5.16 / §5.6). Two consequences are load-bearing and
+    /// deliberately implemented here:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>Banishing is <b>not</b> destruction, so the replaced card never enters a graveyard and its
+    /// <b>Last Words must not fire</b>. That is the whole point of the keyword.</item>
+    /// <item>The replacement is a brand-new card, so it carries <b>none</b> of the old card's bonuses,
+    /// damage, keywords or evolution state.</item>
+    /// </list>
+    /// <para>
+    /// The replacement arrives through the normal summon path, so it does <b>not</b> trigger its own
+    /// Fanfare — matching every other token this engine creates (only playing a card from hand does).
+    /// A 【突进】 replacement can still attack the same turn, because this engine only restricts
+    /// followers that arrived before the current turn.
+    /// </para>
+    /// </summary>
+    TransformInto
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>

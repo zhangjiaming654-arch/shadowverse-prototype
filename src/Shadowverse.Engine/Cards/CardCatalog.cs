@@ -71,6 +71,11 @@ public static class CardIds
     public const string CreationTrait = "创造物";
 
     public const string ContraptionOperatorGilque = "BASE-060";
+
+    public const string SincereKotobukiKohana = "BASE-061";
+
+    /// <summary>The token 「诚心的尽小花」 turns a card on the board into.</summary>
+    public const string IkuNoKodomo = "BASE-062";
 }
 
 public static class CrestIds
@@ -1273,7 +1278,32 @@ public static class CardCatalog
                     CardEffectKind.AddRandomDestroyedTraitFollowerCopyToHandPrivately,
                     1,
                     CardIds.CreationTrait)
-            ])
+            ]),
+        new(
+            CardIds.SincereKotobukiKohana,
+            "诚心的尽小花",
+            1,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Spell,
+            "选择战场上的1张卡牌，使其变身为『伊鞠的小鬼』。",
+            new CardEffect(CardEffectKind.TransformInto, 1, CardIds.IkuNoKodomo),
+            CardRarity.Gold,
+            CardProfession.Nemesis),
+        new(
+            CardIds.IkuNoKodomo,
+            "伊鞠的小鬼",
+            2,
+            3,
+            3,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【突进】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            IsCollectible: false)
     ];
 
     /// <summary>The ten generated cards that replace the remaining deck after BASE-004 resolves.</summary>
@@ -1493,6 +1523,16 @@ public static class CardCatalog
                 {
                     throw new InvalidOperationException(
                         $"Card {card.Id} references unknown follower trait {effect.ReferencedCardId}.");
+                }
+
+                break;
+
+            case CardEffectKind.TransformInto:
+                if (!DefinitionsById.TryGetValue(effect.ReferencedCardId!, out var transformTarget) ||
+                    transformTarget.Type != CardType.Follower)
+                {
+                    throw new InvalidOperationException(
+                        $"Card {card.Id} transforms into {effect.ReferencedCardId}, which is not a catalog follower.");
                 }
 
                 break;
