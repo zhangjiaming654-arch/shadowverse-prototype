@@ -1913,8 +1913,7 @@ public static class CardCatalog
             ],
             Accelerate: new AccelerateDefinition(
                 2,
-                [new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.InferiorToy)]),
-            IsCollectible: false),
+                [new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.InferiorToy)])),
         new(
             CardIds.ClumsyDoll,
             "拙劣的人偶",
@@ -1933,8 +1932,7 @@ public static class CardCatalog
             ],
             Accelerate: new AccelerateDefinition(
                 2,
-                [new CardEffect(CardEffectKind.SummonFollower, 2, CardIds.ClumsyDoll)]),
-            IsCollectible: false),
+                [new CardEffect(CardEffectKind.SummonFollower, 2, CardIds.ClumsyDoll)])),
         new(
             CardIds.TearfulTransformationAizuIden,
             "弹哭的变貌·艾兹伊甸",

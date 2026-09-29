@@ -77,6 +77,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunSlothBatchTest();
     // 第三批：使用法术时召唤 / 牌组无重复条件 / 牌组搜索过滤器 / 纹章每回合1次进化。
     AgentSelfTests.RunThirdBatchTest();
+    // 第四批：召唤授予关键词 / 双方进化 / 失去所有能力 / 受到的伤害+1 / 回复超进化点 / 【模式】消失。
+    AgentSelfTests.RunFourthBatchTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

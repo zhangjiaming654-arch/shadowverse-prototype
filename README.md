@@ -84,7 +84,7 @@ Running the console with no arguments prints one full match report; everything e
 ## Current data
 
 - The catalog holds 98 cards, `BASE-001` through `BASE-098`: 79 followers, 17 spells, and 2
-  amulets. 70 are collectible; the other 28 are generated cards that stay in the catalog but cannot
+  amulets. 72 are collectible; the other 26 are generated cards that stay in the catalog but cannot
   be built into a normal deck.
 - Card IDs are never reused, and the console prints the ID the next card would receive
   (`BASE-099` today).

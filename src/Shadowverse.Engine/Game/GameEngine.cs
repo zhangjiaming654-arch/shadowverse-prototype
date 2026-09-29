@@ -963,6 +963,15 @@ public static class GameEngine
             throw new InvalidOperationException("The active player does not have enough play points for Accelerate.");
         }
 
+        // 官方术语表【激奏】："若自己的剩余能量点**低于卡牌的费用**但在激奏的费用或以上"才能激奏。
+        // 动作生成处已经过滤了上界，这里再强校验一次 —— 引擎的 Apply 本来就要拒绝非法动作
+        // （和【潜伏】那条一致），否则直接构造出来的动作会被悄悄接受。
+        if (active.CurrentPlayPoints >= GetCardCost(card, active.CurrentPlayPoints))
+        {
+            throw new InvalidOperationException(
+                "Accelerate is only usable while the card's own cost cannot be paid.");
+        }
+
         active.CurrentPlayPoints -= accelerate.Cost;
         active.HandInternal.Remove(card);
 
@@ -3445,6 +3454,20 @@ public static class GameEngine
                         break;
                     case CardEffectKind.DealDamageToEnemyLeader:
                         DealDamageToLeader(state, OtherPlayer(ownerIndex), effect.Amount);
+                        break;
+                    case CardEffectKind.DealDamageToAllEnemyFollowers:
+                        foreach (var target in state.Players[OtherPlayer(ownerIndex)].BoardInternal.ToArray())
+                        {
+                            DealDamageToFollower(state, OtherPlayer(ownerIndex), target, effect.Amount);
+                            if (state.IsGameOver)
+                            {
+                                return;
+                            }
+                        }
+
+                        break;
+                    case CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder:
+                        ApplyDistributedDamageToEnemyFollowersByEntryOrder(state, effect.Amount);
                         break;
                     case CardEffectKind.BanishSelf:
                         // 【怨灵】自己的回合结束时消失：banish removes it outright, so it bypasses

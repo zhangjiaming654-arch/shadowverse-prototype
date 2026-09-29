@@ -82,6 +82,14 @@ public sealed class PlayerState
 
     public IReadOnlyList<string> RevealedCardIds => RevealedCardIdsInternal;
 
+    /// <summary>
+    /// 「使对手的主战者获得『受到的伤害+1』」的当前值，以及"本局进场的类别随从卡号"。
+    /// 公开只读，供控制台自检断言，不必为了测试开放引擎内部集合。
+    /// </summary>
+    public int LeaderDamageTakenBonus => LeaderDamageTakenBonusInternal;
+
+    public IReadOnlyCollection<string> EnteredTraitFollowerKindIds => EnteredTraitFollowerKindIdsInternal;
+
     public IReadOnlyList<CardInstance> Deck => DeckInternal;
     public IReadOnlyList<CardInstance> Hand => HandInternal;
     public IReadOnlyList<FollowerInstance> Board => BoardInternal;

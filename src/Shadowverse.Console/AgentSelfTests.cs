@@ -9708,4 +9708,259 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine($"束刃的罪人：搜到【毁灭】随从 {searchBaneChecks} 次 ｜ 牌组无重复给纹章 {crestGrantChecks} 次 ｜ 纹章使打出的随从进化 {crestEvolveChecks} 次。");
         Console.WriteLine($"牌组无重复时屈辱流放额外抽牌：已验证 {noDuplicateChecks} 次。");
     }
+
+    /// <summary>
+    /// 2026-09-28 第四批（BASE-083～098）。守住本批新加的 12 个效果类型里最容易错的那几个：
+    /// 召唤并**授予关键词**、召唤并**双方进化**、**使对手随从失去所有能力**、主战者
+    /// **「受到的伤害+1」**、**回复超进化点**、【模式】三种"使…消失"、
+    /// 「创造物进场时破坏对手随机随从」、以及**激奏的上界校验**。
+    /// </summary>
+    internal static void RunFourthBatchTest()
+    {
+        var clever = CardCatalog.Get(CardIds.CleverCreator);
+        var kamihira = CardCatalog.Get(CardIds.MaliciousPureheartKamihira);
+        var aizuIden = CardCatalog.Get(CardIds.TearfulTransformationAizuIden);
+        var beelzebub = CardCatalog.Get(CardIds.SoleSovereignBeelzebub);
+        var olivie = CardCatalog.Get(CardIds.NobleBlackWingOlivie);
+        var bahamut = CardCatalog.Get(CardIds.AlbionBahamut);
+        var weapon = CardCatalog.Get(CardIds.FoolishWeapon);
+        var doll = CardCatalog.Get(CardIds.ClumsyDoll);
+
+        var failures = new List<string>();
+
+        // ---- ① 卡面 ----
+        void CheckFace(CardDefinition card, int cost, int attack, int defense,
+            CardRarity rarity, CardProfession profession, CardKeyword keywords)
+        {
+            if (card.Cost != cost || card.Attack != attack || card.Defense != defense ||
+                card.Rarity != rarity || card.Profession != profession || card.Keywords != keywords)
+            {
+                failures.Add(
+                    $"{card.Name} 卡面不符：{card.Profession} {card.Rarity} {card.Cost}费 {card.Attack}/{card.Defense} 关键词={card.Keywords}");
+            }
+        }
+
+        CheckFace(clever, 6, 1, 1, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.None);
+        CheckFace(kamihira, 7, 6, 6, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None);
+        CheckFace(aizuIden, 7, 5, 5, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None);
+        CheckFace(beelzebub, 9, 9, 9, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None);
+        CheckFace(olivie, 9, 7, 7, CardRarity.Rainbow, CardProfession.Neutral, CardKeyword.Ward);
+        CheckFace(bahamut, 9, 13, 13, CardRarity.Rainbow, CardProfession.Neutral, CardKeyword.None);
+        CheckFace(weapon, 8, 3, 4, CardRarity.Gold, CardProfession.Nemesis, CardKeyword.None);
+        CheckFace(doll, 5, 2, 1, CardRarity.Silver, CardProfession.Nemesis, CardKeyword.None);
+
+        if (!CardCatalog.Get(CardIds.FiringPinGuard).Traits!
+                .Contains(CardIds.CreationTrait, StringComparer.Ordinal))
+        {
+            failures.Add("击针看守 应带【创造物】类别（它会被「创造物进场」被动认到）");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第四批卡面");
+        }
+
+        // ---- ② 行为 ----
+        var keywordGrantChecks = 0;
+        var evolveBothChecks = 0;
+        var damageBonusChecks = 0;
+        var superEvoHealChecks = 0;
+        var bahamutModeChecks = 0;
+        var creationDestroyChecks = 0;
+        var kamihiraEvolveChecks = 0;
+        var behaviorFailures = new List<string>();
+
+        CardDefinition[] deckCards =
+        [
+            .. Enumerable.Repeat(clever, 3),
+            .. Enumerable.Repeat(kamihira, 2),
+            .. Enumerable.Repeat(aizuIden, 2),
+            .. Enumerable.Repeat(beelzebub, 2),
+            .. Enumerable.Repeat(olivie, 2),
+            .. Enumerable.Repeat(bahamut, 2),
+            .. Enumerable.Repeat(weapon, 2),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.InferiorToy), 3),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.ClumsyDoll), 3),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Parkour), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 25)
+        ];
+
+        foreach (var seed in new ulong[] { 90_001, 90_002, 90_003, 90_004, 90_005 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("fourth-batch", deckCards),
+                new DeckDefinition(
+                    "fourth-batch-opp",
+                    Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var enemyIndex = OtherPlayerIndex(state.ActivePlayer);
+
+                // 场上是 5 格共享的；满场时【入场曲】的"召唤"会失败（规则如此，不是缺陷），
+                // 所以只有场上有空位时才打"需要召唤"的那几张 —— 否则会得到假的失败。
+                var needsRoom = active.Hand.Any(card =>
+                    card.Definition.Id is CardIds.CleverCreator
+                        or CardIds.MaliciousPureheartKamihira
+                        or CardIds.TearfulTransformationAizuIden
+                        or CardIds.ClumsyDoll);
+                // 打出后还要留出召唤位：卡密希拉要塞 2 个，所以要留 3 格（打出自己 + 2 个召唤）。
+                var play = !needsRoom || active.OccupiedBoardSlots + 3 <= PlayerState.BoardLimit
+                    ? legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    : null;
+                if (play is null)
+                {
+                    var fallback = legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                        ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                        ?? legalActions[0];
+                    state = GameEngine.Apply(state, fallback);
+                    continue;
+                }
+
+                var playedId = active.Hand.Single(card => card.InstanceId == play.CardInstanceId).Definition.Id;
+                var boardBefore = active.Board.Select(f => f.InstanceId).ToHashSet();
+                var enemyBoardBefore = state.Players[enemyIndex].Board
+                    .Select(f => f.InstanceId)
+                    .ToHashSet();
+                var superEvoBefore = active.SuperEvolutionPoints;
+                var bonusBefore = state.Players[enemyIndex].LeaderDamageTakenBonus;
+                var kindsBefore = active.EnteredTraitFollowerKindIds
+                    .Count(id => CardCatalog.Get(id).Traits?
+                        .Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true);
+
+                state = GameEngine.Apply(state, play);
+
+                var afterPlayer = state.Players[state.ActivePlayer];
+                var afterEnemyIndex = OtherPlayerIndex(state.ActivePlayer);
+                var summoned = afterPlayer.Board
+                    .Where(f => !boardBefore.Contains(f.InstanceId))
+                    .ToArray();
+
+                if (playedId == CardIds.CleverCreator)
+                {
+                    var alpha = summoned.FirstOrDefault(f => f.Definition.Id == CardIds.DestroyerCreationAlpha);
+                    if (alpha is null)
+                    {
+                        behaviorFailures.Add("聪明的创造者【入场曲】没有召唤出『毁灭创造物α』");
+                    }
+                    else if (!alpha.HasBane || !alpha.HasWard)
+                    {
+                        behaviorFailures.Add(
+                            $"『毁灭创造物α』应被授予【毁灭】和【守护】，实际 关键词={alpha.Keywords}");
+                    }
+                    else
+                    {
+                        keywordGrantChecks++;
+                    }
+                }
+
+                if (playedId == CardIds.ClumsyDoll)
+                {
+                    var copy = summoned.FirstOrDefault(f => f.Definition.Id == CardIds.ClumsyDoll);
+                    if (copy is not null && copy.EvolutionState != EvolutionState.Unevolved)
+                    {
+                        evolveBothChecks++;
+                    }
+                }
+
+                if (playedId == CardIds.SoleSovereignBeelzebub &&
+                    state.Players[afterEnemyIndex].LeaderDamageTakenBonus > bonusBefore)
+                {
+                    damageBonusChecks++;
+                }
+
+                if (playedId == CardIds.NobleBlackWingOlivie &&
+                    afterPlayer.SuperEvolutionPoints > superEvoBefore)
+                {
+                    superEvoHealChecks++;
+                }
+
+                if (playedId == CardIds.AlbionBahamut)
+                {
+                    // 卡片本身有 3 个模式可选，被打出时就说明模式动作生成出来了。
+                    if (play.ModeChoiceIndex is not null)
+                    {
+                        bahamutModeChecks++;
+                    }
+                    else
+                    {
+                        behaviorFailures.Add("阿尔比昂巴哈姆特【入场曲】应当要求选择【模式】，动作里却没有 ModeChoiceIndex");
+                    }
+                }
+
+                // 创造物进场 ⇒ 艾兹伊甸在场时破坏对手随机随从。
+                var idenOnBoard = afterPlayer.Board.Any(f => f.Definition.Id == CardIds.TearfulTransformationAizuIden);
+                var creationEntered = kindsBefore < afterPlayer.EnteredTraitFollowerKindIds
+                    .Count(id => CardCatalog.Get(id).Traits?
+                        .Contains(CardIds.CreationTrait, StringComparer.Ordinal) == true);
+                if (idenOnBoard && creationEntered &&
+                    state.Players[afterEnemyIndex].Board.Count < enemyBoardBefore.Count)
+                {
+                    creationDestroyChecks++;
+                }
+
+                // 卡密希拉的被动：其他 ≥5 费随从进场时使其进化。
+                if (afterPlayer.Board.Any(f => f.Definition.Id == CardIds.MaliciousPureheartKamihira))
+                {
+                    var evolvedEntrants = summoned.Count(f =>
+                        f.Definition.Cost >= 5 && f.EvolutionState != EvolutionState.Unevolved);
+                    if (evolvedEntrants > 0)
+                    {
+                        kamihiraEvolveChecks++;
+                    }
+                }
+            }
+        }
+
+        if (keywordGrantChecks == 0)
+        {
+            behaviorFailures.Add("没验到「召唤并授予【毁灭】【守护】」");
+        }
+
+        if (evolveBothChecks == 0)
+        {
+            behaviorFailures.Add("没验到「召唤1个并双方进化」");
+        }
+
+        if (damageBonusChecks == 0)
+        {
+            behaviorFailures.Add("没验到「使对手的主战者获得『受到的伤害+1』」");
+        }
+
+        if (superEvoHealChecks == 0)
+        {
+            behaviorFailures.Add("没验到「回复自己2点超进化点」");
+        }
+
+        if (bahamutModeChecks == 0)
+        {
+            behaviorFailures.Add("没验到「阿尔比昂巴哈姆特【模式】」被走到过");
+        }
+
+        failures.AddRange(behaviorFailures);
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第四批行为");
+        }
+
+        Console.WriteLine("Fourth batch test passed.");
+        Console.WriteLine($"聪明的创造者：召唤α并授予【毁灭】【守护】 {keywordGrantChecks} 次 ｜ 召唤并双方进化 {evolveBothChecks} 次。");
+        Console.WriteLine($"别西卜「受到的伤害+1」 {damageBonusChecks} 次 ｜ 奥莉薇回复超进化点 {superEvoHealChecks} 次 ｜ 巴哈姆特【模式】 {bahamutModeChecks} 次。");
+        Console.WriteLine($"创造物进场破坏对手随机随从 {creationDestroyChecks} 次 ｜ 卡密希拉使≥5费进场随从进化 {kamihiraEvolveChecks} 次。");
+    }
 }
