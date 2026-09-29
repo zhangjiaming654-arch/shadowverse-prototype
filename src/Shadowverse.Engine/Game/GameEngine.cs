@@ -476,7 +476,9 @@ public static class GameEngine
         var followerAttackTargets = opponent.Board
             .Where(follower => !follower.HasIntimidate && !follower.HasStealth)
             .ToArray();
-        foreach (var attacker in active.Board.Where(follower => CanAttackFollowerThisTurn(state, follower)))
+        // 「无法攻击随从或主战者」：被交战对手施加的限制，直接不生成任何攻击动作。
+        foreach (var attacker in active.Board.Where(follower =>
+                     !follower.CannotAttackInternal && CanAttackFollowerThisTurn(state, follower)))
         {
             if (wardTargets.Length > 0 && !attacker.CanIgnoreWard)
             {
@@ -1109,6 +1111,43 @@ public static class GameEngine
                         effect.Amount,
                         (CardKeyword)effect.SecondaryAmount);
                     break;
+                case CardEffectKind.GrantWardToEnemyFollower:
+                    GrantWardToEnemyFollower(state, action.EnemyFollowerTargetInstanceIds);
+                    break;
+                case CardEffectKind.DealDamageToEnemyFollowerAndHealOwnLeaderIfDeckHasNoDuplicates:
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        ApplyDamageToSelectedEnemyFollowers(state, action.EnemyFollowerTargetInstanceIds, effect.Amount);
+                        RestoreLeaderHealth(state, state.ActivePlayer, effect.Amount);
+                    }
+
+                    break;
+                case CardEffectKind.DealDamageToRandomEnemyFollowerCount:
+                    ApplyDamageToRandomEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
+                    break;
+                case CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly:
+                    for (var shot = 0; shot < effect.Amount; shot++)
+                    {
+                        if (state.IsGameOver)
+                        {
+                            break;
+                        }
+
+                        var enemyIndex = OtherPlayer(state.ActivePlayer);
+                        var enemyBoard = state.Players[enemyIndex].BoardInternal.ToArray();
+                        // 目标池 = 对手随从 + 对手主战者（主战者算一个候选）。
+                        var choice = NextInt(state, enemyBoard.Length + 1);
+                        if (choice == enemyBoard.Length)
+                        {
+                            DealDamageToLeader(state, enemyIndex, effect.SecondaryAmount);
+                        }
+                        else
+                        {
+                            DealDamageToFollower(state, enemyIndex, enemyBoard[choice], effect.SecondaryAmount);
+                        }
+                    }
+
+                    break;
                 case CardEffectKind.RemoveAbilitiesFromEnemyFollowers:
                     RemoveAbilitiesFromFollowers(state, action.EnemyFollowerTargetInstanceIds);
                     break;
@@ -1658,6 +1697,25 @@ public static class GameEngine
                 case CardEffectKind.DestroyEnemyFollower:
                     DestroyEnemyFollower(state, action.Target);
                     break;
+                case CardEffectKind.DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates:
+                    // 「若自己的牌组中没有重复卡牌，则改为破坏对手的所有随从」——条件的判据是**牌组**。
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        foreach (var target in state.Players[OtherPlayer(state.ActivePlayer)].BoardInternal.ToArray())
+                        {
+                            DestroyFollower(state, OtherPlayer(state.ActivePlayer), target);
+                            if (state.IsGameOver)
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        DestroyEnemyFollower(state, action.Target);
+                    }
+
+                    break;
                 case CardEffectKind.DealDamageToRandomEnemyFollowerAndLeader:
                     EnsureSpellHasNoTarget(action);
                     ApplyDamageToRandomEnemyFollowerAndLeader(state, effect.Amount);
@@ -1990,6 +2048,10 @@ public static class GameEngine
                             case CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters:
                                 DestroyRandomEnemyFollower(state, OtherPlayer(state.ActivePlayer));
                                 break;
+                            case CardEffectKind.GrantRushToEnteringCreationFollower:
+                                // 「自己的创造物·随从进入战场时，使其获得【突进】」——授予在**进场那个实例**上。
+                                entrant.GrantedKeywords |= CardKeyword.Rush;
+                                break;
                         }
                     }
                 }
@@ -2027,7 +2089,8 @@ public static class GameEngine
     private static bool IsEnteringCreationTrigger(CardEffectKind kind) =>
         kind is CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters
             or CardEffectKind.RestoreOwnLeaderWhenCreationEnters
-            or CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters;
+            or CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters
+            or CardEffectKind.GrantRushToEnteringCreationFollower;
 
     /// <summary>
     /// "本次对战中进入战场的自己的创造物·随从的种类数"：reuses the entry record, counting distinct card ids.
@@ -2707,6 +2770,9 @@ public static class GameEngine
             case CardEffectKind.SearchDeckToHand:
                 SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
                 break;
+            case CardEffectKind.DestroyRandomEnemyWardFollowers:
+                DestroyRandomEnemyWardFollowers(state, effect.Amount);
+                break;
             case CardEffectKind.EvolveSelfByOath:
                 // 【奥义】本随从进化：这条效果由"打出该卡时"的奥义结算触发，那时这张随从刚上场、
                 // 尚未进化，所以按卡号把它找出来进化（不消耗进化点）。
@@ -3145,6 +3211,13 @@ public static class GameEngine
 
     private static void ApplyAttackLeader(GameState state, AttackLeaderAction action)
     {
+        // 与动作生成一致：引擎的 Apply 必须拒绝非法动作。
+        if (state.Players[state.ActivePlayer].BoardInternal
+                .FirstOrDefault(f => f.InstanceId == action.AttackerInstanceId) is { CannotAttackInternal: true })
+        {
+            throw new InvalidOperationException("This follower cannot attack (「无法攻击随从或主战者」).");
+        }
+
         var attacker = GetReadyLeaderAttacker(state, action.AttackerInstanceId);
         var opponent = state.Players[OtherPlayer(state.ActivePlayer)];
 
@@ -3194,7 +3267,18 @@ public static class GameEngine
             throw new InvalidOperationException("A Ward follower must be attacked first.");
         }
 
-        ApplyAttackEffects(state, attacker);
+        // 「使交战对手获得『无法攻击随从或主战者』和『自己的回合结束时消失』」：
+        // 这里才拿得到交战对手（防御者），所以放在这个位置而不是通用攻击时效果里。
+        foreach (var effect in attacker.Definition.AttackEffects ?? [])
+        {
+            if (effect.Kind == CardEffectKind.ApplyCannotAttackAndVanishesToBattleOpponent)
+            {
+                defender.CannotAttackInternal = true;
+                defender.VanishesAtEndOfOwnTurnInternal = true;
+            }
+        }
+
+        ApplyAttackEffects(state, attacker, attackedFollower: true);
         if (state.IsGameOver)
         {
             return;
@@ -3250,6 +3334,14 @@ public static class GameEngine
             if ((follower.Definition.EndOfOwnTurnEffects ?? []).FirstOrDefault(effect =>
                     effect.Kind == CardEffectKind.GrantEnemyCrestAndVanishSelfIfEvolved) is { } vanishEffect)
             {                ApplyGrantEnemyCrestAndVanishSelfIfEvolved(state, follower, vanishEffect.ReferencedCardId!);            }
+        }
+
+        // 「自己的回合结束时，使本随从消失」：消滅（不进墓地、不发谢幕曲）。
+        foreach (var follower in endingPlayer.BoardInternal
+                     .Where(candidate => candidate.VanishesAtEndOfOwnTurnInternal)
+                     .ToArray())
+        {
+            endingPlayer.BoardInternal.Remove(follower);
         }
 
         ApplyEndOfOwnTurnFollowerEffects(state);
@@ -3314,7 +3406,7 @@ public static class GameEngine
         }
     }
 
-    private static void ApplyAttackEffects(GameState state, FollowerInstance attacker)
+    private static void ApplyAttackEffects(GameState state, FollowerInstance attacker, bool attackedFollower = false)
     {
         foreach (var effect in attacker.Definition.AttackEffects ?? [])
         {
@@ -3327,6 +3419,15 @@ public static class GameEngine
                     }
 
                     break;
+                case CardEffectKind.GainBarrierWhenAttackingFollower:
+                    // 「若攻击随从，则本随从获得【屏障】」：只有打随从时给。
+                    if (attackedFollower)
+                    {
+                        attacker.GrantedKeywords |= CardKeyword.Barrier;
+                    }
+
+                    break;
+
                 case CardEffectKind.DealDamageToAllLeaders:
                     // 【攻击时】对所有主战者造成伤害：both leaders take the damage, including ours.
                     // The damage is simultaneous, so we only stop early when the first hit already
@@ -3847,6 +3948,14 @@ public static class GameEngine
         FollowerInstance follower,
         int damage)
     {
+        // 「受到的4点或以上的伤害变为3点」：先于【屏障】之外的所有其它计算。伤害为0时不受影响。
+        if (follower.Definition.IncomingDamageCap is { } cap &&
+            follower.Definition.IncomingDamageFloor is { } floor &&
+            damage >= cap)
+        {
+            damage = floor;
+        }
+
         // Barrier prevents the next instance of damage entirely, then disappears.
         // It is consumed even when another effect later changes that damage to zero.
         if (follower.HasBarrier)
@@ -4426,6 +4535,64 @@ public static class GameEngine
             for (var next = position + 1; next < size; next++)
             {
                 indices[next] = indices[next - 1] + 1;
+            }
+        }
+    }
+
+    /// <summary>「使对手的1个随从获得【守护】」。</summary>
+    private static void GrantWardToEnemyFollower(GameState state, IReadOnlyList<int>? targetInstanceIds)
+    {
+        if (targetInstanceIds is not { Count: > 0 })
+        {
+            return;
+        }
+
+        var opponent = state.Players[OtherPlayer(state.ActivePlayer)];
+        var target = opponent.BoardInternal.FirstOrDefault(candidate =>
+            candidate.InstanceId == targetInstanceIds[0])
+            ?? throw new InvalidOperationException("The chosen follower is not on the opponent's board.");
+        target.GrantedKeywords |= CardKeyword.Ward;
+    }
+
+    /// <summary>「对对手的战场上的随机N个随从造成M点伤害」：同一个随从不会被重复选中。</summary>
+    private static void ApplyDamageToRandomEnemyFollowers(GameState state, int count, int damage)
+    {
+        var opponentIndex = OtherPlayer(state.ActivePlayer);
+        for (var hit = 0; hit < count; hit++)
+        {
+            var candidates = state.Players[opponentIndex].BoardInternal.ToArray();
+            if (candidates.Length == 0)
+            {
+                return;
+            }
+
+            var target = candidates[NextInt(state, candidates.Length)];
+            DealDamageToFollower(state, opponentIndex, target, damage);
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>「破坏对手的战场上的随机N个拥有【守护】的随从」。</summary>
+    private static void DestroyRandomEnemyWardFollowers(GameState state, int count)
+    {
+        var opponentIndex = OtherPlayer(state.ActivePlayer);
+        for (var hit = 0; hit < count; hit++)
+        {
+            var candidates = state.Players[opponentIndex].BoardInternal
+                .Where(candidate => candidate.HasWard)
+                .ToArray();
+            if (candidates.Length == 0)
+            {
+                return;
+            }
+
+            DestroyFollower(state, opponentIndex, candidates[NextInt(state, candidates.Length)]);
+            if (state.IsGameOver)
+            {
+                return;
             }
         }
     }

@@ -329,7 +329,27 @@ public enum CardEffectKind
     DealDamageToAllEnemyFollowersEqualToCreationKindsEntered,
     /// <summary>「对**被选中的**对手随从各造成<see cref="CardEffect.Amount"/>点伤害」：目标由动作里的
     /// EnemyFollowerTargetInstanceIds 传入（前面通常紧跟一条"使其失去所有能力"）。</summary>
-    DealDamageToSelectedEnemyFollowers
+    DealDamageToSelectedEnemyFollowers,
+    /// <summary>被动「自己的创造物·随从进入战场时，使其获得【突进】」。</summary>
+    GrantRushToEnteringCreationFollower,
+    /// <summary>「选择对手的1个随从，破坏该随从。若自己的牌组中没有重复卡牌，则改为破坏对手的所有随从」.</summary>
+    DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates,
+    /// <summary>「若牌组中没有重复卡牌，则对对手的1个随从造成N点伤害，并回复自己的主战者N点」.</summary>
+    DealDamageToEnemyFollowerAndHealOwnLeaderIfDeckHasNoDuplicates,
+    /// <summary>「对对手的战场上的随机N个随从造成M点伤害」：N 在 <see cref="CardEffect.Amount"/>，
+    /// M 在 <see cref="CardEffect.SecondaryAmount"/>。</summary>
+    DealDamageToRandomEnemyFollowerCount,
+    /// <summary>「选择对手的战场上的1个随从，使其获得【守护】」.</summary>
+    GrantWardToEnemyFollower,
+    /// <summary>「破坏对手的战场上的随机N个拥有【守护】的随从」：N 在 <see cref="CardEffect.Amount"/>。</summary>
+    DestroyRandomEnemyWardFollowers,
+    /// <summary>【攻击时】「若攻击随从，则本随从获得【屏障】」.</summary>
+    GainBarrierWhenAttackingFollower,
+    /// <summary>「使交战对手获得『无法攻击随从或主战者』和『自己的回合结束时消失』」.</summary>
+    ApplyCannotAttackAndVanishesToBattleOpponent,
+    /// <summary>「发动N次『随机对对手的1个随从或对手的主战者造成M点伤害』」：
+    /// 次数在 <see cref="CardEffect.Amount"/>，伤害在 <see cref="CardEffect.SecondaryAmount"/>。</summary>
+    DealRandomDamageToEnemyFollowerOrLeaderRepeatedly
 }
 
 /// <summary>
@@ -702,7 +722,13 @@ public sealed record CardDefinition(
     /// <summary>
     /// 【融合】能力。null 表示这张卡不能被融合。
     /// </summary>
-    FusionDefinition? Fusion = null)
+    FusionDefinition? Fusion = null,
+    /// <summary>
+    /// 「受到的N点或以上的伤害变为M点」：场上这类随从受到 ≥<see cref="IncomingDamageCap"/> 的伤害时，
+    /// 实收 <see cref="IncomingDamageFloor"/>。null 表示无上限。
+    /// </summary>
+    int? IncomingDamageCap = null,
+    int? IncomingDamageFloor = null)
 {
     /// <summary>
     /// 【进化时】真正可以选的模式：卡牌自己印的进化模式，或者它重复的【入场曲】模式（两者不会同时有）。

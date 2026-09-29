@@ -83,11 +83,11 @@ Running the console with no arguments prints one full match report; everything e
 
 ## Current data
 
-- The catalog holds 98 cards, `BASE-001` through `BASE-098`: 79 followers, 17 spells, and 2
-  amulets. 72 are collectible; the other 26 are generated cards that stay in the catalog but cannot
+- The catalog holds 106 cards, `BASE-001` through `BASE-106`: 86 followers, 18 spells, and 2
+  amulets. 80 are collectible; the other 26 are generated cards that stay in the catalog but cannot
   be built into a normal deck.
 - Card IDs are never reused, and the console prints the ID the next card would receive
-  (`BASE-099` today).
+  (`BASE-107` today).
 - A saved deck may hold fewer than 40 cards while it is being assembled, and the editor can save it;
   a match still requires a complete 40-card deck, and the console says so instead of starting one.
 - `CardCatalog` validates itself the first time it is used: every definition, duplicate IDs, and

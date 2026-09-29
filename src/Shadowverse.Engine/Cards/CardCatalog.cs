@@ -163,6 +163,15 @@ public static class CardIds
     public const string DestroyerCreationGamma = "BASE-097";
     public const string TranscendentCreationOmega = "BASE-098";
 
+    public const string GratitudeArtisanIsaac = "BASE-099";
+    public const string WildBroadcaster = "BASE-100";
+    public const string WhiteFangPhosphorescence = "BASE-101";
+    public const string TemperedBodyguard = "BASE-102";
+    public const string SkyRidingGuardianCatalina = "BASE-103";
+    public const string DecisiveCrossingAshureAndLitier = "BASE-104";
+    public const string SpecialTargetHaremhani = "BASE-105";
+    public const string HeirOfTheCelestialDirectorSaintDefen = "BASE-106";
+
     /// <summary>
     /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
     /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
@@ -183,6 +192,9 @@ public static class CrestIds
 
     /// <summary>「束刃的罪人·卡特斯拉特」：自己使用随从时，每回合1次使其进化。</summary>
     public const string BladeboundSinnerCatherslott = "CREST-005";
+
+    /// <summary>「特殊目标·海雷姆哈妮」的纹章（【吟唱_2】+【谢幕曲】）。</summary>
+    public const string SpecialTargetHaremhani = "CREST-006";
 }
 
 /// <summary>Definitions for named effects that persist in a leader's crest area.</summary>
@@ -236,7 +248,12 @@ public static class CrestCatalog
             PassiveEffects:
             [
                 new CardEffect(CardEffectKind.EvolvePlayedFollowerOncePerTurn, 1)
-            ])
+            ]),
+        // 「特殊目标·海雷姆哈妮」的纹章：【吟唱_2】+【谢幕曲】召唤1个自己并使其进化。
+        new(
+            CrestIds.SpecialTargetHaremhani,
+            "特殊目标·海雷姆哈妮",
+            "【吟唱_2】\n【谢幕曲】召唤1个『特殊目标·海雷姆哈妮』，使其进化。")
     ];
 
     private static readonly IReadOnlyDictionary<string, CrestDefinition> DefinitionsById =
@@ -2177,7 +2194,169 @@ public static class CardCatalog
                 new CardEffect(CardEffectKind.DealDamageToAllEnemyFollowers, 5),
                 new CardEffect(CardEffectKind.RestoreOwnLeaderHealth, 5)
             ],
-            IsCollectible: false)
+            IsCollectible: false),
+        new(
+            CardIds.GratitudeArtisanIsaac,
+            "报恩工匠·艾萨克",
+            2,
+            2,
+            2,
+            CardKeyword.None,
+            CardType.Follower,
+            "【谢幕曲】将1张『攻击创造物』加入手牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            LastWordsEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.AttackCreation)
+            ]),
+        new(
+            CardIds.WildBroadcaster,
+            "狂野播报员",
+            3,
+            1,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】召唤1个『解析的创造物』。\n【爆能强化_5】召唤1个『神秘的创造物』。\n自己的创造物·随从进入战场时，使其获得【突进】。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.AnalyzedCreation)
+            ],
+            EnhanceEffects:
+            [
+                new EnhanceDefinition(
+                    5,
+                    [new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.MysteriousCreation)])
+            ],
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.GrantRushToEnteringCreationFollower, 1)
+            ]),
+        new(
+            CardIds.WhiteFangPhosphorescence,
+            "白牙燐敛",
+            3,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Spell,
+            "选择对手的战场上的1个随从，破坏该随从。若自己的牌组中没有重复卡牌，则改为破坏对手的战场上的所有随从。",
+            new CardEffect(CardEffectKind.DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates, 1),
+            CardRarity.Gold,
+            CardProfession.Nemesis),
+        new(
+            CardIds.TemperedBodyguard,
+            "锻磨保镖",
+            4,
+            4,
+            4,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【入场曲】若自己的牌组中没有重复卡牌，则选择对手的战场上的1个随从，对其造成4点伤害。回复自己的主战者4点生命值。\n【守护】",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealDamageToEnemyFollowerAndHealOwnLeaderIfDeckHasNoDuplicates,
+                    4)
+            ]),
+        new(
+            CardIds.SkyRidingGuardianCatalina,
+            "驰骋天空的守护者·卡塔莉娜",
+            5,
+            5,
+            5,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【入场曲】【奥义】对对手的战场上的随机2个随从造成5点伤害。\n【守护】\n受到的4点或以上的伤害变为3点。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Neutral,
+            OathEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealDamageToRandomEnemyFollowerCount,
+                    2,
+                    SecondaryAmount: 5)
+            ],
+            IncomingDamageCap: 4,
+            IncomingDamageFloor: 3),
+        new(
+            CardIds.DecisiveCrossingAshureAndLitier,
+            "决断的交错·亚修雷&莉缇雅",
+            5,
+            5,
+            5,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】选择对手的战场上的1个随从，使其获得【守护】。\n【爆能强化_9】本随从进化。本随从获得【疾驰】。\n本随从进化时，破坏对手的战场上的随机2个拥有【守护】的随从。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.GrantWardToEnemyFollower, 1)
+            ],
+            EnhanceEffects:
+            [
+                new EnhanceDefinition(
+                    9,
+                    [
+                        new CardEffect(CardEffectKind.EvolveSelf, 1),
+                        new CardEffect(CardEffectKind.GainStorm, 1)
+                    ])
+            ],
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.DestroyRandomEnemyWardFollowers, 2)
+            ]),
+        new(
+            CardIds.SpecialTargetHaremhani,
+            "特殊目标·海雷姆哈妮",
+            6,
+            1,
+            4,
+            CardKeyword.None,
+            CardType.Follower,
+            "【攻击时】若攻击随从，则本随从获得【屏障】。使交战对手获得「无法攻击随从或主战者」和「自己的回合结束时，使本随从消失」。\n【谢幕曲】使自己获得『纹章：特殊目标·海雷姆哈妮』。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Neutral,
+            AttackEffects:
+            [
+                new CardEffect(CardEffectKind.GainBarrierWhenAttackingFollower, 1),
+                new CardEffect(CardEffectKind.ApplyCannotAttackAndVanishesToBattleOpponent, 1)
+            ],
+            LastWordsEffects:
+            [
+                new CardEffect(CardEffectKind.GiveSelfCrest, 1, CrestIds.SpecialTargetHaremhani)
+            ]),
+        new(
+            CardIds.HeirOfTheCelestialDirectorSaintDefen,
+            "天司长的继承者·圣德芬",
+            6,
+            7,
+            6,
+            CardKeyword.None,
+            CardType.Follower,
+            "在牌组中发动。自己的回合开始时，若本次对战中自己的随从的进化次数为6次或以上，则【瞬念召唤】本卡牌。\n本卡牌被【瞬念召唤】时，使自己获得『纹章：天司长的继承者·圣德芬』。本卡牌返回手牌。\n【入场曲】【解放奥义】发动5次「随机对对手的战场上的1个随从或对手的主战者造成2点伤害」。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Neutral,
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
+                    5,
+                    SecondaryAmount: 2)
+            ])
     ];
 
     /// <summary>The ten generated cards that replace the remaining deck after BASE-004 resolves.</summary>

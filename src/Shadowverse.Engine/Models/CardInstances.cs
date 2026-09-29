@@ -80,6 +80,12 @@ public sealed class FollowerInstance
     /// the start of this follower's controller's next turn (see <c>StartTurn</c>).
     /// </summary>
     public bool DealtDamageByAbility { get; internal set; }
+
+    /// <summary>「无法攻击随从或主战者」：被交战对手施加的持续限制。</summary>
+    public bool CannotAttackInternal { get; internal set; }
+
+    /// <summary>「自己的回合结束时，使本随从消失」：被交战对手施加。</summary>
+    public bool VanishesAtEndOfOwnTurnInternal { get; internal set; }
     public CardKeyword Keywords => (Definition.Keywords | GrantedKeywords) & ~ConsumedKeywords;
     public bool HasWard => Keywords.HasFlag(CardKeyword.Ward);
     public bool HasStorm => Keywords.HasFlag(CardKeyword.Storm);
@@ -110,7 +116,9 @@ public sealed class FollowerInstance
         GrantedKeywords = GrantedKeywords,
         ConsumedKeywords = ConsumedKeywords,
         TemporaryAttackBonus = TemporaryAttackBonus,
-        DealtDamageByAbility = DealtDamageByAbility
+        DealtDamageByAbility = DealtDamageByAbility,
+        CannotAttackInternal = CannotAttackInternal,
+        VanishesAtEndOfOwnTurnInternal = VanishesAtEndOfOwnTurnInternal
     };
 }
 
