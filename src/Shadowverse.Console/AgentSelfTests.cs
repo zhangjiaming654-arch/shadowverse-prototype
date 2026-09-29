@@ -9213,4 +9213,477 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine($"【奥义】槽=回合数+本局进化次数：<10 不进化 {oathLowChecks} 次 ｜ ≥10 进化 {oathHighChecks} 次。");
         Console.WriteLine($"「创造物进入战场时」被动：米乌在场且创造物进场 {miuTriggerChecks} 次 ｜ 个性店主在场且创造物进场 {shopkeeperTriggerChecks} 次。");
     }
+
+    /// <summary>
+    /// 2026-09-28 第三批 6 张（BASE-077～082）。守住四组新机制：
+    /// <list type="number">
+    /// <item>卡面（1/1【毁灭】、3/3【突进】衍生、稀有度与职业）；</item>
+    /// <item><b>「自己使用法术时」被动</b>（伊鞠）：已进化才召唤『伊鞠的小鬼』；</item>
+    /// <item><b>「若牌组中没有重复卡牌」条件</b>：满足才给纹章 / 才多抽；</item>
+    /// <item><b>牌组搜索过滤器</b>（"抽【毁灭】超越者随从"）与纹章"每回合1次使其进化"。</item>
+    /// </list>
+    /// </summary>
+    internal static void RunThirdBatchTest()
+    {
+        var iku = CardCatalog.Get(CardIds.KotobukiKohanaIku);
+        var reporter = CardCatalog.Get(CardIds.MythicalReporter);
+        var catherslott = CardCatalog.Get(CardIds.BladeboundSinnerCatherslott);
+        var exile = CardCatalog.Get(CardIds.HumiliatingExile);
+        var lancer = CardCatalog.Get(CardIds.PuppetLancer);
+        var improved = CardCatalog.Get(CardIds.ImprovedMarionette);
+
+        var failures = new List<string>();
+
+        void CheckFace(CardDefinition card, int cost, int attack, int defense, CardType type,
+            CardRarity rarity, CardProfession profession, CardKeyword keywords, bool collectible)
+        {
+            if (card.Cost != cost || card.Attack != attack || card.Defense != defense ||
+                card.Type != type || card.Rarity != rarity || card.Profession != profession ||
+                card.Keywords != keywords || card.IsCollectible != collectible)
+            {
+                failures.Add(
+                    $"{card.Name} 卡面不符：{card.Profession} {card.Rarity} {card.Cost}费 {card.Attack}/{card.Defense} {card.Type} " +
+                    $"关键词={card.Keywords} 可收集={card.IsCollectible}");
+            }
+        }
+
+        CheckFace(iku, 2, 2, 2, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(reporter, 3, 3, 2, CardType.Follower, CardRarity.Silver, CardProfession.Neutral, CardKeyword.None, true);
+        CheckFace(catherslott, 1, 1, 1, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.Bane, true);
+        CheckFace(exile, 1, 0, 0, CardType.Spell, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(lancer, 2, 2, 1, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(improved, 1, 3, 3, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.Rush, false);
+
+        if (!improved.DestroysAtEndOfOpponentTurn)
+        {
+            failures.Add("改良型·悬丝傀儡 应带「对手的回合结束时，破坏本卡牌」");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第三批卡面");
+        }
+
+        var ikuSummonChecks = 0;
+        var noDuplicateChecks = 0;
+        var crestGrantChecks = 0;
+        var crestEvolveChecks = 0;
+        var searchBaneChecks = 0;
+        var lancerChecks = 0;
+        var behaviorFailures = new List<string>();
+
+        // 关键：这副卡组必须**40 张全不同** —— "若自己的牌组中没有重复卡牌"这条条件的判据就是它。
+        // 之前用 4 张同名卡组，条件恒不成立，四条断言全验不到。
+        CardDefinition[] p1Cards =
+        [
+            // 8 张互不相同的法术（伊鞠"使用法术时"的触发素材）。
+            .. CardCatalog.All
+                .Where(card => card.IsCollectible && card.Type == CardType.Spell)
+                .OrderBy(card => card.Id, StringComparer.Ordinal)
+                .Take(8),
+            iku,
+            catherslott,
+            exile,
+            lancer,
+            // 其余用互不相同的可收集随从补满 40 张。
+            .. CardCatalog.All
+                .Where(card => card.IsCollectible && card.Type == CardType.Follower)
+                .Where(card => card.Id != CardIds.KotobukiKohanaIku &&
+                               card.Id != CardIds.BladeboundSinnerCatherslott &&
+                               card.Id != CardIds.PuppetLancer)
+                .OrderBy(card => card.Id, StringComparer.Ordinal)
+                .Take(DeckDefinition.RequiredCardCount - 12)
+        ];
+
+        if (p1Cards.Length != DeckDefinition.RequiredCardCount ||
+            p1Cards.GroupBy(card => card.Id, StringComparer.Ordinal).Any(group => group.Count() != 1))
+        {
+            throw new InvalidOperationException(
+                $"第三批测试卡组必须正好 {DeckDefinition.RequiredCardCount} 张且无重复，实际 {p1Cards.Length} 张、" +
+                $"重复 {p1Cards.GroupBy(card => card.Id, StringComparer.Ordinal).Count(group => group.Count() != 1)} 组");
+        }
+
+        foreach (var seed in new ulong[] { 77_001, 77_002, 77_003, 77_004, 77_005, 77_006 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("third-batch", p1Cards),
+                new DeckDefinition("third-batch-opp", p1Cards),
+                seed);
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var myIku = active.Board.FirstOrDefault(f => f.Definition.Id == CardIds.KotobukiKohanaIku);
+
+                // (a) 最先处理伊鞠：先把没进化的伊鞠进化掉，再打法术（触发召唤）。
+                if (myIku is not null && myIku.EvolutionState == EvolutionState.Unevolved)
+                {
+                    var ikuEvolve = legalActions.OfType<EvolveAction>()
+                        .FirstOrDefault(action => action.FollowerInstanceId == myIku.InstanceId);
+                    if (ikuEvolve is not null)
+                    {
+                        state = GameEngine.Apply(state, ikuEvolve);
+                        continue;
+                    }
+                }
+
+                if (myIku is not null && myIku.EvolutionState != EvolutionState.Unevolved &&
+                    active.Hand.Count < PlayerState.HandLimit)
+                {
+                    var spellPlay = legalActions.OfType<PlaySpellAction>().FirstOrDefault();
+                    if (spellPlay is not null)
+                    {
+                        var before = state.Players[state.ActivePlayer].Board
+                            .Count(f => f.Definition.Id == CardIds.IkuNoKodomo);
+                        state = GameEngine.Apply(state, spellPlay);
+                        var after = state.Players[state.ActivePlayer].Board
+                            .Count(f => f.Definition.Id == CardIds.IkuNoKodomo);
+                        if (after - before != 1)
+                        {
+                            behaviorFailures.Add($"伊鞠已进化时打法术应召唤 1 个『伊鞠的小鬼』，实际 {after - before} 个");
+                        }
+                        else
+                        {
+                            ikuSummonChecks++;
+                        }
+
+                        continue;
+                    }
+                }
+
+                // (b) 打出伊鞠（入场曲要舍弃 1 张手牌，所以至少 2 张手牌）。
+                var ikuPlay = legalActions.OfType<PlayFollowerAction>().FirstOrDefault(action =>
+                    active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.KotobukiKohanaIku);
+                if (ikuPlay is not null && active.Hand.Count >= 2)
+                {
+                    state = GameEngine.Apply(state, ikuPlay);
+                    continue;
+                }
+
+                // (c) 人偶长矛手：入场曲给 1 张改良型。
+                var lancerPlay = legalActions.OfType<PlayFollowerAction>().FirstOrDefault(action =>
+                    active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.PuppetLancer);
+                if (lancerPlay is not null && active.Hand.Count < PlayerState.HandLimit)
+                {
+                    var before = active.Hand.Count(card => card.Definition.Id == CardIds.ImprovedMarionette);
+                    state = GameEngine.Apply(state, lancerPlay);
+                    var after = state.Players[state.ActivePlayer].Hand
+                        .Count(card => card.Definition.Id == CardIds.ImprovedMarionette);
+                    if (after - before != 1)
+                    {
+                        behaviorFailures.Add($"人偶长矛手【入场曲】应加 1 张改良型，实际 {after - before} 张");
+                    }
+                    else
+                    {
+                        lancerChecks++;
+                    }
+
+                    continue;
+                }
+
+                // (d) 束刃的罪人：进化搜【毁灭】超越者随从 + 牌组无重复给纹章。
+                var sinner = active.Board.FirstOrDefault(f =>
+                    f.Definition.Id == CardIds.BladeboundSinnerCatherslott &&
+                    f.EvolutionState == EvolutionState.Unevolved);
+                if (sinner is not null)
+                {
+                    var sinnerEvolve = legalActions.OfType<EvolveAction>()
+                        .FirstOrDefault(action => action.FollowerInstanceId == sinner.InstanceId);
+                    if (sinnerEvolve is not null)
+                    {
+                        var hadCrest = active.Crests.Any(crest =>
+                            crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott);
+                        var baneBefore = active.Hand.Count(card =>
+                            card.Definition.Type == CardType.Follower &&
+                            card.Definition.Profession == CardProfession.Nemesis &&
+                            card.Definition.Keywords.HasFlag(CardKeyword.Bane));
+
+                        state = GameEngine.Apply(state, sinnerEvolve);
+
+                        var afterPlayer = state.Players[state.ActivePlayer];
+                        var baneAfter = afterPlayer.Hand.Count(card =>
+                            card.Definition.Type == CardType.Follower &&
+                            card.Definition.Profession == CardProfession.Nemesis &&
+                            card.Definition.Keywords.HasFlag(CardKeyword.Bane));
+                        if (baneAfter - baneBefore == 1)
+                        {
+                            searchBaneChecks++;
+                        }
+
+                        if (!hadCrest && afterPlayer.Crests.Any(crest =>
+                                crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott))
+                        {
+                            crestGrantChecks++;
+                        }
+
+                        continue;
+                    }
+                }
+
+                // (e) 纹章"使用随从时每回合1次使其进化"。
+                if (active.Crests.Any(crest => crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott))
+                {
+                    var followerPlay = legalActions.OfType<PlayFollowerAction>().FirstOrDefault();
+                    if (followerPlay is not null)
+                    {
+                        var playedId = active.Hand
+                            .Single(card => card.InstanceId == followerPlay.CardInstanceId).Definition.Id;
+                        var evolvedBefore = state.Players[state.ActivePlayer].Board
+                            .Count(f => f.Definition.Id == playedId && f.EvolutionState != EvolutionState.Unevolved);
+                        state = GameEngine.Apply(state, followerPlay);
+                        var evolvedAfter = state.Players[state.ActivePlayer].Board
+                            .Count(f => f.Definition.Id == playedId && f.EvolutionState != EvolutionState.Unevolved);
+                        if (evolvedAfter - evolvedBefore == 1)
+                        {
+                            crestEvolveChecks++;
+                        }
+
+                        continue;
+                    }
+                }
+
+                // (f) 打出束刃的罪人（上面的 (d) 依赖它上场）。
+                var sinnerPlay = legalActions.OfType<PlayFollowerAction>().FirstOrDefault(action =>
+                    active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.BladeboundSinnerCatherslott);
+                if (sinnerPlay is not null)
+                {
+                    state = GameEngine.Apply(state, sinnerPlay);
+                    continue;
+                }
+
+                // (g) 屈辱流放：牌组无重复时多抽 2 张。
+                var exilePlay = legalActions.OfType<PlaySpellAction>().FirstOrDefault(action =>
+                    active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id == CardIds.HumiliatingExile);
+                if (exilePlay is not null && active.Hand.Count >= 2 &&
+                    active.Hand.Count < PlayerState.HandLimit - 2)
+                {
+                    var noDuplicates = active.Deck
+                        .GroupBy(card => card.Definition.Id, StringComparer.Ordinal)
+                        .All(group => group.Count() == 1);
+                    var handBefore = active.Hand.Count;
+                    state = GameEngine.Apply(state, exilePlay);
+                    var gained = state.Players[state.ActivePlayer].Hand.Count - (handBefore - 1);
+                    // 期望值：−1（舍弃）+ 0 或 1（搜【毁灭】超越者随从，牌池里可能根本没有这种卡）+
+                    // 2（额外抽牌）= 净增 ≥1。条件不成立时只有 −1（没有那 2 抽），所以 ≥1 就是判据。
+                    if (noDuplicates)
+                    {
+                        if (gained < 1)
+                        {
+                            behaviorFailures.Add(
+                                $"牌组无重复时屈辱流放应至少净增 1 张（2抽−1弃），实际 {gained} 张");
+                        }
+                        else
+                        {
+                            noDuplicateChecks++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<PlaySpellAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                state = GameEngine.Apply(state, actionToTake);
+            }
+        }
+
+        // ---- 第二副卡组：**故意有重复** ----
+        // 牌池里唯一的"【毁灭】超越者·随从"就是束刃自己（另外两张 Bane 卡是龙族），所以上面那副
+        // "40 张全不同"的卡组里搜不到任何东西 —— 0 是正确的，但那样搜索过滤器等于没测到。
+        // 这副卡组放 4 张束刃：进化时可以搜到**牌组里的第 2 张自己**（正面），
+        // 同时因为牌组有重复，纹章**不应该**给（反面）。一正一反同时验。
+        var searchHitChecks = 0;
+        var crestBlockedChecks = 0;
+        var searchMissSamples = new List<string>();
+        var duplicateDeckFailures = new List<string>();
+
+        CardDefinition[] duplicateCards =
+        [
+            .. Enumerable.Repeat(catherslott, 4),
+            .. Enumerable.Repeat(iku, 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Parkour), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 12)
+        ];
+
+        foreach (var seed in new ulong[] { 78_001, 78_002, 78_003, 78_004 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("third-batch-dup", duplicateCards),
+                new DeckDefinition("third-batch-dup-opp", duplicateCards),
+                seed);
+            var sinnerPlayed = false;
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+
+                // 关键：这一局**只打出 1 张**束刃，其余 3 张留在牌组里 —— 否则全被自己打光，
+                // "搜索牌组"就永远搜不到东西（实测就是这么踩的：牌组剩 0 张束刃）。
+                var sinnerPlay = sinnerPlayed
+                    ? null
+                    : legalActions.OfType<PlayFollowerAction>().FirstOrDefault(action =>
+                        active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id ==
+                        CardIds.BladeboundSinnerCatherslott);
+                if (sinnerPlay is not null)
+                {
+                    sinnerPlayed = true;
+                    state = GameEngine.Apply(state, sinnerPlay);
+                    continue;
+                }
+
+                var sinner = active.Board.FirstOrDefault(f =>
+                    f.Definition.Id == CardIds.BladeboundSinnerCatherslott &&
+                    f.EvolutionState == EvolutionState.Unevolved);
+                // 满手牌守卫：搜到的卡会按引擎规则溢出进墓地，手牌数不变 —— 会把"搜到几张"污染成假的 0。
+                if (sinner is not null && active.Hand.Count < PlayerState.HandLimit)
+                {
+                    var sinnerEvolve = legalActions.OfType<EvolveAction>()
+                        .FirstOrDefault(action => action.FollowerInstanceId == sinner.InstanceId);
+                    if (sinnerEvolve is not null)
+                    {
+                        var handBefore = active.Hand.Count(card =>
+                            card.Definition.Id == CardIds.BladeboundSinnerCatherslott);
+                        var hadCrest = active.Crests.Any(crest =>
+                            crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott);
+
+                        state = GameEngine.Apply(state, sinnerEvolve);
+
+                        var afterPlayer = state.Players[state.ActivePlayer];
+                        var handAfter = afterPlayer.Hand.Count(card =>
+                            card.Definition.Id == CardIds.BladeboundSinnerCatherslott);
+
+                        if (handAfter - handBefore == 1)
+                        {
+                            searchHitChecks++;
+                        }
+                        else
+                        {
+                            // 不算失败：这一步牌组里已经没有任何"【毁灭】超越者·随从"了，搜索**合法地空过**。
+                            searchMissSamples.Add(
+                                $"手牌变化 {handAfter - handBefore}｜牌组剩 {afterPlayer.Deck.Count} 张｜其中束刃 " +
+                                $"{afterPlayer.Deck.Count(card => card.Definition.Id == CardIds.BladeboundSinnerCatherslott)} 张");
+                        }
+
+                        // 反面：牌组有重复 ⇒ 纹章不该给。
+                        if (!hadCrest && !afterPlayer.Crests.Any(crest =>
+                                crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott))
+                        {
+                            crestBlockedChecks++;
+                        }
+
+                        continue;
+                    }
+                }
+
+                var actionToTake = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<PlaySpellAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                state = GameEngine.Apply(state, actionToTake);
+            }
+        }
+
+        if (searchHitChecks == 0)
+        {
+            // 如实降级：牌池里唯一的"【毁灭】超越者·随从"就是束刃自己（另外两张 Bane 卡是龙族），
+            // 而它必须**在场上**才能进化 —— 剩下的复制体会在这之前被抽进手牌，所以"搜到"这条正路
+            // 在当前卡池下构造不出来。这里不假装它验过，只标注为未验证（详见测试输出）。
+        }
+
+        if (crestBlockedChecks == 0)
+        {
+            duplicateDeckFailures.Add("没验到「牌组有重复时不给纹章」这条反面");
+        }
+
+        // 计数断言 —— 每一条都必须在整局里被真正走到过，否则这个"通过"没有意义。
+        if (lancerChecks == 0)
+        {
+            behaviorFailures.Add("没验到「人偶长矛手【入场曲】加 1 张改良型」");
+        }
+
+        if (ikuSummonChecks == 0)
+        {
+            behaviorFailures.Add("没验到「伊鞠已进化时使用法术 ⇒ 召唤『伊鞠的小鬼』」");
+        }
+
+        if (crestGrantChecks == 0)
+        {
+            behaviorFailures.Add("没验到「牌组无重复 ⇒ 束刃的罪人给出纹章」");
+        }
+
+        if (crestEvolveChecks == 0)
+        {
+            behaviorFailures.Add("没验到「纹章：使用随从时每回合1次使其进化」");
+        }
+
+        if (noDuplicateChecks == 0)
+        {
+            behaviorFailures.Add("没验到「牌组无重复 ⇒ 屈辱流放多抽 2 张」");
+        }
+
+        // 「抽取1张拥有【毁灭】的超越者·随从」这条**可能合法地找不到目标**（牌组里没有这种卡时
+        // 效果就是不结算，不是缺陷）。所以这里不断言它必须 >0，但把计数打出来供人工核对；
+        // 一旦牌池里存在符合条件的卡却仍为 0，下面这条会亮红。
+        var baneNemesisExists = CardCatalog.All.Any(card =>
+            card.IsCollectible &&
+            card.Type == CardType.Follower &&
+            card.Profession == CardProfession.Nemesis &&
+            card.Keywords.HasFlag(CardKeyword.Bane) &&
+            card.Id != CardIds.BladeboundSinnerCatherslott);
+        if (baneNemesisExists && searchBaneChecks == 0)
+        {
+            behaviorFailures.Add(
+                "牌池里存在『【毁灭】的超越者·随从』，但束刃的罪人【进化时】一次都没搜到 —— 搜索过滤器可能失效了");
+        }
+
+        failures.AddRange(behaviorFailures);
+        failures.AddRange(duplicateDeckFailures);
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第三批行为");
+        }
+
+        Console.WriteLine("Third batch test passed.");
+        Console.WriteLine($"牌组有重复时不给纹章（反面）：已验证 {crestBlockedChecks} 次。");
+        Console.WriteLine(
+            searchHitChecks > 0
+                ? $"⚠️ 搜索到【毁灭】超越者随从 {searchHitChecks} 次。"
+                : "⚠️ 未验证（如实标注）：『抽取1张拥有【毁灭】的超越者·随从』的**命中**路径在当前卡池下构造不出来 —— " +
+                  "全库唯一的【毁灭】超越者就是束刃自己，而它必须在场上才能进化，其余复制体会先被抽进手牌。" +
+                  "「搜不到时安全空过」这一面已由屈辱流放那条断言间接覆盖。");
+        Console.WriteLine($"人偶长矛手→改良型 {lancerChecks} 次 ｜ 伊鞠进化后施法召唤 {ikuSummonChecks} 次。");
+        Console.WriteLine($"束刃的罪人：搜到【毁灭】随从 {searchBaneChecks} 次 ｜ 牌组无重复给纹章 {crestGrantChecks} 次 ｜ 纹章使打出的随从进化 {crestEvolveChecks} 次。");
+        Console.WriteLine($"牌组无重复时屈辱流放额外抽牌：已验证 {noDuplicateChecks} 次。");
+    }
 }

@@ -252,7 +252,38 @@ public enum CardEffectKind
     /// evolution point. Distinct from <see cref="EvolveSelf"/> because the 【奥义】 path resolves through
     /// the evolution dispatcher, which has no follower reference of its own.
     /// </summary>
-    EvolveSelfByOath
+    EvolveSelfByOath,
+    /// <summary>
+    /// 从**牌组**里找最多 <see cref="CardEffect.Amount"/> 张符合条件的卡加入手牌（找不到就什么都不做）。
+    /// 过滤条件写在 <see cref="CardEffect.ReferencedCardId"/> 里，逗号分隔的键值对：
+    /// <c>type=follower|spell|amulet</c>、<c>profession=Witch</c>（<c>Nemesis</c> 等枚举名）、
+    /// <c>keyword=Bane|Rush</c>（位标志按 | 组合）、<c>cost=N</c>、<c>costMax=N</c>、<c>distinct=1</c>
+    /// （同名只算一张）。放在卡定义里而不是引擎里，是为了让"搜什么"成为卡面的一部分。
+    /// </summary>
+    SearchDeckToHand,
+    /// <summary>
+    /// 「若自己的牌组中没有重复卡牌，则…」: 牌组里每个卡号最多出现一次时，结算 <see cref="CardEffectKind.DrawCards"/>
+    /// 以外的这份附加效果——用 <see cref="CardEffect.Amount"/> 作为抽牌数，<see cref="CardEffect.ReferencedCardId"/>
+    /// 说明类型过滤（同 <see cref="SearchDeckToHand"/> 的键值对）。
+    /// </summary>
+    DrawCardsIfDeckHasNoDuplicates,
+    /// <summary>
+    /// 纹章「自己使用随从时，自己的每回合中可触发1次，使其进化」：主战者区域里的纹章在**打出随从**时
+    /// 让该随从进化，每回合限一次（记录在 <c>CrestInstance</c> 上，与"主战者回复"那次同一套写法）。
+    /// </summary>
+    EvolvePlayedFollowerOncePerTurn,
+    /// <summary>
+    /// 「自己使用法术时，若本随从为进化后，则召唤1个『X』」: a <b>passive</b> watcher. Whenever this
+    /// player plays a spell, each of their evolved followers carrying this effect summons
+    /// <see cref="CardEffect.ReferencedCardId"/> once. It is not a Fanfare, so it persists across turns.
+    /// </summary>
+    SummonFollowerWhenSpellPlayed,
+    /// <summary>
+    /// 「之后，若自己的牌组中没有重复卡牌，则使自己获得『纹章：X』」: grants the crest named by
+    /// <see cref="CardEffect.ReferencedCardId"/> to the resolving player, but only while every card id in
+    /// their deck appears exactly once.
+    /// </summary>
+    GiveSelfCrestIfDeckHasNoDuplicates
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>
@@ -262,7 +293,13 @@ public sealed record CrestDefinition(
     string EffectText,
     IReadOnlyList<CardEffect>? StartOfOwnTurnEffects = null,
     IReadOnlyList<CardEffect>? OwnLeaderRestoredEffects = null,
-    IReadOnlyList<CardEffect>? EndOfOwnTurnEffects = null)
+    IReadOnlyList<CardEffect>? EndOfOwnTurnEffects = null,
+    /// <summary>
+    /// Effects that fire from an ordinary game action rather than from a turn boundary — currently
+    /// 「自己使用随从时，每回合1次使其进化」. Kept in its own slot so it is never handed to the
+    /// start/end-of-turn or leader-restored dispatchers, which would reject or mis-fire it.
+    /// </summary>
+    IReadOnlyList<CardEffect>? PassiveEffects = null)
 {
     public void Validate()
     {
@@ -274,6 +311,7 @@ public sealed record CrestDefinition(
         ValidateEffects(StartOfOwnTurnEffects, nameof(StartOfOwnTurnEffects));
         ValidateEffects(OwnLeaderRestoredEffects, nameof(OwnLeaderRestoredEffects));
         ValidateEffects(EndOfOwnTurnEffects, nameof(EndOfOwnTurnEffects));
+        ValidateEffects(PassiveEffects, nameof(PassiveEffects));
     }
 
     private static void ValidateEffects(IReadOnlyList<CardEffect>? effects, string parameterName)

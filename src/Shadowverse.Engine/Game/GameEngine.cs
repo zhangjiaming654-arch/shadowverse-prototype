@@ -826,6 +826,9 @@ public static class GameEngine
         ApplyFollowerEffect(state, action, card);
         ApplyEnhanceEffects(state, follower, resolvedEnhance);
         ApplyOathAbilities(state, card.Definition);
+
+        // 纹章「自己使用随从时，每回合1次，使其进化」。
+        ApplyCrestEvolvePlayedFollower(state, follower);
     }
 
     private static void ApplyPlayAmulet(GameState state, PlayAmuletAction action)
@@ -1073,6 +1076,24 @@ public static class GameEngine
                         effect.ReferencedCardId == CardIds.DrawFollowerFilter
                             ? CardType.Follower
                             : CardType.Spell);
+                    break;
+                case CardEffectKind.SearchDeckToHand:
+                    SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
+                    break;
+                case CardEffectKind.DrawCardsIfDeckHasNoDuplicates:
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        if (string.IsNullOrWhiteSpace(effect.ReferencedCardId))
+                        {
+                            DrawCards(state, state.ActivePlayer, effect.Amount);
+                        }
+                        else
+                        {
+                            // 带过滤的版本：只抽符合条件的卡（"抽取2种费用为1的法术"）。
+                            SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId);
+                        }
+                    }
+
                     break;
                 case CardEffectKind.DealDamageToRandomEnemyFollower:
                     ApplyDamageToRandomEnemyFollower(state, effect.Amount);
@@ -1432,12 +1453,19 @@ public static class GameEngine
             // sides are legal and an amulet is a legal answer too (confirmed with the card's designer).
             // 【光环】 still shields a follower from the *opponent's* effects, but it must not stop its
             // own controller from transforming it.
+            // Official 「选择」: a spell with a choice ability can only be used when it can choose the
+            // full required number — so with no legal target on the board the returned list is empty and
+            // the spell is simply not playable (rather than resolving with an arbitrary target).
             return
             [
                 .. selectableEnemyFollowers.Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId)),
                 .. state.Players[state.ActivePlayer].Board.Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId)),
-                .. state.Players[OtherPlayer(state.ActivePlayer)].Amulets.Select(amulet => (SpellTarget)new AmuletTarget(amulet.InstanceId)),
-                .. state.Players[state.ActivePlayer].Amulets.Select(amulet => (SpellTarget)new AmuletTarget(amulet.InstanceId))
+                .. state.Players[OtherPlayer(state.ActivePlayer)].Amulets
+                    .Where(amulet => !amulet.Definition.Keywords.HasFlag(CardKeyword.Aura))
+                    .Select(amulet => (SpellTarget)new AmuletTarget(amulet.InstanceId)),
+                .. state.Players[state.ActivePlayer].Amulets
+                    .Where(amulet => !amulet.Definition.Keywords.HasFlag(CardKeyword.Aura))
+                    .Select(amulet => (SpellTarget)new AmuletTarget(amulet.InstanceId))
             ];
         }
 
@@ -1532,6 +1560,32 @@ public static class GameEngine
                 case CardEffectKind.DiscardOwnHandCards:
                     DiscardOwnHandCards(state, action.OwnHandCardTargetInstanceIds, effect.Amount);
                     break;
+                case CardEffectKind.SearchDeckToHand:
+                    SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
+                    break;
+                case CardEffectKind.DrawCardsIfDeckHasNoDuplicates:
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        if (string.IsNullOrWhiteSpace(effect.ReferencedCardId))
+                        {
+                            DrawCards(state, state.ActivePlayer, effect.Amount);
+                        }
+                        else
+                        {
+                            SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId);
+                        }
+                    }
+
+                    break;
+                case CardEffectKind.GiveSelfCrestIfDeckHasNoDuplicates:
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        GiveCrest(
+                            state.Players[state.ActivePlayer],
+                            CrestCatalog.Get(effect.ReferencedCardId!));
+                    }
+
+                    break;
                 case CardEffectKind.DestroyEnemyFollower:
                     DestroyEnemyFollower(state, action.Target);
                     break;
@@ -1601,6 +1655,39 @@ public static class GameEngine
 
         ApplySpellEnhanceEffects(state, card.Definition, resolvedEnhance);
         active.GraveyardInternal.Add(card);
+
+        // 「自己使用法术时，若本随从为进化后，则召唤1个『X』」——被动触发，不是入场曲，
+        // 所以不要求这张随从是刚进场的；只要它在场上且已进化，每次施法都会召唤。
+        ApplySpellPlayedTriggers(state);
+    }
+
+    /// <summary>
+    /// Resolves every 「自己使用法术时」 passive the active player currently has in play.
+    /// </summary>
+    private static void ApplySpellPlayedTriggers(GameState state)
+    {
+        var player = state.Players[state.ActivePlayer];
+        foreach (var watcher in player.BoardInternal.ToArray())
+        {
+            foreach (var effect in watcher.Definition.PassiveEffects ?? [])
+            {
+                if (effect.Kind != CardEffectKind.SummonFollowerWhenSpellPlayed)
+                {
+                    continue;
+                }
+
+                if (watcher.EvolutionState == EvolutionState.Unevolved)
+                {
+                    continue;
+                }
+
+                SummonFollowers(state, state.ActivePlayer, effect.ReferencedCardId!, effect.Amount);
+                if (state.IsGameOver)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -2489,6 +2576,7 @@ public static class GameEngine
                 break;
             case CardEffectKind.EvolveAnotherOwnUnevolvedFollower:
                 // 「你的前辈·欧丝」【进化时】选择自己战场上1个进化前的其他随从，使其进化。
+                // 「你的前辈·欧丝」【进化时】选择自己战场上1个进化前的其他随从，使其进化。
                 // 目标通过 EvolveAction 的 EnemyFollowerTargetInstanceId 通道传入（本引擎用它承载
                 // "指定一个自己随从"的选择，与超级进化的 SuperEvolveAnotherUnevolvedFollower 一致）。
                 // 注意：能力造成的进化只发「本随从进化时」，不发【进化时】—— 与既有约定一致。
@@ -2498,6 +2586,19 @@ public static class GameEngine
                     EvolveFollowerByAbility(state, evolveTarget);
                 }
 
+                break;
+            case CardEffectKind.GiveSelfCrestIfDeckHasNoDuplicates:
+                // 「若自己的牌组中没有重复卡牌，则使自己获得纹章」：条件是**牌组**，不是战场。
+                if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                {
+                    GiveCrest(
+                        state.Players[state.ActivePlayer],
+                        CrestCatalog.Get(effect.ReferencedCardId!));
+                }
+
+                break;
+            case CardEffectKind.SearchDeckToHand:
+                SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
                 break;
             case CardEffectKind.EvolveSelfByOath:
                 // 【奥义】本随从进化：这条效果由"打出该卡时"的奥义结算触发，那时这张随从刚上场、
@@ -3775,11 +3876,126 @@ public static class GameEngine
         AddCardToHandOrGrave(player, card);
     }
 
+    /// <summary>
+    /// 从牌组里找最多 <paramref name="count"/> 张符合过滤条件的卡加入手牌；找不到就什么都不做。
+    /// 过滤条件由卡定义提供（逗号分隔的键值对），见 <see cref="CardEffectKind.SearchDeckToHand"/>。
+    /// </summary>
+    private static void SearchDeckToHand(GameState state, int playerIndex, int count, string filter)
+    {
+        var player = state.Players[playerIndex];
+        var (predicate, distinctOnly) = BuildDeckFilter(filter);
+
+        for (var found = 0; found < count; found++)
+        {
+            var pool = player.DeckInternal.AsEnumerable();
+            if (distinctOnly)
+            {
+                // "distinct=1"：同名卡在候选里只算一次。放在外层做，不塞进谓词——
+                // 放进谓词会和其它条件的短路顺序耦合（漏掉一个条件就会多去重一次）。
+                pool = pool
+                    .GroupBy(card => card.Definition.Id, StringComparer.Ordinal)
+                    .Select(group => group.First());
+            }
+
+            var candidates = pool.Where(predicate).ToArray();
+            if (candidates.Length == 0)
+            {
+                return;
+            }
+
+            var card = candidates[NextInt(state, candidates.Length)];
+            player.DeckInternal.Remove(card);
+            AddCardToHandOrGrave(player, card);
+        }
+    }
+
+    /// <summary>
+    /// 把 <c>"type=follower,profession=Nemesis,keyword=Bane,costMax=3,distinct=1"</c> 这样的过滤器解码成
+    /// 一个谓词 + 是否需要"同名只算一张"。未知键一律抛错——静默忽略一个条件会让"搜什么"悄悄变成"随便搜"。
+    /// </summary>
+    private static (Func<CardInstance, bool> Predicate, bool DistinctOnly) BuildDeckFilter(string filter)
+    {
+        var conditions = new List<(string Key, string Value)>();
+        var distinctOnly = false;
+
+        foreach (var part in filter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separator = part.IndexOf('=');
+            if (separator <= 0)
+            {
+                throw new InvalidOperationException(
+                    $"A deck filter entry must be \"key=value\", got \"{part}\".");
+            }
+
+            var key = part[..separator];
+            var value = part[(separator + 1)..];
+            if (key == "distinct")
+            {
+                distinctOnly = value == "1";
+                continue;
+            }
+
+            conditions.Add((key, value));
+        }
+
+        return (card =>
+        {
+            foreach (var (key, value) in conditions)
+            {
+                var definition = card.Definition;
+                var matches = key switch
+                {
+                    "type" => definition.Type.ToString().Equals(value, StringComparison.OrdinalIgnoreCase),
+                    "profession" => definition.Profession.ToString().Equals(value, StringComparison.OrdinalIgnoreCase),
+                    "keyword" => value
+                        .Split('|', StringSplitOptions.RemoveEmptyEntries)
+                        .All(name => definition.Keywords.HasFlag(
+                            Enum.Parse<CardKeyword>(name, ignoreCase: true))),
+                    "cost" => definition.Cost == int.Parse(value, CultureInfo.InvariantCulture),
+                    "costMax" => definition.Cost <= int.Parse(value, CultureInfo.InvariantCulture),
+                    "costMin" => definition.Cost >= int.Parse(value, CultureInfo.InvariantCulture),
+                    _ => throw new InvalidOperationException($"Unsupported deck filter key \"{key}\".")
+                };
+
+                if (!matches)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }, distinctOnly);
+    }
+
+    /// <summary>「若自己的牌组中没有重复卡牌」：每个卡号最多出现一次。</summary>
+    private static bool DeckHasNoDuplicates(PlayerState player) =>
+        player.DeckInternal
+            .GroupBy(card => card.Definition.Id, StringComparer.Ordinal)
+            .All(group => group.Count() == 1);
+
+    /// <summary>
+    /// 纹章「自己使用随从时，自己的每回合中可触发1次，使其进化」：刚打出的随从进化，不消耗进化点。
+    /// 与"主战者回复"那条纹章触发同一套写法（每回合一次的记录挂在 <c>CrestInstance</c> 上）。
+    /// </summary>
+    private static void ApplyCrestEvolvePlayedFollower(GameState state, FollowerInstance playedFollower)
+    {
+        var player = state.Players[state.ActivePlayer];
+        var crest = player.CrestsInternal.FirstOrDefault(candidate =>
+            (candidate.Definition.PassiveEffects ?? []).Any(effect =>
+                effect.Kind == CardEffectKind.EvolvePlayedFollowerOncePerTurn));
+        if (crest is null || crest.LastEvolvePlayedFollowerTriggerTurn == player.OwnTurnNumber)
+        {
+            return;
+        }
+
+        EvolveFollowerByAbility(state, playedFollower.InstanceId);
+        crest.LastEvolvePlayedFollowerTriggerTurn = player.OwnTurnNumber;
+    }
+
     private static void AddCardToHandOrGrave(PlayerState player, CardInstance card)
     {
         if (player.HandInternal.Count >= PlayerState.HandLimit)
-        {
-            player.GraveyardInternal.Add(card);
+        {            player.GraveyardInternal.Add(card);
         }
         else
         {

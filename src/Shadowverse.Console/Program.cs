@@ -75,6 +75,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunNemesisBatchTest();
     // 第二批：纹章·随机未发动能力 / 【奥义】槽 / 「创造物进入战场时」被动。
     AgentSelfTests.RunSlothBatchTest();
+    // 第三批：使用法术时召唤 / 牌组无重复条件 / 牌组搜索过滤器 / 纹章每回合1次进化。
+    AgentSelfTests.RunThirdBatchTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

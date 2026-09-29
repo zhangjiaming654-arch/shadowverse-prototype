@@ -117,6 +117,19 @@ public static class CardIds
     /// <summary>4/5 【守护】 token summoned by 个性店主.</summary>
     public const string MysteriousCreation = "BASE-076";
 
+    public const string KotobukiKohanaIku = "BASE-077";
+
+    public const string MythicalReporter = "BASE-078";
+
+    public const string BladeboundSinnerCatherslott = "BASE-079";
+
+    public const string HumiliatingExile = "BASE-080";
+
+    public const string PuppetLancer = "BASE-081";
+
+    /// <summary>1-cost 3/3 【突进】 token that destroys itself at the end of the opponent's turn.</summary>
+    public const string ImprovedMarionette = "BASE-082";
+
     /// <summary>
     /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
     /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
@@ -134,6 +147,9 @@ public static class CrestIds
 
     /// <summary>The mirror-image (all-negative) crest the vanishing follower gives its opponent.</summary>
     public const string SpinningWheelOfFortuneSlothCurse = "CREST-004";
+
+    /// <summary>「束刃的罪人·卡特斯拉特」：自己使用随从时，每回合1次使其进化。</summary>
+    public const string BladeboundSinnerCatherslott = "CREST-005";
 }
 
 /// <summary>Definitions for named effects that persist in a leader's crest area.</summary>
@@ -177,6 +193,16 @@ public static class CrestCatalog
                     CardEffectKind.FireRandomUnusedNumberedAbility,
                     1,
                     "1=cost:-1;2=debuff:2;3=damage:3")
+            ]),
+        // 「束刃的罪人·卡特斯拉特」的纹章：自己使用随从时，每回合1次使其进化。
+        // 触发点在 ApplyPlayFollower 里（纹章挂在主战者区域，不是某个卡上的效果）。
+        new(
+            CrestIds.BladeboundSinnerCatherslott,
+            "束刃的罪人·卡特斯拉特",
+            "自己使用随从时，自己的每回合中可触发1次，使其进化。",
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.EvolvePlayedFollowerOncePerTurn, 1)
             ])
     ];
 
@@ -1662,6 +1688,132 @@ public static class CardCatalog
             CardRarity.Bronze,
             CardProfession.Nemesis,
             Traits: [CardIds.CreationTrait],
+            IsCollectible: false),
+        new(
+            CardIds.KotobukiKohanaIku,
+            "尽小花·伊鞠",
+            2,
+            2,
+            2,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】选择自己的1张手牌，舍弃该手牌。抽取1张法术。\n自己使用法术时，若本随从为进化后，则召唤1个『伊鞠的小鬼』。\n【超进化时】抽取2种费用为1的法术。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DiscardOwnHandCards, 1),
+                // "抽取1张法术"：只抽法术类型，不是任意卡。
+                new CardEffect(CardEffectKind.DrawTraitCards, 1, "spell")
+            ],
+            SuperEvolutionEffects:
+            [
+                // "抽取2种费用为1的法术"：distinct=1 ⇒ 同名只算一种。
+                new CardEffect(
+                    CardEffectKind.SearchDeckToHand,
+                    2,
+                    "type=spell,cost=1,distinct=1")
+            ],
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollowerWhenSpellPlayed, 1, CardIds.IkuNoKodomo)
+            ]),
+        new(
+            CardIds.MythicalReporter,
+            "神话记者",
+            3,
+            3,
+            2,
+            CardKeyword.None,
+            CardType.Follower,
+            "【谢幕曲】抽取1张卡牌。\n【超进化时】召唤2个『神话记者』。",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Neutral,
+            LastWordsEffects:
+            [
+                new CardEffect(CardEffectKind.DrawCards, 1)
+            ],
+            SuperEvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 2, CardIds.MythicalReporter)
+            ]),
+        new(
+            CardIds.BladeboundSinnerCatherslott,
+            "束刃的罪人·卡特斯拉特",
+            1,
+            1,
+            1,
+            CardKeyword.Bane,
+            CardType.Follower,
+            "【毁灭】\n【进化时】抽取1张拥有【毁灭】的超越者·随从。之后，若自己的牌组中没有重复卡牌，则使自己获得『纹章：束刃的罪人·卡特斯拉特』。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            EvolutionEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.SearchDeckToHand,
+                    1,
+                    "type=follower,profession=Nemesis,keyword=Bane"),
+                new CardEffect(
+                    CardEffectKind.GiveSelfCrestIfDeckHasNoDuplicates,
+                    1,
+                    CrestIds.BladeboundSinnerCatherslott)
+            ]),
+        new(
+            CardIds.HumiliatingExile,
+            "屈辱流放",
+            1,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Spell,
+            "选择自己的1张手牌，舍弃该手牌。抽取1张拥有【毁灭】的超越者·随从。之后，若自己的牌组中没有重复卡牌，则抽取2张卡牌。",
+            new CardEffect(CardEffectKind.DiscardOwnHandCards, 1),
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            SpellEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.SearchDeckToHand,
+                    1,
+                    "type=follower,profession=Nemesis,keyword=Bane"),
+                new CardEffect(
+                    CardEffectKind.DrawCardsIfDeckHasNoDuplicates,
+                    2)
+            ]),
+        new(
+            CardIds.PuppetLancer,
+            "人偶长矛手",
+            2,
+            2,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】将1张『改良型·悬丝傀儡』加入手牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.AddCopyToHand, 1, CardIds.ImprovedMarionette)
+            ]),
+        new(
+            CardIds.ImprovedMarionette,
+            "改良型·悬丝傀儡",
+            1,
+            3,
+            3,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【突进】\n对手的回合结束时，破坏本卡牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: ["人偶"],
+            DestroysAtEndOfOpponentTurn: true,
             IsCollectible: false)
     ];
 

@@ -165,6 +165,13 @@ public sealed class CrestInstance
     public int LastOwnLeaderRestoreTriggerTurn { get; internal set; } = -1;
 
     /// <summary>
+    /// 「自己使用随从时，自己的每回合中可触发1次，使其进化」: the controller turn number in which this crest
+    /// last evolved a played follower. Kept separate from the heal trigger so the two once-per-turn
+    /// limits do not consume each other.
+    /// </summary>
+    public int LastEvolvePlayedFollowerTriggerTurn { get; internal set; } = -1;
+
+    /// <summary>
     /// 「从以下未发动的能力中随机发动1个能力」: which numbered slots this crest has already rolled.
     /// The ability only ever picks from the slots it has not used yet, and this record must survive
     /// <see cref="DeepCopy"/> or a search branch would re-roll an already-spent slot.
@@ -181,7 +188,8 @@ public sealed class CrestInstance
     {
         var copy = new CrestInstance(Definition)
         {
-            LastOwnLeaderRestoreTriggerTurn = LastOwnLeaderRestoreTriggerTurn
+            LastOwnLeaderRestoreTriggerTurn = LastOwnLeaderRestoreTriggerTurn,
+            LastEvolvePlayedFollowerTriggerTurn = LastEvolvePlayedFollowerTriggerTurn
         };
         copy.UsedAbilitySlotsInternal.UnionWith(UsedAbilitySlotsInternal);
         return copy;
