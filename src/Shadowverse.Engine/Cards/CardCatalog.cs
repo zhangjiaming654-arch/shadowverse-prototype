@@ -130,6 +130,39 @@ public static class CardIds
     /// <summary>1-cost 3/3 【突进】 token that destroys itself at the end of the opponent's turn.</summary>
     public const string ImprovedMarionette = "BASE-082";
 
+    public const string CleverCreator = "BASE-083";
+
+    public const string MaliciousPureheartKamihira = "BASE-084";
+
+    /// <summary>6-cost 1/3 【守护】 token; its Fanfare draws 3.</summary>
+    public const string InferiorToy = "BASE-085";
+
+    /// <summary>5-cost 2/1 token; its Fanfare summons a copy and evolves both.</summary>
+    public const string ClumsyDoll = "BASE-086";
+
+    public const string TearfulTransformationAizuIden = "BASE-087";
+
+    /// <summary>3-cost 3/3 【守护】【创造物】 token with a 2-point Last Words heal.</summary>
+    public const string FiringPinGuard = "BASE-088";
+
+    public const string FoolishWeapon = "BASE-089";
+
+    public const string VoidCarvedAnathemaScarlet = "BASE-090";
+
+    public const string SoleSovereignBeelzebub = "BASE-091";
+
+    public const string NobleBlackWingOlivie = "BASE-092";
+
+    public const string AlbionBahamut = "BASE-093";
+
+    // 以下 5 张是上一批（创造物系）的卡：本批的「聪明的创造者」会召唤『毁灭创造物α』，
+    // 所以必须一起录入，否则引用悬空。
+    public const string AttackCreation = "BASE-094";
+    public const string DestroyerCreationAlpha = "BASE-095";
+    public const string DestroyerCreationBeta = "BASE-096";
+    public const string DestroyerCreationGamma = "BASE-097";
+    public const string TranscendentCreationOmega = "BASE-098";
+
     /// <summary>
     /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
     /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
@@ -1814,6 +1847,326 @@ public static class CardCatalog
             CardProfession.Nemesis,
             Traits: ["人偶"],
             DestroysAtEndOfOpponentTurn: true,
+            IsCollectible: false),
+        new(
+            CardIds.CleverCreator,
+            "聪明的创造者",
+            6,
+            1,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】召唤1个『毁灭创造物α』，使其获得【毁灭】和【守护】。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.SummonFollowerWithKeywords,
+                    1,
+                    CardIds.DestroyerCreationAlpha,
+                    SecondaryAmount: (int)(CardKeyword.Bane | CardKeyword.Ward))
+            ]),
+        new(
+            CardIds.MaliciousPureheartKamihira,
+            "恶劣的纯心·卡密希拉",
+            7,
+            6,
+            6,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】召唤1个『低劣的玩具』和1个『拙劣的人偶』。\n自己的原始费用为5或以上的其他随从进入战场时，使其进化。\n【超进化时】对对手的主战者造成X点伤害。X为自己的战场上的原始费用为5或以上的随从的张数。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.InferiorToy),
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.ClumsyDoll)
+            ],
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast, 5)
+            ],
+            SuperEvolutionEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealDamageToEnemyLeaderEqualToOwnFollowerCountWithPrintedCostAtLeast,
+                    5)
+            ]),
+        new(
+            CardIds.InferiorToy,
+            "低劣的玩具",
+            6,
+            1,
+            3,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【入场曲】抽取3张卡牌。\n【守护】\n激奏：召唤1个『低劣的玩具』。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DrawCards, 3)
+            ],
+            Accelerate: new AccelerateDefinition(
+                2,
+                [new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.InferiorToy)]),
+            IsCollectible: false),
+        new(
+            CardIds.ClumsyDoll,
+            "拙劣的人偶",
+            5,
+            2,
+            1,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】召唤1个『拙劣的人偶』，该随从和本随从进化。\n激奏：召唤2个『拙劣的人偶』。",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollowerAndEvolveBoth, 1, CardIds.ClumsyDoll)
+            ],
+            Accelerate: new AccelerateDefinition(
+                2,
+                [new CardEffect(CardEffectKind.SummonFollower, 2, CardIds.ClumsyDoll)]),
+            IsCollectible: false),
+        new(
+            CardIds.TearfulTransformationAizuIden,
+            "弹哭的变貌·艾兹伊甸",
+            7,
+            5,
+            5,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】召唤1个『击针看守』。\n自己的创造物·随从进入战场时，破坏对手的战场上的随机1个随从。\n【超进化时】发动与【入场曲】相同的能力。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.FiringPinGuard)
+            ],
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters, 1)
+            ],
+            SuperEvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.FiringPinGuard)
+            ]),
+        new(
+            CardIds.FiringPinGuard,
+            "击针看守",
+            3,
+            3,
+            3,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【守护】\n【谢幕曲】回复自己的主战者2点生命值。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            LastWordsEffects:
+            [
+                new CardEffect(CardEffectKind.RestoreOwnLeaderHealth, 2)
+            ],
+            IsCollectible: false),
+        new(
+            CardIds.FoolishWeapon,
+            "愚劣的兵器",
+            8,
+            3,
+            4,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】召唤2个『愚劣的兵器』。\n自己的回合结束时，对对手的战场上的所有随从分配3点伤害。\n【进化时】对对手的战场上的所有随从分配3点伤害。\n激奏4：召唤1个『愚劣的兵器』。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.SummonFollower, 2, CardIds.FoolishWeapon)
+            ],
+            EndOfOwnTurnEffects:
+            [
+                new CardEffect(CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder, 3)
+            ],
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder, 3)
+            ],
+            Accelerate: new AccelerateDefinition(
+                4,
+                [new CardEffect(CardEffectKind.SummonFollower, 1, CardIds.FoolishWeapon)])),
+        new(
+            CardIds.VoidCarvedAnathemaScarlet,
+            "虚刻的安纳提玛·斯卡雷特",
+            8,
+            6,
+            6,
+            CardKeyword.Storm | CardKeyword.Ward,
+            CardType.Follower,
+            "【入场曲】对对手的战场上的所有随从造成X点伤害。X为本次对战中进入战场的自己的创造物·随从的种类。\n【疾驰】【守护】",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            Traits: ["安纳提玛"],
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealDamageToAllEnemyFollowersEqualToCreationKindsEntered,
+                    1)
+            ]),
+        new(
+            CardIds.SoleSovereignBeelzebub,
+            "唯一王者·别西卜",
+            9,
+            9,
+            9,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】选择对手的战场上的2个随从，使其失去所有能力，对其造成9点伤害。使对手的主战者获得「受到的伤害+1」。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.RemoveAbilitiesFromEnemyFollowers, 2),
+                new CardEffect(CardEffectKind.DealDamageToSelectedEnemyFollowers, 9),
+                new CardEffect(CardEffectKind.GrantEnemyLeaderDamageTakenBonus, 1)
+            ]),
+        new(
+            CardIds.NobleBlackWingOlivie,
+            "高洁的黑翼·奥莉薇",
+            9,
+            7,
+            7,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【入场曲】回复自己2点超进化点。\n【守护】",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Neutral,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.RestoreOwnSuperEvolutionPoints, 2)
+            ]),
+        new(
+            CardIds.AlbionBahamut,
+            "阿尔比昂巴哈姆特",
+            9,
+            13,
+            13,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】【模式】选择1个能力发动。\n（1）使战场上的其他所有随从消失。\n（2）使战场上的所有护符消失。\n（3）使所有纹章消失。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Neutral,
+            FanfareModeOptions:
+            [
+                new ModeDefinition(
+                    "使战场上的其他所有随从消失",
+                    [new CardEffect(CardEffectKind.VanishAllOtherFollowers, 1)]),
+                new ModeDefinition(
+                    "使战场上的所有护符消失",
+                    [new CardEffect(CardEffectKind.VanishAllAmulets, 1)]),
+                new ModeDefinition(
+                    "使所有纹章消失",
+                    [new CardEffect(CardEffectKind.VanishAllCrests, 1)])
+            ]),
+        new(
+            CardIds.AttackCreation,
+            "攻击创造物",
+            3,
+            5,
+            1,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【融合】创造物·卡牌\n根据与本卡牌【融合】的卡牌的费用的合计而变身。\n1⇒『毁灭创造物α』\n2⇒『毁灭创造物β』\n3或以上⇒『毁灭创造物γ』\n【突进】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            IsCollectible: false),
+        new(
+            CardIds.DestroyerCreationAlpha,
+            "毁灭创造物α",
+            5,
+            3,
+            5,
+            CardKeyword.None,
+            CardType.Follower,
+            "【融合】『毁灭创造物β』或『毁灭创造物γ』与本卡牌【融合】时，若与本卡牌【融合】的种类的为2，则本卡牌变身为『卓越创造物Ω』。\n自己的回合结束时，回复自己的主战者3点生命值。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            EndOfOwnTurnEffects:
+            [
+                new CardEffect(CardEffectKind.RestoreOwnLeaderHealth, 3)
+            ],
+            IsCollectible: false),
+        new(
+            CardIds.DestroyerCreationBeta,
+            "毁灭创造物β",
+            5,
+            4,
+            4,
+            CardKeyword.None,
+            CardType.Follower,
+            "自己的回合结束时，对对手的主战者造成3点伤害。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            EndOfOwnTurnEffects:
+            [
+                new CardEffect(CardEffectKind.DealDamageToEnemyLeader, 3)
+            ],
+            IsCollectible: false),
+        new(
+            CardIds.DestroyerCreationGamma,
+            "毁灭创造物γ",
+            5,
+            5,
+            3,
+            CardKeyword.None,
+            CardType.Follower,
+            "自己的回合结束时，对对手的战场上的所有随从造成3点伤害。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            EndOfOwnTurnEffects:
+            [
+                new CardEffect(CardEffectKind.DealDamageToAllEnemyFollowers, 3)
+            ],
+            IsCollectible: false),
+        new(
+            CardIds.TranscendentCreationOmega,
+            "卓越创造物Ω",
+            10,
+            10,
+            10,
+            CardKeyword.Storm | CardKeyword.Ward | CardKeyword.Aura,
+            CardType.Follower,
+            "【入场曲】对对手的战场上的所有随从造成5点伤害。回复自己的主战者5点生命值。\n【疾驰】\n【守护】\n【灵气】",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            Traits: [CardIds.CreationTrait],
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DealDamageToAllEnemyFollowers, 5),
+                new CardEffect(CardEffectKind.RestoreOwnLeaderHealth, 5)
+            ],
             IsCollectible: false)
     ];
 

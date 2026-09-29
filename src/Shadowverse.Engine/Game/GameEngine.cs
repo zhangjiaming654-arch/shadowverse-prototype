@@ -176,6 +176,7 @@ public static class GameEngine
         }
 
         builder.Append(';');
+        builder.Append(player.LeaderDamageTakenBonusInternal).Append(';');
     }
 
     private static void AppendCardFingerprint(System.Text.StringBuilder builder, CardInstance card)
@@ -1077,6 +1078,51 @@ public static class GameEngine
                             ? CardType.Follower
                             : CardType.Spell);
                     break;
+                case CardEffectKind.SummonFollowerWithKeywords:
+                    SummonFollowersWithKeywords(
+                        state,
+                        state.ActivePlayer,
+                        effect.ReferencedCardId!,
+                        effect.Amount,
+                        (CardKeyword)effect.SecondaryAmount);
+                    break;
+                case CardEffectKind.RemoveAbilitiesFromEnemyFollowers:
+                    RemoveAbilitiesFromFollowers(state, action.EnemyFollowerTargetInstanceIds);
+                    break;
+                case CardEffectKind.GrantEnemyLeaderDamageTakenBonus:
+                    GrantLeaderDamageTakenBonus(state, OtherPlayer(state.ActivePlayer), effect.Amount);
+                    break;
+                case CardEffectKind.RestoreOwnSuperEvolutionPoints:
+                    RestoreSuperEvolutionPoints(state, state.ActivePlayer, effect.Amount);
+                    break;
+                case CardEffectKind.VanishAllOtherFollowers:
+                    VanishAllOtherFollowers(state, follower.InstanceId);
+                    break;
+                case CardEffectKind.VanishAllAmulets:
+                    VanishAllAmulets(state);
+                    break;
+                case CardEffectKind.VanishAllCrests:
+                    VanishAllCrests(state);
+                    break;
+                case CardEffectKind.SummonFollowerAndEvolveBoth:
+                    // 「召唤1个『X』，该随从和本随从进化」：两个都进化（都不消耗进化点）。
+                    var summonedByFanfare = SummonFollowerAndReturn(state, state.ActivePlayer, effect.ReferencedCardId!);
+                    if (summonedByFanfare is not null)
+                    {
+                        EvolveFollowerByAbility(state, summonedByFanfare.InstanceId);
+                    }
+
+                    EvolveFollowerByAbility(state, follower.InstanceId);
+                    break;
+                case CardEffectKind.DealDamageToEnemyLeaderEqualToOwnFollowerCountWithPrintedCostAtLeast:
+                    ApplyDamageToEnemyLeaderEqualToOwnFollowerCount(state, effect.Amount);
+                    break;
+                case CardEffectKind.DealDamageToAllEnemyFollowersEqualToCreationKindsEntered:
+                    ApplyDamageToAllEnemyFollowersEqualToCreationKinds(state);
+                    break;
+                case CardEffectKind.DealDamageToSelectedEnemyFollowers:
+                    ApplyDamageToSelectedEnemyFollowers(state, action.EnemyFollowerTargetInstanceIds, effect.Amount);
+                    break;
                 case CardEffectKind.SearchDeckToHand:
                     SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
                     break;
@@ -1868,26 +1914,45 @@ public static class GameEngine
             for (var playerIndex = 0; playerIndex < state.Players.Length && !progressed; playerIndex++)
             {
                 var player = state.Players[playerIndex];
-                var watchers = player.BoardInternal
+                var creationWatchers = player.BoardInternal
                     .Where(watcher => (watcher.Definition.PassiveEffects ?? [])
                         .Any(effect => IsEnteringCreationTrigger(effect.Kind)))
                     .ToArray();
-                if (watchers.Length == 0)
+                // 「自己的原始费用为N或以上的**其他**随从进入战场时，使其进化」——注意是"其他"，
+                // 所以watcher自己进场时不触发自己的这条（下面用排除自身处理）。
+                var costWatchers = player.BoardInternal
+                    .Where(watcher => (watcher.Definition.PassiveEffects ?? [])
+                        .Any(effect => effect.Kind ==
+                            CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast))
+                    .ToArray();
+                if (creationWatchers.Length == 0 && costWatchers.Length == 0)
                 {
                     continue;
                 }
 
+                // 一次只处理**一个**新进场的随从实例，处理完就重新扫描（被动可能再召唤出新随从）。
                 var entrant = player.BoardInternal.FirstOrDefault(candidate =>
                     !player.EnteredTraitFollowerInstanceIdsInternal.Contains(candidate.InstanceId) &&
-                    MatchesTraitFilter(candidate.Definition, CardIds.CreationTrait));
+                    ((creationWatchers.Length > 0 &&
+                      MatchesTraitFilter(candidate.Definition, CardIds.CreationTrait)) ||
+                     (costWatchers.Length > 0 && costWatchers.Any(watcher =>
+                         watcher.InstanceId != candidate.InstanceId &&
+                         candidate.Definition.Cost >= (watcher.Definition.PassiveEffects ?? [])
+                             .First(effect => effect.Kind ==
+                                 CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast)
+                             .Amount))));
                 if (entrant is null)
                 {
                     continue;
                 }
 
                 player.EnteredTraitFollowerInstanceIdsInternal.Add(entrant.InstanceId);
-                player.EnteredTraitFollowerKindIdsInternal.Add(entrant.Definition.Id);
-                foreach (var watcher in watchers)
+                if (MatchesTraitFilter(entrant.Definition, CardIds.CreationTrait))
+                {
+                    player.EnteredTraitFollowerKindIdsInternal.Add(entrant.Definition.Id);
+                }
+
+                foreach (var watcher in creationWatchers)
                 {
                     foreach (var effect in watcher.Definition.PassiveEffects ?? [])
                     {
@@ -1899,7 +1964,25 @@ public static class GameEngine
                             case CardEffectKind.RestoreOwnLeaderWhenCreationEnters:
                                 RestoreLeaderHealth(state, playerIndex, effect.Amount);
                                 break;
+                            case CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters:
+                                DestroyRandomEnemyFollower(state, OtherPlayer(state.ActivePlayer));
+                                break;
                         }
+                    }
+                }
+
+                // 「其他随从进入战场时使其进化」：能力造成的进化不消耗进化点。
+                foreach (var watcher in costWatchers)
+                {
+                    var threshold = (watcher.Definition.PassiveEffects ?? [])
+                        .First(effect => effect.Kind ==
+                            CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast)
+                        .Amount;
+                    if (entrant.InstanceId != watcher.InstanceId &&
+                        entrant.Definition.Cost >= threshold &&
+                        entrant.EvolutionState == EvolutionState.Unevolved)
+                    {
+                        EvolveFollowerByAbility(state, entrant.InstanceId);
                     }
                 }
 
@@ -1920,7 +2003,8 @@ public static class GameEngine
 
     private static bool IsEnteringCreationTrigger(CardEffectKind kind) =>
         kind is CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters
-            or CardEffectKind.RestoreOwnLeaderWhenCreationEnters;
+            or CardEffectKind.RestoreOwnLeaderWhenCreationEnters
+            or CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters;
 
     /// <summary>
     /// "本次对战中进入战场的自己的创造物·随从的种类数"：reuses the entry record, counting distinct card ids.
@@ -3752,6 +3836,9 @@ public static class GameEngine
             return false;
         }
 
+        // 「使对手的主战者获得『受到的伤害+1』」：加到每一次伤害上（伤害为 0 时也仍然 +1）。
+        damage += state.Players[playerIndex].LeaderDamageTakenBonusInternal;
+
         state.Players[playerIndex].Health -= damage;
         CheckLeaderDefeat(state, playerIndex);
         return true;
@@ -3990,6 +4077,154 @@ public static class GameEngine
 
         EvolveFollowerByAbility(state, playedFollower.InstanceId);
         crest.LastEvolvePlayedFollowerTriggerTurn = player.OwnTurnNumber;
+    }
+
+    /// <summary>「召唤1个『X』，使其获得【毁灭】和【守护】」：关键词授予在**实例**上，
+    /// 因为被召唤的衍生卡是共享的卡定义，不能改。 </summary>
+    private static void SummonFollowersWithKeywords(
+        GameState state,
+        int playerIndex,
+        string cardId,
+        int count,
+        CardKeyword keywords)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var player = state.Players[playerIndex];
+            if (player.OccupiedBoardSlots >= PlayerState.BoardLimit)
+            {
+                return;
+            }
+
+            var follower = CreateSummonedFollower(state, CardCatalog.Get(cardId));
+            follower.GrantedKeywords |= keywords;
+            player.BoardInternal.Add(follower);
+        }
+    }
+
+    /// <summary>「选择对手的战场上的N个随从，使其失去所有能力」：连**被授予**的关键词一起清掉。</summary>
+    private static void RemoveAbilitiesFromFollowers(GameState state, IReadOnlyList<int>? targetInstanceIds)
+    {
+        if (targetInstanceIds is null)
+        {
+            return;
+        }
+
+        var opponent = state.Players[OtherPlayer(state.ActivePlayer)];
+        foreach (var targetId in targetInstanceIds)
+        {
+            var target = opponent.BoardInternal.FirstOrDefault(candidate => candidate.InstanceId == targetId)
+                ?? throw new InvalidOperationException("The chosen follower is not on the opponent's board.");
+            target.GrantedKeywords = CardKeyword.None;
+            target.ConsumedKeywords |= target.Definition.Keywords;
+        }
+    }
+
+    /// <summary>「使对手的主战者获得『受到的伤害+1』」：永久，直到对战结束。</summary>
+    private static void GrantLeaderDamageTakenBonus(GameState state, int playerIndex, int amount) =>
+        state.Players[playerIndex].LeaderDamageTakenBonusInternal += amount;
+
+    /// <summary>「回复自己N点超进化点」。</summary>
+    private static void RestoreSuperEvolutionPoints(GameState state, int playerIndex, int amount) =>
+        state.Players[playerIndex].SuperEvolutionPoints += amount;
+
+    /// <summary>【模式】「使战场上的其他所有随从消失」：消滅不是破坏 —— 不进墓地、不发【谢幕曲】。</summary>
+    private static void VanishAllOtherFollowers(GameState state, int exceptInstanceId)
+    {
+        foreach (var player in state.Players)
+        {
+            foreach (var follower in player.BoardInternal
+                         .Where(candidate => candidate.InstanceId != exceptInstanceId)
+                         .ToArray())
+            {
+                player.BoardInternal.Remove(follower);
+            }
+        }
+    }
+
+    /// <summary>【模式】「使战场上的所有护符消失」。</summary>
+    private static void VanishAllAmulets(GameState state)
+    {
+        foreach (var player in state.Players)
+        {
+            player.AmuletsInternal.Clear();
+        }
+    }
+
+    /// <summary>【模式】「使所有纹章消失」：双方的主战者区域一起清空。</summary>
+    private static void VanishAllCrests(GameState state)
+    {
+        foreach (var player in state.Players)
+        {
+            player.CrestsInternal.Clear();
+        }
+    }
+    /// <summary>召唤1个并把它返回给调用方（用于"召唤后立即进化它"这类效果）。</summary>
+    private static FollowerInstance? SummonFollowerAndReturn(GameState state, int playerIndex, string cardId)
+    {
+        var player = state.Players[playerIndex];
+        if (player.OccupiedBoardSlots >= PlayerState.BoardLimit)
+        {
+            return null;
+        }
+
+        var follower = CreateSummonedFollower(state, CardCatalog.Get(cardId));
+        player.BoardInternal.Add(follower);
+        return follower;
+    }
+
+    /// <summary>「对对手的主战者造成X点伤害，X为自己战场上原始费用≥N的随从张数」。</summary>
+    private static void ApplyDamageToEnemyLeaderEqualToOwnFollowerCount(GameState state, int minimumCost)
+    {
+        var count = state.Players[state.ActivePlayer].BoardInternal
+            .Count(candidate => candidate.Definition.Cost >= minimumCost);
+        DealDamageToLeader(state, OtherPlayer(state.ActivePlayer), count);
+    }
+
+    /// <summary>「对对手的所有随从造成X点伤害，X为本次对战中进入战场的自己创造物·随从的种类数」。</summary>
+    private static void ApplyDamageToAllEnemyFollowersEqualToCreationKinds(GameState state)
+    {
+        var kinds = TraitFollowerKindsEnteredThisBattle(
+            state.Players[state.ActivePlayer],
+            CardIds.CreationTrait);
+        var opponent = state.Players[OtherPlayer(state.ActivePlayer)];
+        foreach (var target in opponent.BoardInternal.ToArray())
+        {
+            DealDamageToFollower(state, OtherPlayer(state.ActivePlayer), target, kinds);
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>「对被选中的对手随从各造成N点伤害」。</summary>
+    private static void ApplyDamageToSelectedEnemyFollowers(
+        GameState state,
+        IReadOnlyList<int>? targetInstanceIds,
+        int damage)
+    {
+        if (targetInstanceIds is null)
+        {
+            return;
+        }
+
+        var opponentIndex = OtherPlayer(state.ActivePlayer);
+        foreach (var targetId in targetInstanceIds)
+        {
+            var target = state.Players[opponentIndex].BoardInternal
+                .FirstOrDefault(candidate => candidate.InstanceId == targetId);
+            if (target is null)
+            {
+                continue;
+            }
+
+            DealDamageToFollower(state, opponentIndex, target, damage);
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
     }
 
     private static void AddCardToHandOrGrave(PlayerState player, CardInstance card)

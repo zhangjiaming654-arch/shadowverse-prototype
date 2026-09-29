@@ -283,7 +283,53 @@ public enum CardEffectKind
     /// <see cref="CardEffect.ReferencedCardId"/> to the resolving player, but only while every card id in
     /// their deck appears exactly once.
     /// </summary>
-    GiveSelfCrestIfDeckHasNoDuplicates
+    GiveSelfCrestIfDeckHasNoDuplicates,
+    /// <summary>
+    /// 「召唤1个『X』，使其获得【毁灭】和【守护】」: summons <see cref="CardEffect.ReferencedCardId"/> and
+    /// grants it the keywords in <see cref="CardEffect.Amount"/> (a <see cref="CardKeyword"/> flag value).
+    /// A plain <see cref="SummonFollower"/> cannot express this: the summoned token is a shared catalog
+    /// definition, so per-summmon keywords must be granted on the instance, not the definition.
+    /// </summary>
+    SummonFollowerWithKeywords,
+    /// <summary>
+    /// 被动「自己的原始费用为 <see cref="CardEffect.Amount"/> 或以上的其他随从进入战场时，使其进化」。
+    /// Triggers per entering follower instance, on the controller's side only, and never for this
+    /// follower itself ("其他").
+    /// </summary>
+    EvolveOtherFollowerEnteringWithPrintedCostAtLeast,
+    /// <summary>
+    /// 被动「自己的创造物·随从进入战场时，破坏对手的战场上的随机1个随从」.
+    /// </summary>
+    DestroyRandomEnemyFollowerWhenCreationEnters,
+    /// <summary>
+    /// 「选择对手的战场上的N个随从，使其失去所有能力」: clears every keyword on the chosen followers
+    /// (including granted ones). Targets arrive through the action's follower target list.
+    /// </summary>
+    RemoveAbilitiesFromEnemyFollowers,
+    /// <summary>
+    /// 「使对手的主战者获得『受到的伤害+1』」: a timed leader effect on the opponent that raises every
+    /// damage instance dealt to them by <see cref="CardEffect.Amount"/>.
+    /// </summary>
+    GrantEnemyLeaderDamageTakenBonus,
+    /// <summary>
+    /// 「回复自己N点超进化点」.
+    /// </summary>
+    RestoreOwnSuperEvolutionPoints,
+    /// <summary>【模式】「使战场上的其他所有随从消失」.</summary>
+    VanishAllOtherFollowers,
+    /// <summary>【模式】「使战场上的所有护符消失」.</summary>
+    VanishAllAmulets,
+    /// <summary>【模式】「使所有纹章消失」.</summary>
+    VanishAllCrests,
+    /// <summary>「召唤1个『X』，该随从和本随从进化」：two followers, both evolved.</summary>
+    SummonFollowerAndEvolveBoth,
+    /// <summary>「对对手的主战者造成X点伤害。X为自己战场上原始费用≥<see cref="CardEffect.Amount"/>的随从张数」.</summary>
+    DealDamageToEnemyLeaderEqualToOwnFollowerCountWithPrintedCostAtLeast,
+    /// <summary>「对对手的所有随从造成X点伤害。X为本次对战中进入战场的自己创造物·随从的**种类数**」.</summary>
+    DealDamageToAllEnemyFollowersEqualToCreationKindsEntered,
+    /// <summary>「对**被选中的**对手随从各造成<see cref="CardEffect.Amount"/>点伤害」：目标由动作里的
+    /// EnemyFollowerTargetInstanceIds 传入（前面通常紧跟一条"使其失去所有能力"）。</summary>
+    DealDamageToSelectedEnemyFollowers
 }
 
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>

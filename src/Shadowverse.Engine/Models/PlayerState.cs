@@ -73,6 +73,13 @@ public sealed class PlayerState
     /// </summary>
     internal HashSet<string> EnteredTraitFollowerKindIdsInternal { get; } = [];
 
+    /// <summary>
+    /// 「使对手的主战者获得『受到的伤害+1』」: a persistent bonus added to every damage instance this
+    /// player's leader takes. Permanent for the rest of the match (the card states no duration), so it
+    /// is part of the state fingerprint.
+    /// </summary>
+    internal int LeaderDamageTakenBonusInternal { get; set; }
+
     public IReadOnlyList<string> RevealedCardIds => RevealedCardIdsInternal;
 
     public IReadOnlyList<CardInstance> Deck => DeckInternal;
@@ -114,6 +121,7 @@ public sealed class PlayerState
         copy.RevealedCardIdsInternal.AddRange(RevealedCardIdsInternal);
         copy.EnteredTraitFollowerInstanceIdsInternal.UnionWith(EnteredTraitFollowerInstanceIdsInternal);
         copy.EnteredTraitFollowerKindIdsInternal.UnionWith(EnteredTraitFollowerKindIdsInternal);
+        copy.LeaderDamageTakenBonusInternal = LeaderDamageTakenBonusInternal;
         return copy;
     }
 }
