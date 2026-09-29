@@ -23,11 +23,25 @@ public sealed record CardInstance(
     /// </summary>
     public int TemporaryCostReduction { get; internal set; }
 
-    internal CardInstance CopyForState() => new(InstanceId, Definition, HasSuppressedLastWords)
+    /// <summary>
+    /// 【融合】已吃掉的素材卡号（按融合顺序）。"若与本卡牌融合的种类的为2"这条要按它算**种类**，
+    /// 所以记的是卡号而不是张数。
+    /// </summary>
+    internal List<string> FusedMaterialCardIdsInternal { get; } = [];
+
+    /// <summary>已融合素材的卡号，公开只读供控制台自检断言。</summary>
+    public IReadOnlyList<string> FusedMaterialCardIds => FusedMaterialCardIdsInternal;
+
+    internal CardInstance CopyForState()
     {
-        CostReduction = CostReduction,
-        TemporaryCostReduction = TemporaryCostReduction
-    };
+        var copy = new CardInstance(InstanceId, Definition, HasSuppressedLastWords)
+        {
+            CostReduction = CostReduction,
+            TemporaryCostReduction = TemporaryCostReduction
+        };
+        copy.FusedMaterialCardIdsInternal.AddRange(FusedMaterialCardIdsInternal);
+        return copy;
+    }
 }
 
 public enum EvolutionState

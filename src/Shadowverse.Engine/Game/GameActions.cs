@@ -22,6 +22,14 @@ public sealed record PlayFollowerAction(
 public sealed record PlayAmuletAction(int CardInstanceId) : GameAction;
 
 /// <summary>
+/// 【融合】：把手上若干张卡作为素材与目标手牌融合。素材**从手牌移除且不进墓场**（官方术语表），
+/// 且1回合仅限1次。记录在卡实例上，供"若融合的种类为2则变身"这类条件使用。
+/// </summary>
+public sealed record FuseAction(
+    int CardInstanceId,
+    IReadOnlyList<int> MaterialInstanceIds) : GameAction;
+
+/// <summary>
 /// 结晶: plays a card as an amulet at its crystallize cost. It shares Accelerate's condition: the
 /// play is only available while the player cannot pay the card's own cost.
 /// </summary>

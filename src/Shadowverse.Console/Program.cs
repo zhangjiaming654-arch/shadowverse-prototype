@@ -79,6 +79,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunThirdBatchTest();
     // 第四批：召唤授予关键词 / 双方进化 / 失去所有能力 / 受到的伤害+1 / 回复超进化点 / 【模式】消失。
     AgentSelfTests.RunFourthBatchTest();
+    // 【融合】：素材不进墓场 / 1回合1次 / 按费用合计变身 / α融合两种变Ω。
+    AgentSelfTests.RunFusionTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

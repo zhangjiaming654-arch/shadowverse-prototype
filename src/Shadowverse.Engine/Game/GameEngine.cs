@@ -177,6 +177,7 @@ public static class GameEngine
 
         builder.Append(';');
         builder.Append(player.LeaderDamageTakenBonusInternal).Append(';');
+        builder.Append(player.FusedThisTurnInternal ? 1 : 0).Append(';');
     }
 
     private static void AppendCardFingerprint(System.Text.StringBuilder builder, CardInstance card)
@@ -188,7 +189,9 @@ public static class GameEngine
             .Append(card.InstanceId).Append(',')
             .Append(card.HasSuppressedLastWords ? 1 : 0).Append(',')
             .Append(card.CostReduction).Append(',')
-            .Append(card.TemporaryCostReduction).Append(';');
+            .Append(card.TemporaryCostReduction).Append(',')
+            // 【融合】素材决定"种类数"与变身结果，必须进指纹，否则搜索分支会分叉。
+            .Append(string.Join('|', card.FusedMaterialCardIdsInternal)).Append(';');
     }
 
     /// <summary>
@@ -271,6 +274,9 @@ public static class GameEngine
                 break;
             case PlayAccelerateAction accelerate:
                 ApplyAccelerate(next, accelerate);
+                break;
+            case FuseAction fuse:
+                ApplyFuse(next, fuse);
                 break;
             case PlaySpellAction playSpell:
                 ApplyPlaySpell(next, playSpell);
@@ -410,6 +416,14 @@ public static class GameEngine
                 GetCardCost(card, active.CurrentPlayPoints) <= active.CurrentPlayPoints)
             {
                 actions.AddRange(GetSpellActions(state, card));
+            }
+
+            // 【融合】：1回合仅限1次。生成 1～3 张素材的组合 —— "没有指定数量时可融合任意数量"，
+            // 但真正会用到的阈值只到"费用合计3或以上"/"种类为2"，所以上限取 3 就够，
+            // 而且能把组合数压住（9 张手牌的 C(9,3)=84，可接受）。
+            if (card.Definition.Fusion is { IsEmpty: false } fusion && !active.FusedThisTurnInternal)
+            {
+                actions.AddRange(GetFuseActions(state, card, fusion));
             }
 
             // Accelerate is only available when the normal card cannot be paid for.
@@ -3374,6 +3388,7 @@ public static class GameEngine
         active.MaxPlayPoints = Math.Min(10, active.MaxPlayPoints + 1);
         active.CurrentPlayPoints = active.MaxPlayPoints;
         active.UsedEvolutionOrSuperEvolutionThisTurn = false;
+        active.FusedThisTurnInternal = false;
 
         foreach (var follower in active.BoardInternal)
         {
@@ -4246,6 +4261,171 @@ public static class GameEngine
             if (state.IsGameOver)
             {
                 return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 【融合】。官方术语表：将手牌中指定的卡牌作为素材进行融合；1回合仅限1次；没有指定数量时可融合
+    /// 任意数量；被融合的卡牌从手牌移除且**墓场数量不增加**。
+    /// 融合后按卡面规则决定是否在手牌中变身（按素材费用合计 / 按融合种类数）。
+    /// </summary>
+    private static void ApplyFuse(GameState state, FuseAction action)
+    {
+        var player = state.Players[state.ActivePlayer];
+        if (player.FusedThisTurnInternal)
+        {
+            throw new InvalidOperationException("Fusion is limited to once per turn.");
+        }
+
+        var card = player.HandInternal.FirstOrDefault(candidate => candidate.InstanceId == action.CardInstanceId)
+            ?? throw new InvalidOperationException("The card to fuse is not in the active player's hand.");
+        var fusion = card.Definition.Fusion
+            ?? throw new InvalidOperationException($"『{card.Definition.Name}』 has no Fusion ability.");
+        if (fusion.IsEmpty)
+        {
+            throw new InvalidOperationException($"『{card.Definition.Name}』 has no Fusion ability.");
+        }
+
+        if (action.MaterialInstanceIds.Count == 0)
+        {
+            throw new InvalidOperationException("Fusion needs at least one material.");
+        }
+
+        if (action.MaterialInstanceIds.Contains(card.InstanceId))
+        {
+            throw new InvalidOperationException("A card cannot be fused with itself.");
+        }
+
+        var materials = new List<CardInstance>();
+        foreach (var materialId in action.MaterialInstanceIds)
+        {
+            var material = player.HandInternal.FirstOrDefault(candidate => candidate.InstanceId == materialId)
+                ?? throw new InvalidOperationException("A fusion material is not in the active player's hand.");
+
+            if (fusion.AllowedMaterialCardIds is { Count: > 0 } allowed &&
+                !allowed.Contains(material.Definition.Id, StringComparer.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"『{material.Definition.Name}』 cannot be a fusion material for 『{card.Definition.Name}』.");
+            }
+
+            if (fusion.RequiredMaterialTrait is { } requiredTrait &&
+                material.Definition.Traits?.Contains(requiredTrait, StringComparer.Ordinal) != true)
+            {
+                throw new InvalidOperationException(
+                    $"A fusion material for 『{card.Definition.Name}』 must carry the 【{requiredTrait}】 trait.");
+            }
+
+            materials.Add(material);
+        }
+
+        // 素材从手牌移除，**不进墓场**（官方术语表）。
+        foreach (var material in materials)
+        {
+            player.HandInternal.Remove(material);
+        }
+
+        card.FusedMaterialCardIdsInternal.AddRange(materials.Select(material => material.Definition.Id));
+        player.FusedThisTurnInternal = true;
+
+        var distinctKinds = card.FusedMaterialCardIdsInternal.Distinct(StringComparer.Ordinal).Count();
+        var totalCost = materials.Sum(material => material.Definition.Cost);
+
+        // 「若与本卡牌融合的种类的为2，则变身为X」比"按费用合计"更具体，先判它。
+        if (fusion.TransformWhenDistinctMaterialKindsAtLeast is { } requiredKinds &&
+            distinctKinds >= requiredKinds &&
+            fusion.DistinctKindsTransformCardId is { } distinctTarget)
+        {
+            ReplaceHandCard(player, card, distinctTarget);
+            return;
+        }
+
+        if (fusion.TransformByTotalCost is { Count: > 0 } table)
+        {
+            // "3或以上"⇒取满足条件的**最大**阈值那条。
+            var match = table
+                .Where(transform => totalCost >= transform.MinimumTotalCost)
+                .OrderByDescending(transform => transform.MinimumTotalCost)
+                .FirstOrDefault();
+            if (match is not null)
+            {
+                ReplaceHandCard(player, card, match.ResultCardId);
+            }
+        }
+    }
+
+    /// <summary>把手里这张卡换成同实例号的另一张卡定义（【融合】变身）。费用减免与已融合素材保留。</summary>
+    private static void ReplaceHandCard(PlayerState player, CardInstance card, string resultCardId)
+    {
+        var index = player.HandInternal.IndexOf(card);
+        if (index < 0)
+        {
+            throw new InvalidOperationException("The fused card is no longer in hand.");
+        }
+
+        var replacement = new CardInstance(card.InstanceId, CardCatalog.Get(resultCardId), card.HasSuppressedLastWords)
+        {
+            CostReduction = card.CostReduction,
+            TemporaryCostReduction = card.TemporaryCostReduction
+        };
+        replacement.FusedMaterialCardIdsInternal.AddRange(card.FusedMaterialCardIdsInternal);
+        player.HandInternal[index] = replacement;
+    }
+
+    /// <summary>
+    /// 生成【融合】动作：从手牌里挑合法素材，做 1～3 张的组合。素材必须满足卡面的
+    /// "只能融合这些卡"（AllowedMaterialCardIds）与"必须是这个类别"（RequiredMaterialTrait）。
+    /// </summary>
+    private static IReadOnlyList<GameAction> GetFuseActions(
+        GameState state,
+        CardInstance card,
+        FusionDefinition fusion)
+    {
+        var active = state.Players[state.ActivePlayer];
+        var legal = active.HandInternal
+            .Where(candidate => candidate.InstanceId != card.InstanceId)
+            .Where(candidate => fusion.AllowedMaterialCardIds is not { Count: > 0 } allowed ||
+                                allowed.Contains(candidate.Definition.Id, StringComparer.Ordinal))
+            .Where(candidate => fusion.RequiredMaterialTrait is not { } requiredTrait ||
+                                candidate.Definition.Traits?.Contains(requiredTrait, StringComparer.Ordinal) == true)
+            .ToArray();
+
+        var actions = new List<GameAction>();
+        for (var size = 1; size <= 3 && size <= legal.Length; size++)
+        {
+            foreach (var combo in Combinations(legal, size))
+            {
+                actions.Add(new FuseAction(card.InstanceId, combo.Select(m => m.InstanceId).ToArray()));
+            }
+        }
+
+        return actions;
+    }
+
+    /// <summary>按索引顺序生成固定大小的组合（顺序稳定，保证动作列表可复现）。</summary>
+    private static IEnumerable<CardInstance[]> Combinations(CardInstance[] source, int size)
+    {
+        var indices = Enumerable.Range(0, size).ToArray();
+        while (true)
+        {
+            yield return indices.Select(index => source[index]).ToArray();
+
+            var position = size - 1;
+            while (position >= 0 && indices[position] == source.Length - size + position)
+            {
+                position--;
+            }
+
+            if (position < 0)
+            {
+                yield break;
+            }
+
+            indices[position]++;
+            for (var next = position + 1; next < size; next++)
+            {
+                indices[next] = indices[next - 1] + 1;
             }
         }
     }

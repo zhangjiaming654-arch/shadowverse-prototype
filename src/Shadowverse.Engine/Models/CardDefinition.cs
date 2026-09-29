@@ -698,7 +698,11 @@ public sealed record CardDefinition(
     /// vanish ability resolves. Stored as an id rather than inline effects so the same crest name can
     /// have distinct positive and negative versions in <see cref="CrestCatalog"/>.
     /// </summary>
-    string? GrantedCrestId = null)
+    string? GrantedCrestId = null,
+    /// <summary>
+    /// 【融合】能力。null 表示这张卡不能被融合。
+    /// </summary>
+    FusionDefinition? Fusion = null)
 {
     /// <summary>
     /// 【进化时】真正可以选的模式：卡牌自己印的进化模式，或者它重复的【入场曲】模式（两者不会同时有）。

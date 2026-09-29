@@ -2092,6 +2092,14 @@ public static class CardCatalog
             CardRarity.Bronze,
             CardProfession.Nemesis,
             Traits: [CardIds.CreationTrait],
+            Fusion: new FusionDefinition(
+                RequiredMaterialTrait: CardIds.CreationTrait,
+                TransformByTotalCost:
+                [
+                    new FusionTransform(1, CardIds.DestroyerCreationAlpha),
+                    new FusionTransform(2, CardIds.DestroyerCreationBeta),
+                    new FusionTransform(3, CardIds.DestroyerCreationGamma)
+                ]),
             IsCollectible: false),
         new(
             CardIds.DestroyerCreationAlpha,
@@ -2106,6 +2114,10 @@ public static class CardCatalog
             CardRarity.Gold,
             CardProfession.Nemesis,
             Traits: [CardIds.CreationTrait],
+            Fusion: new FusionDefinition(
+                AllowedMaterialCardIds: [CardIds.DestroyerCreationBeta, CardIds.DestroyerCreationGamma],
+                TransformWhenDistinctMaterialKindsAtLeast: 2,
+                DistinctKindsTransformCardId: CardIds.TranscendentCreationOmega),
             EndOfOwnTurnEffects:
             [
                 new CardEffect(CardEffectKind.RestoreOwnLeaderHealth, 3)

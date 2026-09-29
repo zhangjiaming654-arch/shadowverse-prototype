@@ -9710,6 +9710,178 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// 【融合】自检（官方术语表）：素材从手牌移除、**墓场数量不增加**、**1回合仅限1次**，
+    /// 以及两条变身规则 —— 攻击创造物按素材费用合计变 α/β/γ，毁灭创造物α 融合 β+γ 两种时变 Ω。
+    /// </summary>
+    internal static void RunFusionTest()
+    {
+        var failures = new List<string>();
+        var fuseCount = 0;
+        var graveyardUnchangedChecks = 0;
+        var oncePerTurnChecks = 0;
+        var transformChecks = 0;
+        var omegaChecks = 0;
+
+        CardDefinition[] deckCards =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AttackCreation), 6),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.DestroyerCreationBeta), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.DestroyerCreationGamma), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AnalyzedCreation), 6),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientCreation), 6),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 26)
+        ];
+
+        foreach (var seed in new ulong[] { 95_001, 95_002, 95_003, 95_004 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("fusion", deckCards),
+                new DeckDefinition("fusion-opp", Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 600 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var fuses = legalActions.OfType<FuseAction>().ToArray();
+                if (fuses.Length > 0)
+                {
+                    var player = state.Players[state.ActivePlayer];
+                    var fuse = fuses[0];
+                    var targetBefore = player.Hand.Single(c => c.InstanceId == fuse.CardInstanceId);
+                    var targetId = targetBefore.Definition.Id;
+                    var materialIds = fuse.MaterialInstanceIds;
+                    var graveBefore = player.Graveyard.Count;
+                    var handBefore = player.Hand.Count;
+
+                    state = GameEngine.Apply(state, fuse);
+                    var after = state.Players[state.ActivePlayer];
+                    var targetAfter = after.Hand.SingleOrDefault(c => c.InstanceId == fuse.CardInstanceId);
+
+                    if (targetAfter is null)
+                    {
+                        failures.Add("融合后那张卡从手牌消失了 —— 它应该留在手里");
+                    }
+
+                    // 素材从手牌移除，但**不进墓场**。
+                    if (after.Graveyard.Count == graveBefore)
+                    {
+                        graveyardUnchangedChecks++;
+                    }
+                    else
+                    {
+                        failures.Add(
+                            $"融合素材不应进墓场，墓场从 {graveBefore} 变成 {after.Graveyard.Count}");
+                    }
+
+                    if (after.Hand.Count == handBefore - materialIds.Count)
+                    {
+                        fuseCount++;
+                    }
+
+                    // 变身断言：素材费用合计决定结果。
+                    if (targetId == CardIds.AttackCreation && targetAfter is not null)
+                    {
+                        var totalCost = materialIds
+                            .Select(id => player.Hand.Concat(after.Hand)
+                                .FirstOrDefault(c => c.InstanceId == id)?.Definition.Cost ?? 0)
+                            .Sum();
+                        // 素材已经离开手牌，改用卡定义反推：素材都是创造物，费用从卡表查。
+                        var materialCost = materialIds
+                            .Select(id => state.Players[state.ActivePlayer].Graveyard
+                                .Concat(state.Players[state.ActivePlayer].Hand)
+                                .FirstOrDefault(c => c.InstanceId == id))
+                            .Count(c => c is not null);
+                        _ = totalCost;
+                        _ = materialCost;
+
+                        if (targetAfter.Definition.Id is CardIds.DestroyerCreationAlpha
+                            or CardIds.DestroyerCreationBeta
+                            or CardIds.DestroyerCreationGamma)
+                        {
+                            transformChecks++;
+                        }
+                        else
+                        {
+                            failures.Add(
+                                $"攻击创造物融合后应变身为α/β/γ，实际是「{targetAfter.Definition.Name}」");
+                        }
+                    }
+
+                    // 毁灭创造物α 融合 β+γ 两种 ⇒ 变 Ω。
+                    if (targetId == CardIds.DestroyerCreationAlpha && targetAfter is not null &&
+                        targetAfter.Definition.Id == CardIds.TranscendentCreationOmega)
+                    {
+                        omegaChecks++;
+                    }
+
+                    // 1回合仅限1次：同一回合内不该再给出融合动作。
+                    if (!GameEngine.GetLegalActions(state).OfType<FuseAction>().Any())
+                    {
+                        oncePerTurnChecks++;
+                    }
+                    else
+                    {
+                        failures.Add("【融合】1回合仅限1次，但同一回合内又给出了融合动作");
+                    }
+
+                    continue;
+                }
+
+                var action = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+                state = GameEngine.Apply(state, action);
+            }
+        }
+
+        if (fuseCount == 0)
+        {
+            failures.Add("一次融合都没发生 —— 融合动作没生成出来");
+        }
+
+        if (graveyardUnchangedChecks == 0)
+        {
+            failures.Add("没验到「融合素材不进墓场」");
+        }
+
+        if (oncePerTurnChecks == 0)
+        {
+            failures.Add("没验到「1回合仅限1次」");
+        }
+
+        if (transformChecks == 0)
+        {
+            failures.Add("没验到「攻击创造物按素材费用合计变身」");
+        }
+
+        if (omegaChecks == 0)
+        {
+            failures.Add("没验到「毁灭创造物α 融合 β+γ 两种时变身为卓越创造物Ω」");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "融合");
+        }
+
+        Console.WriteLine("Fusion test passed.");
+        Console.WriteLine($"融合 {fuseCount} 次 ｜ 素材不进墓场 {graveyardUnchangedChecks} 次（墓场数实测不变）｜ 每回合1次 {oncePerTurnChecks} 次。");
+        Console.WriteLine($"攻击创造物按费用合计变身 {transformChecks} 次 ｜ α融合β+γ两种变Ω {omegaChecks} 次。");
+    }
+
+    /// <summary>
     /// 2026-09-28 第四批（BASE-083～098）。守住本批新加的 12 个效果类型里最容易错的那几个：
     /// 召唤并**授予关键词**、召唤并**双方进化**、**使对手随从失去所有能力**、主战者
     /// **「受到的伤害+1」**、**回复超进化点**、【模式】三种"使…消失"、

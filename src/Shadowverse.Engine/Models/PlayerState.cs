@@ -80,6 +80,9 @@ public sealed class PlayerState
     /// </summary>
     internal int LeaderDamageTakenBonusInternal { get; set; }
 
+    /// <summary>【融合】"1回合仅限1次"：本回合是否已经融合过。</summary>
+    internal bool FusedThisTurnInternal { get; set; }
+
     public IReadOnlyList<string> RevealedCardIds => RevealedCardIdsInternal;
 
     /// <summary>
@@ -130,6 +133,7 @@ public sealed class PlayerState
         copy.EnteredTraitFollowerInstanceIdsInternal.UnionWith(EnteredTraitFollowerInstanceIdsInternal);
         copy.EnteredTraitFollowerKindIdsInternal.UnionWith(EnteredTraitFollowerKindIdsInternal);
         copy.LeaderDamageTakenBonusInternal = LeaderDamageTakenBonusInternal;
+        copy.FusedThisTurnInternal = FusedThisTurnInternal;
         return copy;
     }
 }
