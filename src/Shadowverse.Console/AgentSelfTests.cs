@@ -8710,7 +8710,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             [CardIds.CreationTrait]);
         CheckFace(gran, 4, 3, 2, CardType.Follower, CardRarity.Rainbow, CardProfession.Neutral, CardKeyword.None, true);
         CheckFace(miu, 4, 3, 5, CardType.Follower, CardRarity.Rainbow, CardProfession.Nemesis, CardKeyword.None, true);
-        CheckFace(shopkeeper, 4, 3, 3, CardType.Follower, CardRarity.Gold, CardProfession.Nemesis, CardKeyword.None, true);
+        CheckFace(shopkeeper, 4, 3, 3, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.None, true);
         CheckFace(mysterious, 3, 4, 5, CardType.Follower, CardRarity.Bronze, CardProfession.Nemesis, CardKeyword.Ward, false,
             [CardIds.CreationTrait]);
 

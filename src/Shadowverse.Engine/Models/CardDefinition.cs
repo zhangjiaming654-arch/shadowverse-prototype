@@ -332,6 +332,33 @@ public enum CardEffectKind
     DealDamageToSelectedEnemyFollowers
 }
 
+/// <summary>
+/// 「1⇒α 2⇒β 3或以上⇒γ」：按融合素材的**费用合计**决定变身对象。
+/// </summary>
+public sealed record FusionTransform(int MinimumTotalCost, string ResultCardId);
+
+/// <summary>
+/// 【融合】（官方术语表）：将手牌中指定的卡牌作为素材进行融合以强化本卡牌。
+/// 1回合仅限1次；没有指定数量时可融合任意数量的素材；被融合的卡牌从手牌移除且**墓场数量不增加**。
+/// </summary>
+public sealed record FusionDefinition(
+    /// <summary>只有这些卡号能当素材（「『毁灭创造物β』或『毁灭创造物γ』与本卡牌融合」）。空＝不限。</summary>
+    IReadOnlyList<string>? AllowedMaterialCardIds = null,
+    /// <summary>素材必须带有的类别（「【融合】创造物·卡牌」）。null＝不限。</summary>
+    string? RequiredMaterialTrait = null,
+    /// <summary>按素材费用合计变身：取满足 MinimumTotalCost 的**最大值**那条（覆盖"3或以上"）。</summary>
+    IReadOnlyList<FusionTransform>? TransformByTotalCost = null,
+    /// <summary>「若与本卡牌融合的种类的为2，则变身为X」。</summary>
+    int? TransformWhenDistinctMaterialKindsAtLeast = null,
+    string? DistinctKindsTransformCardId = null)
+{
+    /// <summary>这条卡是否根本没有融合能力。</summary>
+    public bool IsEmpty =>
+        AllowedMaterialCardIds is null &&
+        TransformByTotalCost is null &&
+        TransformWhenDistinctMaterialKindsAtLeast is null;
+}
+
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>
 public sealed record CrestDefinition(
     string Id,

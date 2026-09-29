@@ -1698,7 +1698,7 @@ public static class CardCatalog
             CardType.Follower,
             "自己的创造物·随从进入战场时，回复自己的主战者1点生命值。\n【进化时】召唤1个『神秘的创造物』。",
             Effect: null,
-            CardRarity.Gold,
+            CardRarity.Bronze,
             CardProfession.Nemesis,
             EvolutionEffects:
             [
