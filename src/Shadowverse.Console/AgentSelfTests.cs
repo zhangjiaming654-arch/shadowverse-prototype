@@ -9613,11 +9613,37 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             }
         }
 
+        // 「抽取1张拥有【毁灭】的超越者·随从」的**命中**路径在当前卡池下不可达，且已确认
+        // （2026-09-28，卡池暂无更多此类卡）—— 所以改成**单向断言**：只验"存在这种搜索、
+        // 搜不到时安全空过、不抛错、不改变场上其它状态"。命中路径如实标注为未验证。
+        // 「抽取1张拥有【毁灭】的超越者·随从」的**命中**路径是可达的：牌池里除了束刃自己没有别的
+        // 【毁灭】超越者，但只要**让它自己留在牌组里**（这一局只打出 1 张），进化时就能搜到复制体。
+        // （我一度以为这条不可达，是"贪心打出全部 4 张"把牌组掏空了；牌池守卫把这个错误判断当场抓了出来。）
         if (searchHitChecks == 0)
         {
-            // 如实降级：牌池里唯一的"【毁灭】超越者·随从"就是束刃自己（另外两张 Bane 卡是龙族），
-            // 而它必须**在场上**才能进化 —— 剩下的复制体会在这之前被抽进手牌，所以"搜到"这条正路
-            // 在当前卡池下构造不出来。这里不假装它验过，只标注为未验证（详见测试输出）。
+            duplicateDeckFailures.Add("没验到「搜索命中时把卡加入手牌」这条正路");
+        }
+
+        if (searchMissSamples.Count == 0)
+        {
+            duplicateDeckFailures.Add("没验到「搜索找不到目标时安全空过」这条路径");
+        }
+
+        // 牌池守卫：如果将来录入了**别的**【毁灭】超越者·随从，搜索的命中来源就不止"自己的复制体"，
+        // 上面那条正例的语义会变（可能搜到别的卡而不是同名复制体）。届时这条亮红，提醒补测。
+        var otherBaneNemesisFollowers = CardCatalog.All
+            .Where(card => card.IsCollectible &&
+                           card.Type == CardType.Follower &&
+                           card.Profession == CardProfession.Nemesis &&
+                           card.Keywords.HasFlag(CardKeyword.Bane) &&
+                           card.Id != CardIds.BladeboundSinnerCatherslott)
+            .Select(card => card.Id)
+            .ToArray();
+        if (otherBaneNemesisFollowers.Length > 0)
+        {
+            duplicateDeckFailures.Add(
+                $"牌池里出现了别的『【毁灭】超越者·随从』（{string.Join("、", otherBaneNemesisFollowers)}）—— " +
+                "上面「命中=搜到自己复制体」的正例语义变了，必须补一条搜到**别的卡**的正例");
         }
 
         if (crestBlockedChecks == 0)
@@ -9677,11 +9703,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine("Third batch test passed.");
         Console.WriteLine($"牌组有重复时不给纹章（反面）：已验证 {crestBlockedChecks} 次。");
         Console.WriteLine(
-            searchHitChecks > 0
-                ? $"⚠️ 搜索到【毁灭】超越者随从 {searchHitChecks} 次。"
-                : "⚠️ 未验证（如实标注）：『抽取1张拥有【毁灭】的超越者·随从』的**命中**路径在当前卡池下构造不出来 —— " +
-                  "全库唯一的【毁灭】超越者就是束刃自己，而它必须在场上才能进化，其余复制体会先被抽进手牌。" +
-                  "「搜不到时安全空过」这一面已由屈辱流放那条断言间接覆盖。");
+            $"牌组搜索过滤器：命中并加入手牌 {searchHitChecks} 次 ｜ 找不到目标时安全空过 {searchMissSamples.Count} 次。");
         Console.WriteLine($"人偶长矛手→改良型 {lancerChecks} 次 ｜ 伊鞠进化后施法召唤 {ikuSummonChecks} 次。");
         Console.WriteLine($"束刃的罪人：搜到【毁灭】随从 {searchBaneChecks} 次 ｜ 牌组无重复给纹章 {crestGrantChecks} 次 ｜ 纹章使打出的随从进化 {crestEvolveChecks} 次。");
         Console.WriteLine($"牌组无重复时屈辱流放额外抽牌：已验证 {noDuplicateChecks} 次。");
