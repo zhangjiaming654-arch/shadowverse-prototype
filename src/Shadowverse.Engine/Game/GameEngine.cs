@@ -1126,27 +1126,10 @@ public static class GameEngine
                     ApplyDamageToRandomEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
                     break;
                 case CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly:
-                    for (var shot = 0; shot < effect.Amount; shot++)
-                    {
-                        if (state.IsGameOver)
-                        {
-                            break;
-                        }
-
-                        var enemyIndex = OtherPlayer(state.ActivePlayer);
-                        var enemyBoard = state.Players[enemyIndex].BoardInternal.ToArray();
-                        // 目标池 = 对手随从 + 对手主战者（主战者算一个候选）。
-                        var choice = NextInt(state, enemyBoard.Length + 1);
-                        if (choice == enemyBoard.Length)
-                        {
-                            DealDamageToLeader(state, enemyIndex, effect.SecondaryAmount);
-                        }
-                        else
-                        {
-                            DealDamageToFollower(state, enemyIndex, enemyBoard[choice], effect.SecondaryAmount);
-                        }
-                    }
-
+                    ApplyRepeatedRandomDamageToEnemyFollowerOrLeader(
+                        state,
+                        effect.Amount,
+                        effect.SecondaryAmount);
                     break;
                 case CardEffectKind.RemoveAbilitiesFromEnemyFollowers:
                     RemoveAbilitiesFromFollowers(state, action.EnemyFollowerTargetInstanceIds);
@@ -2784,6 +2767,9 @@ public static class GameEngine
             case CardEffectKind.DealDamageToRandomEnemyFollowerCount:
                 // 【奥义】这类效果走的是进化分发器，所以它也必须在这里被认到。
                 ApplyDamageToRandomEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
+                break;
+            case CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly:
+                ApplyRepeatedRandomDamageToEnemyFollowerOrLeader(state, effect.Amount, effect.SecondaryAmount);
                 break;
             case CardEffectKind.EvolveSelfByOath:
                 // 【奥义】本随从进化：这条效果由"打出该卡时"的奥义结算触发，那时这张随从刚上场、
@@ -4710,6 +4696,30 @@ public static class GameEngine
             else
             {
                 owner.BoardInternal.Add(CreateSummonedFollower(state, card.Definition));
+            }
+        }
+    }
+
+    /// <summary>「发动N次『随机对对手的1个随从或对手的主战者造成M点伤害』」：目标池 = 对手随从 + 对手主战者。</summary>
+    private static void ApplyRepeatedRandomDamageToEnemyFollowerOrLeader(GameState state, int times, int damage)
+    {
+        for (var shot = 0; shot < times; shot++)
+        {
+            if (state.IsGameOver)
+            {
+                return;
+            }
+
+            var enemyIndex = OtherPlayer(state.ActivePlayer);
+            var enemyBoard = state.Players[enemyIndex].BoardInternal.ToArray();
+            var choice = NextInt(state, enemyBoard.Length + 1);
+            if (choice == enemyBoard.Length)
+            {
+                DealDamageToLeader(state, enemyIndex, damage);
+            }
+            else
+            {
+                DealDamageToFollower(state, enemyIndex, enemyBoard[choice], damage);
             }
         }
     }

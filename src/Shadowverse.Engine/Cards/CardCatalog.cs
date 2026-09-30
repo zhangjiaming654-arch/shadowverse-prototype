@@ -2287,6 +2287,14 @@ public static class CardCatalog
             Effect: null,
             CardRarity.Bronze,
             CardProfession.Neutral,
+            // 【入场曲】【奥义】写在同一句里 ⇒ 入场曲**恒发**，奥义槽≥10 时**再发一次**。
+            FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealDamageToRandomEnemyFollowerCount,
+                    2,
+                    SecondaryAmount: 5)
+            ],
             OathEffects:
             [
                 new CardEffect(
@@ -2362,7 +2370,15 @@ public static class CardCatalog
                 RequiredOwnEvolutions: 6,
                 GrantCrestId: null,
                 ReturnsToHand: true),
+            // 【入场曲】【解放奥义】写在同一句里 ⇒ 入场曲**恒发**，奥义槽≥15 时**再发一次**。
             FanfareEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
+                    5,
+                    SecondaryAmount: 2)
+            ],
+            SuperOathEffects:
             [
                 new CardEffect(
                     CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,

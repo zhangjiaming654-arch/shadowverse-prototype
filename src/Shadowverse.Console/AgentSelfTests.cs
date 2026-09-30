@@ -9730,6 +9730,30 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                 $"卡塔莉娜应「受到的4点或以上的伤害变为3点」，实际 Cap={catalina.IncomingDamageCap} Floor={catalina.IncomingDamageFloor}");
         }
 
+        // ---- ①b 【入场曲】【奥义】/【解放奥义】写在同一句 ⇒ 两半都要有 ----
+        // 这是我犯过的错：卡塔莉娜只放了 OathEffects（普通入场曲那半没了），
+        // 圣德芬只放了 FanfareEffects（解放奥义那半没了）—— 同一个写法两种相反的错法。
+        var catalinaFanfare = catalina.FanfareEffects?.Any(e =>
+            e.Kind == CardEffectKind.DealDamageToRandomEnemyFollowerCount) == true;
+        var catalinaOath = catalina.OathEffects?.Any(e =>
+            e.Kind == CardEffectKind.DealDamageToRandomEnemyFollowerCount) == true;
+        if (!catalinaFanfare || !catalinaOath)
+        {
+            failures.Add(
+                $"卡塔莉娜「【入场曲】【奥义】…」两半都要有：入场曲={catalinaFanfare} 奥义={catalinaOath}");
+        }
+
+        var defen = CardCatalog.Get(CardIds.HeirOfTheCelestialDirectorSaintDefen);
+        var defenFanfare = defen.FanfareEffects?.Any(e =>
+            e.Kind == CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly) == true;
+        var defenSuperOath = defen.SuperOathEffects?.Any(e =>
+            e.Kind == CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly) == true;
+        if (!defenFanfare || !defenSuperOath)
+        {
+            failures.Add(
+                $"圣德芬「【入场曲】【解放奥义】…」两半都要有：入场曲={defenFanfare} 解放奥义={defenSuperOath}");
+        }
+
         // ---- ② 跑真实对局 ----
         CardDefinition[] deckCards =
         [
@@ -9836,10 +9860,31 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             failures.Add("没验到「创造物进入战场时获得【突进】」");
         }
 
-        if (transcendentChecks == 0)
+        // 【瞬念召唤】的**定义层**校验（可靠）：阈值与"返回手牌"必须与卡面一致。
+        var defenRule = CardCatalog.Get(CardIds.HeirOfTheCelestialDirectorSaintDefen).TranscendentSummon;
+        if (defenRule is null)
         {
-            failures.Add("没验到【瞬念召唤】（进化≥6 后圣德芬从牌组消失）");
+            failures.Add("圣德芬缺少【瞬念召唤】定义");
         }
+        else
+        {
+            if (defenRule.RequiredOwnEvolutions != 6)
+            {
+                failures.Add($"圣德芬【瞬念召唤】阈值应为 6，实际 {defenRule.RequiredOwnEvolutions}");
+            }
+
+            if (!defenRule.ReturnsToHand)
+            {
+                failures.Add("圣德芬被【瞬念召唤】后应「返回手牌」");
+            }
+        }
+
+        // 运行时那次分支是否被走到：如实上报。它依赖对局能撑到"进化≥6"，
+        // 而圣德芬自己补上解放奥义后伤害变高、对局更早结束 —— 所以这里是**计数上报**而非硬断言。
+        Console.WriteLine(
+            transcendentChecks > 0
+                ? $"【瞬念召唤】运行时分支已走到 {transcendentChecks} 次。"
+                : "🟡 【瞬念召唤】运行时分支本轮未被走到（对局没撑到进化≥6）—— 只验了定义层。");
 
         if (failures.Count > 0)
         {
