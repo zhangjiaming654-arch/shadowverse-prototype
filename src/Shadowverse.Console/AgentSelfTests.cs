@@ -9710,6 +9710,207 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// 束刃纹章 × 【奥义】的交互（**用户裁定：读法 A**）。
+    /// <para>
+    /// 场景：纹章在场，奥义槽已满，本回合第一张出「古兰&姬塔」。
+    /// 结算顺序是【奥义】先进化它（ApplyOathAbilities 在 ApplyCrestEvolvePlayedFollower 之前），
+    /// 于是纹章触发时目标**已经进化**、它什么也做不了 —— 但这一次**仍然算用掉**。
+    /// 所以同一回合再出第二张随从时，**不该**被纹章进化。
+    /// </para>
+    /// <para>
+    /// 裁定含义：「每回合1次」消耗在**"使用了随从"这个事件**上，不是消耗在"成功进化"上。
+    /// 也就是说奥义槽满反而会"空放"掉纹章那一次机会 —— 这是有意为之，不是缺陷。
+    /// </para>
+    /// </summary>
+    internal static void RunCrestOathInteractionTest()
+    {
+        var failures = new List<string>();
+        var emptyFireChecks = 0;
+        var secondFollowerChecks = 0;
+
+        // 束刃的纹章要求"牌组中没有重复卡牌"，所以这副必须是 40 张全不同。
+        CardDefinition[] deckCards =
+        [
+            CardCatalog.Get(CardIds.BladeboundSinnerCatherslott),
+            CardCatalog.Get(CardIds.SkyConqueringSkytrooperGranAndDjeeta),
+            .. CardCatalog.All
+                .Where(card => card.IsCollectible)
+                .Where(card => card.Id != CardIds.BladeboundSinnerCatherslott &&
+                               card.Id != CardIds.SkyConqueringSkytrooperGranAndDjeeta)
+                .OrderBy(card => card.Id, StringComparer.Ordinal)
+                .Take(DeckDefinition.RequiredCardCount - 2)
+        ];
+
+        if (deckCards.Length != DeckDefinition.RequiredCardCount ||
+            deckCards.GroupBy(card => card.Id, StringComparer.Ordinal).Any(group => group.Count() != 1))
+        {
+            throw new InvalidOperationException("交互测试卡组必须 40 张且无重复（束刃纹章的条件）");
+        }
+
+        foreach (var seed in new ulong[] { 96_001, 96_002, 96_003, 96_004, 96_005, 96_006, 96_007, 96_008, 96_009, 96_010, 96_011, 96_012 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("crest-oath", deckCards),
+                new DeckDefinition("crest-oath-opp", Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            // 本回合是否已经"空放"掉纹章（即：奥义槽满时打出古兰&姬塔）。
+            var emptyFiredThisTurn = false;
+            var lastTurnNumber = -1;
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                if (active.OwnTurnNumber != lastTurnNumber)
+                {
+                    lastTurnNumber = active.OwnTurnNumber;
+                    emptyFiredThisTurn = false;
+                }
+
+                var hasCrest = active.Crests.Any(crest =>
+                    crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott);
+
+                // 优先：① 还没拿到纹章时先打束刃 ② 束刃在场就进化它（纹章靠这一步给）
+                if (!hasCrest)
+                {
+                    var sinnerPlay = legalActions.OfType<PlayFollowerAction>().FirstOrDefault(action =>
+                        active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id ==
+                        CardIds.BladeboundSinnerCatherslott);
+                    if (sinnerPlay is not null)
+                    {
+                        state = GameEngine.Apply(state, sinnerPlay);
+                        continue;
+                    }
+
+                    var sinnerOnBoard = active.Board.FirstOrDefault(f =>
+                        f.Definition.Id == CardIds.BladeboundSinnerCatherslott &&
+                        f.EvolutionState == EvolutionState.Unevolved);
+                    if (sinnerOnBoard is not null)
+                    {
+                        var sinnerEvolve = legalActions.OfType<EvolveAction>()
+                            .FirstOrDefault(action => action.FollowerInstanceId == sinnerOnBoard.InstanceId);
+                        if (sinnerEvolve is not null)
+                        {
+                            state = GameEngine.Apply(state, sinnerEvolve);
+                            continue;
+                        }
+                    }
+                }
+
+                var play = legalActions.OfType<PlayFollowerAction>().FirstOrDefault();
+                if (play is null)
+                {
+                    var fallback = legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                        ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                        ?? legalActions[0];
+                    state = GameEngine.Apply(state, fallback);
+                    continue;
+                }
+
+                var playedId = active.Hand.Single(card => card.InstanceId == play.CardInstanceId).Definition.Id;
+
+                if (playedId == CardIds.SkyConqueringSkytrooperGranAndDjeeta &&
+                    hasCrest &&
+                    active.OwnTurnNumber + active.OwnFollowersEvolvedThisBattle >= 10)
+                {
+                    // 这一张会被【奥义】进化 ⇒ 纹章被空放。
+                    state = GameEngine.Apply(state, play);
+                    var evolved = state.Players[state.ActivePlayer].Board.Any(f =>
+                        f.Definition.Id == CardIds.SkyConqueringSkytrooperGranAndDjeeta &&
+                        f.EvolutionState != EvolutionState.Unevolved);
+                    if (evolved)
+                    {
+                        // **这才是读法 A 的真正判据**：纹章那一笔账必须被扣掉 ——
+                        // 即使它想进化的目标已经被【奥义】进化、它什么都没做。
+                        // （LastEvolvePlayedFollowerTriggerTurn 是 public get / internal set，自检读得到。）
+                        var crestAfter = state.Players[state.ActivePlayer].Crests
+                            .FirstOrDefault(c => c.Definition.Id == CrestIds.BladeboundSinnerCatherslott);
+                        if (crestAfter is null)
+                        {
+                            failures.Add("打完古兰&姬塔后纹章消失了");
+                        }
+                        else if (crestAfter.LastEvolvePlayedFollowerTriggerTurn !=
+                                 state.Players[state.ActivePlayer].OwnTurnNumber)
+                        {
+                            failures.Add(
+                                "读法 A 被破坏：纹章试图进化一个已进化的随从、什么都没做，" +
+                                $"但它的\"本回合已触发\"没有记账（实际={crestAfter.LastEvolvePlayedFollowerTriggerTurn}，" +
+                                $"本回合={state.Players[state.ActivePlayer].OwnTurnNumber}）—— " +
+                                "这意味着同回合的第二张随从**会**被它进化，与裁定不符");
+                        }
+                        else
+                        {
+                            emptyFiredThisTurn = true;
+                            emptyFireChecks++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (emptyFiredThisTurn && hasCrest)
+                {
+                    // 同一回合的第二张随从：纹章次数已被空放消耗 ⇒ **不该**被纹章进化。
+                    var beforeEvolved = active.Board
+                        .Count(f => f.Definition.Id == playedId && f.EvolutionState != EvolutionState.Unevolved);
+                    state = GameEngine.Apply(state, play);
+                    var afterEvolved = state.Players[state.ActivePlayer].Board
+                        .Count(f => f.Definition.Id == playedId && f.EvolutionState != EvolutionState.Unevolved);
+
+                    if (afterEvolved > beforeEvolved)
+                    {
+                        failures.Add(
+                            $"纹章已被空放消耗，同回合第二张随从（{CardCatalog.Get(playedId).Name}）不该被纹章进化");
+                    }
+                    else
+                    {
+                        secondFollowerChecks++;
+                    }
+
+                    continue;
+                }
+
+                state = GameEngine.Apply(state, play);
+            }
+        }
+
+        if (emptyFireChecks == 0)
+        {
+            failures.Add("没构造出「纹章空放」这一步（需要：纹章在场 + 奥义槽满 + 打出古兰&姬塔）");
+        }
+
+        // 第二条是第一条的**推论**：次数既已消耗，4238 行的"本回合已触发"分支必然拦下后续随从。
+        // 但"同回合还能再出一张随从"这一步在对局里很难自然出现（费用/手牌限制），
+        // 12 局都没走到 —— 所以这里**如实标注为未直接观测**，不硬凑一个场景来假装验过。
+        Console.WriteLine(
+            secondFollowerChecks > 0
+                ? $"空放之后同回合第二张随从**未被纹章进化**：直接观测 {secondFollowerChecks} 次。"
+                : "🟡 「空放之后同回合第二张随从不被进化」未直接观测到（对局里再出一张的条件难自然出现）；" +
+                  "它是第一条的推论，且由 4238 行的\"本回合已触发\"分支保证。");
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "纹章×奥义交互");
+        }
+
+        Console.WriteLine("Crest x Oath interaction test passed.");
+        Console.WriteLine($"纹章空放（奥义先进化了古兰&姬塔，纹章什么也没做但次数照扣）：{emptyFireChecks} 次。");
+        Console.WriteLine($"空放之后同回合第二张随从**未被纹章进化**：{secondFollowerChecks} 次（读法 A）。");
+    }
+
+    /// <summary>
     /// 2026-09-28 第五批（BASE-099～106）＋ 两个新机制【吟唱_N】与【瞬念召唤】。
     /// </summary>
     internal static void RunFifthBatchTest()

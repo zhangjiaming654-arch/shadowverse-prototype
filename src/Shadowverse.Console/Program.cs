@@ -83,6 +83,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunFusionTest();
     // 第五批：伤害上限 / 创造物进场获突进 / 【瞬念召唤】/【吟唱_N】纹章。
     AgentSelfTests.RunFifthBatchTest();
+    // 束刃纹章 × 【奥义】的交互（读法 A：空放也消耗次数）。
+    AgentSelfTests.RunCrestOathInteractionTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();
