@@ -180,6 +180,7 @@ public sealed class CrestInstance
     public CrestInstance(CrestDefinition definition)
     {
         Definition = definition ?? throw new ArgumentNullException(nameof(definition));
+        Countdown = definition.Countdown;
     }
 
     public CrestDefinition Definition { get; }
@@ -192,6 +193,9 @@ public sealed class CrestInstance
     /// limits do not consume each other.
     /// </summary>
     public int LastEvolvePlayedFollowerTriggerTurn { get; internal set; } = -1;
+
+    /// <summary>【吟唱_N】的当前倒计数；null 表示这张纹章不计时。构造时按定义初始化。</summary>
+    public int? Countdown { get; internal set; }
 
     /// <summary>
     /// 「从以下未发动的能力中随机发动1个能力」: which numbered slots this crest has already rolled.
@@ -211,7 +215,8 @@ public sealed class CrestInstance
         var copy = new CrestInstance(Definition)
         {
             LastOwnLeaderRestoreTriggerTurn = LastOwnLeaderRestoreTriggerTurn,
-            LastEvolvePlayedFollowerTriggerTurn = LastEvolvePlayedFollowerTriggerTurn
+            LastEvolvePlayedFollowerTriggerTurn = LastEvolvePlayedFollowerTriggerTurn,
+            Countdown = Countdown
         };
         copy.UsedAbilitySlotsInternal.UnionWith(UsedAbilitySlotsInternal);
         return copy;

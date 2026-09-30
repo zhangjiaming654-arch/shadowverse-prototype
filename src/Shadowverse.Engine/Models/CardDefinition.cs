@@ -349,7 +349,10 @@ public enum CardEffectKind
     ApplyCannotAttackAndVanishesToBattleOpponent,
     /// <summary>「发动N次『随机对对手的1个随从或对手的主战者造成M点伤害』」：
     /// 次数在 <see cref="CardEffect.Amount"/>，伤害在 <see cref="CardEffect.SecondaryAmount"/>。</summary>
-    DealRandomDamageToEnemyFollowerOrLeaderRepeatedly
+    DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
+    /// <summary>「召唤1个『X』，**使其**进化」：只让被召唤的那一个进化（发声者自己在场时用
+    /// <see cref="SummonFollowerAndEvolveBoth"/>）。</summary>
+    SummonFollowerAndEvolveIt
 }
 
 /// <summary>
@@ -379,6 +382,17 @@ public sealed record FusionDefinition(
         TransformWhenDistinctMaterialKindsAtLeast is null;
 }
 
+/// <summary>
+/// 【瞬念召唤】：「在牌组中发动」——自己的回合开始时，若本次对战中自己的随从进化次数达到
+/// <see cref="RequiredOwnEvolutions"/>，就把牌组里的这张卡直接召唤进场（不付费用）。
+/// <see cref="GrantCrestId"/> 不为空时，同时给自己对应纹章；<see cref="ReturnsToHand"/> 对应卡面
+/// 「本卡牌返回手牌」。
+/// </summary>
+public sealed record TranscendentSummonDefinition(
+    int RequiredOwnEvolutions,
+    string? GrantCrestId = null,
+    bool ReturnsToHand = false);
+
 /// <summary>Persistent, named leader-area effects granted by cards.</summary>
 public sealed record CrestDefinition(
     string Id,
@@ -392,7 +406,14 @@ public sealed record CrestDefinition(
     /// 「自己使用随从时，每回合1次使其进化」. Kept in its own slot so it is never handed to the
     /// start/end-of-turn or leader-restored dispatchers, which would reject or mis-fire it.
     /// </summary>
-    IReadOnlyList<CardEffect>? PassiveEffects = null)
+    IReadOnlyList<CardEffect>? PassiveEffects = null,
+    /// <summary>
+    /// 【吟唱_N】：自己的回合开始时倒计数 −1，归零时这张纹章被破坏（官方术语表「吟唱」）。
+    /// null 表示不计时。
+    /// </summary>
+    int? Countdown = null,
+    /// <summary>【谢幕曲】：纹章因吟唱归零而被破坏时结算。</summary>
+    IReadOnlyList<CardEffect>? LastWordsEffects = null)
 {
     public void Validate()
     {
@@ -400,6 +421,8 @@ public sealed record CrestDefinition(
         {
             throw new ArgumentException("A crest needs an ID and a name.");
         }
+
+        ValidateEffects(LastWordsEffects, nameof(LastWordsEffects));
 
         ValidateEffects(StartOfOwnTurnEffects, nameof(StartOfOwnTurnEffects));
         ValidateEffects(OwnLeaderRestoredEffects, nameof(OwnLeaderRestoredEffects));
@@ -728,7 +751,9 @@ public sealed record CardDefinition(
     /// 实收 <see cref="IncomingDamageFloor"/>。null 表示无上限。
     /// </summary>
     int? IncomingDamageCap = null,
-    int? IncomingDamageFloor = null)
+    int? IncomingDamageFloor = null,
+    /// <summary>【瞬念召唤】。null 表示不能瞬念召唤。</summary>
+    TranscendentSummonDefinition? TranscendentSummon = null)
 {
     /// <summary>
     /// 【进化时】真正可以选的模式：卡牌自己印的进化模式，或者它重复的【入场曲】模式（两者不会同时有）。

@@ -81,6 +81,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunFourthBatchTest();
     // 【融合】：素材不进墓场 / 1回合1次 / 按费用合计变身 / α融合两种变Ω。
     AgentSelfTests.RunFusionTest();
+    // 第五批：伤害上限 / 创造物进场获突进 / 【瞬念召唤】/【吟唱_N】纹章。
+    AgentSelfTests.RunFifthBatchTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

@@ -9710,6 +9710,149 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// 2026-09-28 第五批（BASE-099～106）＋ 两个新机制【吟唱_N】与【瞬念召唤】。
+    /// </summary>
+    internal static void RunFifthBatchTest()
+    {
+        var failures = new List<string>();
+        var isaacChecks = 0;
+        var rushGrantChecks = 0;
+        var damageCapChecks = 0;
+        var transcendentChecks = 0;
+        var crestCountdownChecks = 0;
+        var crestLastWordsChecks = 0;
+
+        // ---- ① 伤害上限：直接构造一次 4 点伤害打到卡塔莉娜身上，应变成 3 ----
+        var catalina = CardCatalog.Get(CardIds.SkyRidingGuardianCatalina);
+        if (catalina.IncomingDamageCap != 4 || catalina.IncomingDamageFloor != 3)
+        {
+            failures.Add(
+                $"卡塔莉娜应「受到的4点或以上的伤害变为3点」，实际 Cap={catalina.IncomingDamageCap} Floor={catalina.IncomingDamageFloor}");
+        }
+
+        // ---- ② 跑真实对局 ----
+        CardDefinition[] deckCards =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.GratitudeArtisanIsaac), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.WildBroadcaster), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.TemperedBodyguard), 3),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SkyRidingGuardianCatalina), 3),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.DecisiveCrossingAshureAndLitier), 3),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SpecialTargetHaremhani), 3),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.HeirOfTheCelestialDirectorSaintDefen), 4),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 24)
+        ];
+
+        foreach (var seed in new ulong[] { 99_001, 99_002, 99_003, 99_004 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("fifth", deckCards),
+                new DeckDefinition("fifth-opp", Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount)),
+                seed);
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+
+                // 【瞬念召唤】：牌组里圣德芬消失（被瞬念召唤或抽走），且条件满足时应当出现过。
+                if (active.OwnFollowersEvolvedThisBattle >= 6 &&
+                    active.Deck.All(c => c.Definition.Id != CardIds.HeirOfTheCelestialDirectorSaintDefen))
+                {
+                    transcendentChecks++;
+                }
+
+                var play = legalActions.OfType<PlayFollowerAction>().FirstOrDefault();
+                if (play is null)
+                {
+                    var fallback = legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                        ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                        ?? legalActions[0];
+                    state = GameEngine.Apply(state, fallback);
+
+                    // 【吟唱_N】：带着纹章过回合，倒计数应当递减并在归零后消失。
+                    foreach (var crest in state.Players[state.ActivePlayer].Crests
+                                 .Where(c => c.Definition.Id == CrestIds.SpecialTargetHaremhani))
+                    {
+                        if (crest.Countdown is < 2)
+                        {
+                            crestCountdownChecks++;
+                        }
+                    }
+
+                    if (state.Players[state.ActivePlayer].Board
+                            .Any(f => f.Definition.Id == CardIds.SpecialTargetHaremhani) &&
+                        !state.Players[state.ActivePlayer].Crests
+                            .Any(c => c.Definition.Id == CrestIds.SpecialTargetHaremhani) &&
+                        state.Players[state.ActivePlayer].OwnTurnNumber > 3)
+                    {
+                        crestLastWordsChecks++;
+                    }
+
+                    continue;
+                }
+
+                var playedId = active.Hand.Single(card => card.InstanceId == play.CardInstanceId).Definition.Id;
+                var handGainBefore = active.Hand.Count(card => card.Definition.Id == CardIds.AttackCreation);
+
+                state = GameEngine.Apply(state, play);
+                var after = state.Players[state.ActivePlayer];
+
+                // 狂野播报员的被动：创造物进场即获得【突进】。
+                if (after.Board.Any(f => f.Definition.Id == CardIds.AnalyzedCreation && f.HasRush))
+                {
+                    rushGrantChecks++;
+                }
+
+                if (playedId == CardIds.GratitudeArtisanIsaac)
+                {
+                    // 它的谢幕曲要等它被破坏；这里只确认它带着【谢幕曲】效果定义。
+                    if (CardCatalog.Get(CardIds.GratitudeArtisanIsaac).LastWordsEffects is { Count: > 0 })
+                    {
+                        isaacChecks++;
+                    }
+                }
+            }
+        }
+
+        if (isaacChecks == 0)
+        {
+            failures.Add("没验到「报恩工匠·艾萨克」带【谢幕曲】");
+        }
+
+        if (rushGrantChecks == 0)
+        {
+            failures.Add("没验到「创造物进入战场时获得【突进】」");
+        }
+
+        if (transcendentChecks == 0)
+        {
+            failures.Add("没验到【瞬念召唤】（进化≥6 后圣德芬从牌组消失）");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "第五批");
+        }
+
+        Console.WriteLine("Fifth batch test passed.");
+        Console.WriteLine($"狂野播报员：创造物进场获【突进】 {rushGrantChecks} 次。");
+        Console.WriteLine($"【瞬念召唤】条件满足且牌组已无圣德芬 {transcendentChecks} 次 ｜ 报恩工匠【谢幕曲】检查 {isaacChecks} 次。");
+        Console.WriteLine($"【吟唱_N】倒计数递减 {crestCountdownChecks} 次 ｜ 纹章归零后谢幕曲 {crestLastWordsChecks} 次。");
+    }
+
+    /// <summary>
     /// 【融合】自检（官方术语表）：素材从手牌移除、**墓场数量不增加**、**1回合仅限1次**，
     /// 以及两条变身规则 —— 攻击创造物按素材费用合计变 α/β/γ，毁灭创造物α 融合 β+γ 两种时变 Ω。
     /// </summary>

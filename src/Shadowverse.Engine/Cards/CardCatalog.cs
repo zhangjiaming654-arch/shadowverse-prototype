@@ -253,7 +253,15 @@ public static class CrestCatalog
         new(
             CrestIds.SpecialTargetHaremhani,
             "特殊目标·海雷姆哈妮",
-            "【吟唱_2】\n【谢幕曲】召唤1个『特殊目标·海雷姆哈妮』，使其进化。")
+            "【吟唱_2】\n【谢幕曲】召唤1个『特殊目标·海雷姆哈妮』，使其进化。",
+            Countdown: 2,
+            LastWordsEffects:
+            [
+                new CardEffect(
+                    CardEffectKind.SummonFollowerAndEvolveIt,
+                    1,
+                    CardIds.SpecialTargetHaremhani)
+            ])
     ];
 
     private static readonly IReadOnlyDictionary<string, CrestDefinition> DefinitionsById =
@@ -2350,6 +2358,10 @@ public static class CardCatalog
             Effect: null,
             CardRarity.Rainbow,
             CardProfession.Neutral,
+            TranscendentSummon: new TranscendentSummonDefinition(
+                RequiredOwnEvolutions: 6,
+                GrantCrestId: null,
+                ReturnsToHand: true),
             FanfareEffects:
             [
                 new CardEffect(

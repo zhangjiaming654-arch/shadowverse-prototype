@@ -1426,6 +1426,14 @@ public static class GameEngine
                 case CardEffectKind.GainStorm:
                     GrantFollowerKeywords(follower, CardKeyword.Storm);
                     break;
+                case CardEffectKind.EvolveSelf:
+                    // 爆能强化9「本随从进化」：能力造成的进化不消耗进化点。
+                    if (follower is not null && follower.EvolutionState == EvolutionState.Unevolved)
+                    {
+                        EvolveFollowerByAbility(state, follower.InstanceId);
+                    }
+
+                    break;
                 case CardEffectKind.SetOwnLeaderMaxHealth:
                     SetLeaderMaxHealth(state.Players[state.ActivePlayer], effect.Amount);
                     break;
@@ -2773,6 +2781,10 @@ public static class GameEngine
             case CardEffectKind.DestroyRandomEnemyWardFollowers:
                 DestroyRandomEnemyWardFollowers(state, effect.Amount);
                 break;
+            case CardEffectKind.DealDamageToRandomEnemyFollowerCount:
+                // 【奥义】这类效果走的是进化分发器，所以它也必须在这里被认到。
+                ApplyDamageToRandomEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
+                break;
             case CardEffectKind.EvolveSelfByOath:
                 // 【奥义】本随从进化：这条效果由"打出该卡时"的奥义结算触发，那时这张随从刚上场、
                 // 尚未进化，所以按卡号把它找出来进化（不消耗进化点）。
@@ -3410,6 +3422,13 @@ public static class GameEngine
     {
         foreach (var effect in attacker.Definition.AttackEffects ?? [])
         {
+            if (effect.Kind == CardEffectKind.ApplyCannotAttackAndVanishesToBattleOpponent)
+            {
+                // 已经由 ApplyAttackFollower 处理（那里才拿得到"交战对手"）。这里跳过是**确认已处理**，
+                // 不是静默丢弃：这条效果只在攻击随从时有意义，攻击主战者时它本就不该发生。
+                continue;
+            }
+
             switch (effect.Kind)
             {
                 case CardEffectKind.GainTemporaryAttackIfOwnFollowersAttackedEnemyLeaderPreviousTurn:
@@ -3503,6 +3522,19 @@ public static class GameEngine
                 follower.ConsumedKeywords |= CardKeyword.Stealth;
                 follower.DealtDamageByAbility = false;
             }
+        }
+
+        // 【吟唱_N】与【瞬念召唤】都在"自己的回合开始时"结算。
+        ApplyCrestCountdowns(state);
+        if (state.IsGameOver)
+        {
+            return;
+        }
+
+        ApplyTranscendentSummons(state);
+        if (state.IsGameOver)
+        {
+            return;
         }
 
         ApplyStartOfOwnTurnCrestEffects(state);
@@ -4597,6 +4629,91 @@ public static class GameEngine
         }
     }
 
+    /// <summary>
+    /// 【吟唱_N】：自己的回合开始时倒计数 −1，归零时这张纹章被破坏，并结算它的【谢幕曲】。
+    /// </summary>
+    private static void ApplyCrestCountdowns(GameState state)
+    {
+        var owner = state.Players[state.ActivePlayer];
+        foreach (var crest in owner.CrestsInternal.ToArray())
+        {
+            if (crest.Countdown is not { } remaining)
+            {
+                continue;
+            }
+
+            crest.Countdown = remaining - 1;
+            if (crest.Countdown > 0)
+            {
+                continue;
+            }
+
+            owner.CrestsInternal.Remove(crest);
+            foreach (var effect in crest.Definition.LastWordsEffects ?? [])
+            {
+                switch (effect.Kind)
+                {
+                    case CardEffectKind.SummonFollowerAndEvolveIt:
+                        var summoned = SummonFollowerAndReturn(state, state.ActivePlayer, effect.ReferencedCardId!);
+                        if (summoned is not null)
+                        {
+                            EvolveFollowerByAbility(state, summoned.InstanceId);
+                        }
+
+                        break;
+                    default:
+                        throw new InvalidOperationException(
+                            $"Unsupported crest Last Words effect: {effect.Kind}.");
+                }
+
+                if (state.IsGameOver)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 【瞬念召唤】：「在牌组中发动」——自己的回合开始时，若本次对战中自己的随从进化次数达到阈值，
+    /// 就把牌组里那张卡直接召唤进场（不付费用）。卡面另有"给自己纹章"和"本卡牌返回手牌"两段。
+    /// </summary>
+    private static void ApplyTranscendentSummons(GameState state)
+    {
+        var owner = state.Players[state.ActivePlayer];
+        foreach (var card in owner.DeckInternal.ToArray())
+        {
+            var rule = card.Definition.TranscendentSummon;
+            if (rule is null || owner.OwnFollowersEvolvedThisBattle < rule.RequiredOwnEvolutions)
+            {
+                continue;
+            }
+
+            if (owner.OccupiedBoardSlots >= PlayerState.BoardLimit)
+            {
+                return;
+            }
+
+            owner.DeckInternal.Remove(card);
+
+            if (rule.GrantCrestId is { } crestId &&
+                owner.CrestsInternal.All(existing => existing.Definition.Id != crestId))
+            {
+                owner.CrestsInternal.Add(new CrestInstance(CrestCatalog.Get(crestId)));
+            }
+
+            if (rule.ReturnsToHand)
+            {
+                // 「本卡牌返回手牌」：瞬念召唤后回到手牌（所以它还能被打出一次）。
+                AddCardToHandOrGrave(owner, card);
+            }
+            else
+            {
+                owner.BoardInternal.Add(CreateSummonedFollower(state, card.Definition));
+            }
+        }
+    }
+
     private static void AddCardToHandOrGrave(PlayerState player, CardInstance card)
     {
         if (player.HandInternal.Count >= PlayerState.HandLimit)
@@ -4765,6 +4882,12 @@ public static class GameEngine
                     break;
                 case CardEffectKind.RestoreOwnLeaderHealth:
                     RestoreLeaderHealth(state, ownerIndex, effect.Amount);
+                    break;
+                case CardEffectKind.GiveSelfCrest:
+                    // 【谢幕曲】「使自己获得『纹章：X』」——"自己"是这张随从的主人。
+                    GiveCrest(
+                        state.Players[ownerIndex],
+                        CrestCatalog.Get(effect.ReferencedCardId!));
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported Last Words effect: {effect.Kind}.");
