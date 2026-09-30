@@ -9730,28 +9730,64 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                 $"卡塔莉娜应「受到的4点或以上的伤害变为3点」，实际 Cap={catalina.IncomingDamageCap} Floor={catalina.IncomingDamageFloor}");
         }
 
-        // ---- ①b 【入场曲】【奥义】/【解放奥义】写在同一句 ⇒ 两半都要有 ----
-        // 这是我犯过的错：卡塔莉娜只放了 OathEffects（普通入场曲那半没了），
-        // 圣德芬只放了 FanfareEffects（解放奥义那半没了）—— 同一个写法两种相反的错法。
-        var catalinaFanfare = catalina.FanfareEffects?.Any(e =>
-            e.Kind == CardEffectKind.DealDamageToRandomEnemyFollowerCount) == true;
-        var catalinaOath = catalina.OathEffects?.Any(e =>
-            e.Kind == CardEffectKind.DealDamageToRandomEnemyFollowerCount) == true;
-        if (!catalinaFanfare || !catalinaOath)
+        // ---- ①b 【入场曲】+【奥义】/【解放奥义】是**与**关系，只能放在奥义槽、且只放一份 ----
+        // 规则（用户裁定）：【入场曲】=触发时机（从手牌打出），【奥义】/【解放奥义】=附加条件。
+        // 两个都满足才发，**只发一次**；槽不够时**根本不发**。
+        // 我在这里连续犯过两次错：先漏了一边，又"修正"成两边都放（那会让槽满时伤害翻倍）。
+        // 所以下面同时钉住两件事：①只在奥义槽 ②只出现一次（不许叠加）。
+        void CheckOathOnly(
+            CardDefinition card,
+            CardEffectKind kind,
+            IReadOnlyList<CardEffect>? fanfare,
+            IReadOnlyList<CardEffect>? oath,
+            int expectedCopies,
+            string ruleName)
         {
-            failures.Add(
-                $"卡塔莉娜「【入场曲】【奥义】…」两半都要有：入场曲={catalinaFanfare} 奥义={catalinaOath}");
+            var fanfareCopies = (fanfare ?? []).Count(e => e.Kind == kind);
+            var oathCopies = (oath ?? []).Count(e => e.Kind == kind);
+            if (fanfareCopies != 0)
+            {
+                failures.Add(
+                    $"{card.Name} 的「{ruleName}」不该放在入场曲槽（放了 {fanfareCopies} 份）—— " +
+                    "槽不够时它根本不该发动，放了就会无条件发动");
+            }
+
+            if (oathCopies != expectedCopies)
+            {
+                failures.Add(
+                    $"{card.Name} 的「{ruleName}」在奥义槽应恰好 {expectedCopies} 份，实际 {oathCopies} 份" +
+                    "（多于 1 份会让槽满时伤害翻倍）");
+            }
         }
 
+        CheckOathOnly(
+            catalina,
+            CardEffectKind.DealDamageToRandomEnemyFollowerCount,
+            catalina.FanfareEffects,
+            catalina.OathEffects,
+            1,
+            "【入场曲】【奥义】对随机2个随从5点");
+
         var defen = CardCatalog.Get(CardIds.HeirOfTheCelestialDirectorSaintDefen);
-        var defenFanfare = defen.FanfareEffects?.Any(e =>
-            e.Kind == CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly) == true;
-        var defenSuperOath = defen.SuperOathEffects?.Any(e =>
-            e.Kind == CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly) == true;
-        if (!defenFanfare || !defenSuperOath)
+        CheckOathOnly(
+            defen,
+            CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
+            defen.FanfareEffects,
+            defen.SuperOathEffects,
+            1,
+            "【入场曲】【解放奥义】发动5次随机2点");
+
+        // 数值钉死：槽满时的总伤害 = **所有**奥义份数 × 次数 × 单次伤害（多于一份就会翻倍）。
+        // 注意用 Sum 而不是 Single()：份数不对时 Single() 会抛异常把整个套件打断，
+        // ✗ 根本来不及打印（这个坑在【潜伏】那次踩过）。
+        var defenDamage = (defen.SuperOathEffects ?? [])
+            .Where(e => e.Kind == CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly)
+            .Sum(e => e.Amount * e.SecondaryAmount);
+        if (defenDamage != 10)
         {
             failures.Add(
-                $"圣德芬「【入场曲】【解放奥义】…」两半都要有：入场曲={defenFanfare} 解放奥义={defenSuperOath}");
+                $"圣德芬槽满时总伤害应为 5×2=10（只发一次、不翻倍），实际算出 {defenDamage} —— " +
+                "多于 10 说明奥义槽放了多份");
         }
 
         // ---- ② 跑真实对局 ----

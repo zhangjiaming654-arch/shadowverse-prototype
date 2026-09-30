@@ -2287,14 +2287,8 @@ public static class CardCatalog
             Effect: null,
             CardRarity.Bronze,
             CardProfession.Neutral,
-            // 【入场曲】【奥义】写在同一句里 ⇒ 入场曲**恒发**，奥义槽≥10 时**再发一次**。
-            FanfareEffects:
-            [
-                new CardEffect(
-                    CardEffectKind.DealDamageToRandomEnemyFollowerCount,
-                    2,
-                    SecondaryAmount: 5)
-            ],
+            // 【入场曲】【奥义】是**与**关系：【入场曲】=触发时机，【奥义】=附加条件（槽≥10）。
+            // 两个都满足才发，且**只发一次** —— 槽<10 时根本不发。
             OathEffects:
             [
                 new CardEffect(
@@ -2370,14 +2364,7 @@ public static class CardCatalog
                 RequiredOwnEvolutions: 6,
                 GrantCrestId: null,
                 ReturnsToHand: true),
-            // 【入场曲】【解放奥义】写在同一句里 ⇒ 入场曲**恒发**，奥义槽≥15 时**再发一次**。
-            FanfareEffects:
-            [
-                new CardEffect(
-                    CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
-                    5,
-                    SecondaryAmount: 2)
-            ],
+            // 【入场曲】【解放奥义】同样是**与**关系：从手牌打出 **且** 槽≥15 才发，只发一次。
             SuperOathEffects:
             [
                 new CardEffect(
