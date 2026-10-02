@@ -3533,6 +3533,8 @@ public static class GameEngine
 
         ApplyHandCostReductions(endingPlayer);
         ApplyEndOfOwnTurnCrestEffects(state, state.ActivePlayer);
+        // 上一步只是入队，这里按优先级逐项完整结算。
+        DrainPendingEffects(state);
         if (state.IsGameOver)
         {
             return;
@@ -3808,6 +3810,8 @@ public static class GameEngine
     /// <summary>Resolves 「自己的回合结束时」 effects printed on the ending player's crests.</summary>
     private static void ApplyEndOfOwnTurnCrestEffects(GameState state, int ownerIndex)
     {
+        // **不再就地施加**：每枚纹章各入队一项，Sequence 用纹章获取顺序，
+        // 于是同一优先级里多枚纹章按"获得从早到晚"发动。
         foreach (var crest in state.Players[ownerIndex].CrestsInternal.ToArray())
         {
             if (crest.Definition.EndOfOwnTurnEffects is null)
@@ -3815,22 +3819,80 @@ public static class GameEngine
                 continue;
             }
 
-            foreach (var effect in crest.Definition.EndOfOwnTurnEffects)
-            {
-                switch (effect.Kind)
-                {
-                    case CardEffectKind.ShatterRandomLastWordsCardAndEnemyFollower:
-                        ShatterRandomLastWordsCardAndRandomEnemyFollower(state, ownerIndex);
-                        break;
-                    default:
-                        throw new InvalidOperationException(
-                            $"Unsupported crest end-of-turn effect: {effect.Kind}.");
-                }
+            state.PendingLastWordsInternal.Add(new PendingEffect(
+                PendingEffectPriority.OwnCrest,
+                crest.AcquiredSequence,
+                ownerIndex,
+                PendingEffectKind.CrestEndOfOwnTurn,
+                CrestId: crest.Definition.Id));
+        }
+    }
 
-                if (state.IsGameOver)
-                {
-                    return;
-                }
+    /// <summary>「自己的回合结束时」纹章效果：只处理指定的那一枚纹章，整段跑完。</summary>
+    /// <summary>「自己的主战者回复时」纹章效果：只处理指定的那一枚，整段跑完。</summary>
+    private static void ResolveCrestLeaderRestored(GameState state, int ownerIndex, string crestId)
+    {
+        var owner = state.Players[ownerIndex];
+        var crest = owner.CrestsInternal
+            .FirstOrDefault(candidate => candidate.Definition.Id == crestId);
+        if (crest is null)
+        {
+            return;
+        }
+
+        // 「自己的每回合中可触发1次」：同一枚纹章在同一回合里只触发一次（跨该回合的多次回复共享）。
+        if (crest.LastOwnLeaderRestoreTriggerTurn == owner.OwnTurnNumber)
+        {
+            return;
+        }
+
+        crest.LastOwnLeaderRestoreTriggerTurn = owner.OwnTurnNumber;
+        state.CrestResolutionOrderInternal.Add(crestId);
+
+        foreach (var effect in crest.Definition.OwnLeaderRestoredEffects ?? [])
+        {
+            switch (effect.Kind)
+            {
+                case CardEffectKind.DealDamageToOwnLeader:
+                    DealDamageToLeader(state, ownerIndex, effect.Amount);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported crest leader-restore effect: {effect.Kind}.");
+            }
+
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
+    }
+
+    private static void ResolveCrestEndOfOwnTurn(GameState state, int ownerIndex, string crestId)
+    {
+        state.CrestResolutionOrderInternal.Add(crestId);
+        var crest = state.Players[ownerIndex].CrestsInternal
+            .FirstOrDefault(candidate => candidate.Definition.Id == crestId);
+        if (crest is null)
+        {
+            return;
+        }
+
+        foreach (var effect in crest.Definition.EndOfOwnTurnEffects ?? [])
+        {
+            switch (effect.Kind)
+            {
+                case CardEffectKind.ShatterRandomLastWordsCardAndEnemyFollower:
+                    ShatterRandomLastWordsCardAndRandomEnemyFollower(state, ownerIndex);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported crest end-of-turn effect: {effect.Kind}.");
+            }
+
+            if (state.IsGameOver)
+            {
+                return;
             }
         }
     }
@@ -4117,7 +4179,10 @@ public static class GameEngine
         player.Health = Math.Min(player.MaxHealth, player.Health + amount);
         if (player.Health > healthBefore)
         {
-            ApplyOwnLeaderRestoredCrestEffects(state, playerIndex);
+            // **不能在这里就地结算**：RestoreLeaderHealth 会被别的效果调用，
+            // 就地结算就是插入结算（会打断正在进行的入场曲/攻击）。
+            // 只入队，由外层按优先级逐项完整结算。
+            EnqueueOwnLeaderRestoredCrestEffects(state, playerIndex);
         }
     }
 
@@ -4205,6 +4270,31 @@ public static class GameEngine
         state.Players[playerIndex].Health -= damage;
         CheckLeaderDefeat(state, playerIndex);
         return true;
+    }
+
+    /// <summary>把「自己的主战者回复时」纹章效果**入队**（不就地结算）。</summary>
+    private static void EnqueueOwnLeaderRestoredCrestEffects(GameState state, int ownerIndex)
+    {
+        // 「自己的每回合中可触发1次」——只在该玩家自己的回合里才允许触发。
+        if (state.ActivePlayer != ownerIndex)
+        {
+            return;
+        }
+
+        foreach (var crest in state.Players[ownerIndex].CrestsInternal.ToArray())
+        {
+            if ((crest.Definition.OwnLeaderRestoredEffects ?? []).Count == 0)
+            {
+                continue;
+            }
+
+            state.PendingLastWordsInternal.Add(new PendingEffect(
+                PendingEffectPriority.OwnCrest,
+                crest.AcquiredSequence,
+                ownerIndex,
+                PendingEffectKind.CrestLeaderRestored,
+                CrestId: crest.Definition.Id));
+        }
     }
 
     private static void ApplyOwnLeaderRestoredCrestEffects(GameState state, int ownerIndex)
@@ -5129,6 +5219,12 @@ public static class GameEngine
                     break;
                 case PendingEffectKind.CrestStartOfOwnTurn:
                     ResolveCrestStartOfOwnTurn(state, next.PlayerIndex, next.CrestId!);
+                    break;
+                case PendingEffectKind.CrestEndOfOwnTurn:
+                    ResolveCrestEndOfOwnTurn(state, next.PlayerIndex, next.CrestId!);
+                    break;
+                case PendingEffectKind.CrestLeaderRestored:
+                    ResolveCrestLeaderRestored(state, next.PlayerIndex, next.CrestId!);
                     break;
                 default:
                     throw new InvalidOperationException(
