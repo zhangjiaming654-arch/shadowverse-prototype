@@ -110,6 +110,18 @@ public sealed partial class ReplayForm : Form
     private int _currentStepIndex = -1;
     private bool _isUpdatingMatchSelector;
 
+    /// <summary>本界面自己正在跑批量生成。此时进度栏归自己管，不显示外部进度。</summary>
+    private bool _isGenerating;
+
+    /// <summary>当前进度栏显示的是不是"外部进程（命令行）的进度"。</summary>
+    private bool _showingLiveProgress;
+
+    /// <summary>
+    /// 每秒轮询一次共享进度文件。**命令行跑批量对局时，这个界面也能显示它的进度** ——
+    /// 两个进程之间没有共享内存，所以走文件（见 <see cref="LiveProgress"/>）。
+    /// </summary>
+    private readonly System.Windows.Forms.Timer _liveProgressTimer = new() { Interval = 1000 };
+
     public ReplayForm()
     {
         Text = "影之诗原型 - 对局回放";
@@ -118,6 +130,9 @@ public sealed partial class ReplayForm : Form
         Size = new Size(1280, 900);
         BackColor = BoardBackground;
         KeyPreview = true;
+
+        _liveProgressTimer.Tick += (_, _) => RefreshLiveProgress();
+        _liveProgressTimer.Start();
 
         BuildLayout();
         // 人机对战面板挂在右侧。逻辑全在 ReplayForm.HumanPlay.cs 里，
@@ -463,6 +478,7 @@ public sealed partial class ReplayForm : Form
             _newMatchButton.Enabled = false;
             _matches.Clear();
 
+            _isGenerating = true;
             _progressLabel.ForeColor = Color.FromArgb(255, 214, 130);
             _progressLabel.Text = $"生成中 0/{count}…";
 
@@ -539,6 +555,7 @@ public sealed partial class ReplayForm : Form
         {
             UseWaitCursor = false;
             _newMatchButton.Enabled = true;
+            _isGenerating = false;
         }
     }
     /// <summary>生成进度那一行的文案。</summary>
@@ -559,6 +576,45 @@ public sealed partial class ReplayForm : Form
         // 这一栏只有约 280px 可用，用短名并压缩措辞，否则会被省略号截掉关键数字。
         return $"{done}/{total}（{percent:F0}%） {ShortAgentName(firstAgent)} {firstWins}胜 : " +
                $"{secondWins}胜 {ShortAgentName(secondAgent)}{drawText} 用{DescribeDuration(elapsed)}{remainText}";
+    }
+
+    /// <summary>
+    /// 每秒刷一次**外部进程（命令行）**的进度。本界面自己在生成时让位给它。
+    /// <para>
+    /// 命令行跑批量对局时会把进度写进共享文件，这里读出来显示 —— 用户要的就是
+    /// "我在命令行跑，界面上也能看见"。文件里超过 10 秒没更新会被当作已结束
+    /// （命令行被关掉时没有收尾机会）。
+    /// </para>
+    /// </summary>
+    private void RefreshLiveProgress()
+    {
+        if (_isGenerating)
+        {
+            return;
+        }
+
+        var live = LiveProgress.Read();
+        if (live is null)
+        {
+            // 外部进度结束：把这一栏还给回放（有局就显示步数，没局就显示空闲）。
+            if (_showingLiveProgress)
+            {
+                _showingLiveProgress = false;
+                _progressLabel.ForeColor = Color.White;
+                _progressLabel.Text = _steps.Count == 0
+                    ? "尚未开始"
+                    : $"第 {_currentStepIndex + 1} / {_steps.Count} 步";
+            }
+
+            return;
+        }
+
+        _showingLiveProgress = true;
+        _progressLabel.ForeColor = Color.FromArgb(130, 220, 160);
+        // 前缀 ▶ 表示"这是另一个进程在跑"，跟本界面的生成区分开。
+        _progressLabel.Text =
+            $"▶ 命令行 {live.Done}/{live.Total} " +
+            $"{ShortAgentName(live.FirstName)} {live.FirstWins}胜 : {live.SecondWins}胜 {ShortAgentName(live.SecondName)}";
     }
 
     /// <summary>

@@ -323,6 +323,20 @@ public static class AgentBenchmark
                             $"  进度 {finished}/{options.MatchCount} ｜ 已用 {stopwatch.Elapsed.TotalSeconds:F0} 秒 ｜ " +
                             $"决定性牌局 {firstBoth}:{secondBoth}（各赢一边 {split}）");
 
+                        // **同时写进共享进度文件**，界面（另一个进程）每秒钟读一次显示出来 ——
+                        // 用户要的是"命令行跑着的时候，界面上也能看见进度"。
+                        var perMatch = stopwatch.Elapsed.TotalSeconds / Math.Max(1, finished);
+                        LiveProgress.Report(
+                            "命令行批量对局",
+                            finished,
+                            options.MatchCount,
+                            DisplayName(options.FirstAgent),
+                            firstBoth,
+                            DisplayName(options.SecondAgent),
+                            secondBoth,
+                            stopwatch.Elapsed,
+                            TimeSpan.FromSeconds(perMatch * (options.MatchCount - finished)));
+
                         // BO10 是用户的主要评判口径，所以进度里直接给累计得分，不用等跑完。
                         var bo10 = PartialBo10Tally(options, outcomes, normalCount);
                         if (bo10.Counted > 0)
