@@ -9781,8 +9781,11 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             DeckCatalog.Create("DECK-004", "宇宙鱼 B")
         ];
 
+        // 样本量：每组 150 局（原为 40）。用户报的 37 处违反来自 20 局回放，
+        // 40 局/组还不足以覆盖所有路径；加大到 150 局/组后才敢说"扫干净了"。
+        const int gamesPerDeckSet = 150;
         for (var deckSet = 0; deckSet < firstDecks.Length; deckSet++)
-        foreach (var seed in Enumerable.Range(0, 40).Select(index => 71_000UL + (ulong)index))
+        foreach (var seed in Enumerable.Range(0, gamesPerDeckSet).Select(index => 71_000UL + (ulong)index))
         {
             var state = CompleteMulligan(GameEngine.CreateGame(
                 firstDecks[deckSet],
