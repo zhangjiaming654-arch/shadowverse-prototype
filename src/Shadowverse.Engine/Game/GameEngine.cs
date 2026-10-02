@@ -667,8 +667,11 @@ public static class GameEngine
     {
         // A single-target 【入场曲】 such as 猫咪走绳师's: one option per legal enemy follower, and
         // an option without a target when none can be chosen.
-        if (effects.Any(effect => effect.Kind == CardEffectKind.DealDamageToEnemyFollower))
+        if (effects.Any(effect => effect.Kind == CardEffectKind.DealDamageToEnemyFollower ||
+                                   effect.Kind == CardEffectKind.DestroyEnemyFollower))
         {
+            // 单目标【入场曲】：每个合法敌方随从一个选项，外加一个"选不了目标"的空选项。
+            // 「破坏对手1个随从」（铸铁亲信）和"对1个随从造成伤害"共用同一套目标生成。
             var singleTargets = state.Players[OtherPlayer(state.ActivePlayer)].Board
                 .Where(follower => !follower.HasAura && !follower.HasStealth)
                 .ToArray();
@@ -1039,6 +1042,10 @@ public static class GameEngine
                 case CardEffectKind.IncreaseOwnMaxPlayPoints:
                     IncreaseOwnMaxPlayPoints(state.Players[state.ActivePlayer], effect.Amount);
                     break;
+                case CardEffectKind.SummonFollower:
+                    // 激奏「召唤1个/2个『X』」（低劣的玩具 / 拙劣的人偶）。
+                    SummonFollowers(state, state.ActivePlayer, effect.ReferencedCardId!, effect.Amount);
+                    break;
                 default:
                     throw new InvalidOperationException($"Unsupported Accelerate effect: {effect.Kind}.");
             }
@@ -1201,6 +1208,23 @@ public static class GameEngine
                         state,
                         effect.Amount,
                         effect.SecondaryAmount);
+                    break;
+                case CardEffectKind.DestroyEnemyFollower:
+                    // 【入场曲】版的"破坏对手1个随从"（铸铁亲信）。目标从动作的敌方随从目标里来。
+                    foreach (var targetId in action.EnemyFollowerTargetInstanceIds ?? [])
+                    {
+                        var victim = state.Players[OtherPlayer(state.ActivePlayer)].BoardInternal
+                            .FirstOrDefault(candidate => candidate.InstanceId == targetId);
+                        if (victim is not null)
+                        {
+                            DestroyFollower(state, OtherPlayer(state.ActivePlayer), victim);
+                            if (state.IsGameOver)
+                            {
+                                return;
+                            }
+                        }
+                    }
+
                     break;
                 case CardEffectKind.RemoveAbilitiesFromEnemyFollowers:
                     RemoveAbilitiesFromFollowers(state, action.EnemyFollowerTargetInstanceIds);
@@ -1617,6 +1641,17 @@ public static class GameEngine
             .Where(follower => !follower.HasAura && !follower.HasStealth)
             .ToArray();
 
+        if (effects.Any(effect => effect.Kind == CardEffectKind.DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates))
+        {
+            // 白牙燐敛：要选1个对手随从（牌组无重复时改为破坏全部，但**目标仍是必须选的**）。
+            var destroyTargets = state.Players[OtherPlayer(state.ActivePlayer)].Board
+                .Where(follower => !follower.HasAura && !follower.HasStealth)
+                .ToArray();
+            return destroyTargets.Length == 0
+                ? [null]
+                : destroyTargets.Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId)).ToArray();
+        }
+
         if (effects.Any(effect => effect.Kind == CardEffectKind.TransformInto))
         {
             // 【变身】 prints "choose 1 card on the board" without naming a side or a card type, so both
@@ -1772,8 +1807,10 @@ public static class GameEngine
                             }
                         }
                     }
-                    else
+                    else if (action.Target is EnemyFollowerTarget)
                     {
+                        // 只有真的选了目标才破坏；场上没有合法目标时这条效果**安静地什么都不做**，
+                        // 不该抛"requires selecting an enemy follower"把整局打断（白牙燐敛）。
                         DestroyEnemyFollower(state, action.Target);
                     }
 
@@ -2843,6 +2880,14 @@ public static class GameEngine
             case CardEffectKind.SearchDeckToHand:
                 SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
                 break;
+            case CardEffectKind.GiveSelfCrest:
+                // 【奥义】「使自己获得『纹章：X』」（光之法则·龙敖）——奥义效果走的是进化分发器。
+                GiveCrest(state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
+                break;
+            case CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder:
+                // 愚劣的兵器【进化时】：「对对手所有随从分配3点伤害」。
+                ApplyDistributedDamageToEnemyFollowersByEntryOrder(state, effect.Amount);
+                break;
             case CardEffectKind.DestroyRandomEnemyWardFollowers:
                 DestroyRandomEnemyWardFollowers(state, effect.Amount);
                 break;
@@ -3171,6 +3216,10 @@ public static class GameEngine
                 case CardEffectKind.GiveSelfCrest:
                     GiveCrest(state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
                     break;
+                case CardEffectKind.DealDamageToEnemyLeaderEqualToOwnFollowerCountWithPrintedCostAtLeast:
+                    // 卡密希拉【超进化时】：按"自己战场上原始费用≥N的随从张数"打对手主战者。
+                    ApplyDamageToEnemyLeaderEqualToOwnFollowerCount(state, effect.Amount);
+                    break;
                 case CardEffectKind.GainStormIfOwnTraitFollowerKindsEnteredAtLeast:
                     // 「若本次对战中进入战场的自己的创造物·随从的种类为3种或以上」: counts distinct card
                     // kinds that actually entered play this battle, reusing the entry record.
@@ -3182,6 +3231,14 @@ public static class GameEngine
                         superEvolvedFollower.GrantedKeywords |= CardKeyword.Storm;
                     }
 
+                    break;
+                case CardEffectKind.SummonFollower:
+                    // 【超进化时】「召唤N个『X』」（神话记者）。
+                    SummonFollowers(state, state.ActivePlayer, effect.ReferencedCardId!, effect.Amount);
+                    break;
+                case CardEffectKind.SearchDeckToHand:
+                    // 【超进化时】「抽取N种…」（尽小花·伊鞠）。
+                    SearchDeckToHand(state, state.ActivePlayer, effect.Amount, effect.ReferencedCardId!);
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported super-evolution effect: {effect.Kind}.");
@@ -5139,6 +5196,12 @@ public static class GameEngine
                     GiveCrest(
                         state.Players[ownerIndex],
                         CrestCatalog.Get(effect.ReferencedCardId!));
+                    break;
+                case CardEffectKind.DrawCards:
+                    // 【谢幕曲】「抽取N张卡牌」——「神话记者」「叮当天使·莉亚」用它。
+                    // 之前这条**漏了**，两张卡的谢幕曲一结算就抛 "Unsupported Last Words effect: DrawCards"，
+                    // 直接把整局打断（GUI 上就是"无法生成对局"）。自检没发现是因为这两张卡在测试里从没被破坏过。
+                    DrawCards(state, ownerIndex, effect.Amount);
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported Last Words effect: {effect.Kind}.");

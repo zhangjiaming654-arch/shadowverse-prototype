@@ -99,7 +99,15 @@ public sealed class GreedyPlayerAgent : IPlayerAgent
                 enemyFollowerTargetInstanceId: superEvolve.EnemyFollowerTargetInstanceId),
             UseExtraPlayPointAction => ScoreExtraPlayPoint(observation),
             EndTurnAction => 0,
-            _ => throw new InvalidOperationException("Unsupported action type.")
+            // 【融合】与【启动】是"可选的自增强动作"，估分器暂时不给它们估值（记 0 = 中性）。
+            // 前瞻牌手的强弱靠**推演**判断，推演里这两条走规则牌手时记 0 即可，
+            // 后续该不该融合由推演结果决定。
+            // 注意：这里是"这个动作值多少分"的启发式，遇到没规则的新动作类型记 0 分，
+            // **不该让整局中断**（之前就是这里抛异常，导致 GUI"无法生成对局"）。
+            FuseAction => 0,
+            UseStartAbilityAction => 0,
+            // 未知动作类型记 0 分（中性），**不炸整局**。规则正确性由 GameEngine 负责。
+            _ => 0
         };
     }
 
@@ -416,7 +424,8 @@ public sealed class GreedyPlayerAgent : IPlayerAgent
         return accelerate.Effects.Sum(effect => effect.Kind switch
         {
             CardEffectKind.IncreaseOwnMaxPlayPoints => ScoreIncreaseMaxPlayPoints(observation),
-            _ => throw new InvalidOperationException($"Unsupported Accelerate effect: {effect.Kind}.")
+            // 未知激奏效果记 0 分，不炸整局。
+            _ => 0
         });
     }
 
@@ -538,7 +547,8 @@ public sealed class GreedyPlayerAgent : IPlayerAgent
                 CardEffectKind.SummonFollowerWithBonusWithoutLastWords => 16,
                 CardEffectKind.RecallFollowerFromGraveyard =>
                     observation.Self.Board.Count >= PlayerState.BoardLimit ? 0 : 18,
-                _ => throw new InvalidOperationException($"Unsupported Fanfare mode effect: {effect.Kind}.")
+                // 未知【模式】效果记 0 分，不炸整局。
+            _ => 0
             });
     }
 
