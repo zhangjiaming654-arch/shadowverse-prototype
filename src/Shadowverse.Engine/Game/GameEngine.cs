@@ -3688,6 +3688,8 @@ public static class GameEngine
         }
 
         ApplyStartOfOwnTurnCrestEffects(state);
+        // 上一步只是**入队**，这里按优先级逐项完整结算（含"多枚纹章按获取早晚"的顺序）。
+        DrainPendingEffects(state);
         if (state.IsGameOver)
         {
             return;
@@ -3902,30 +3904,61 @@ public static class GameEngine
 
     private static void ApplyStartOfOwnTurnCrestEffects(GameState state)
     {
+        // **不再就地施加**：把每条纹章的"回合开始效果"各入队一项。
+        // Sequence 用**纹章获取顺序**，于是同一优先级（自己的纹章效果）里，
+        // 多个纹章按"获得从早到晚"发动 —— 设计者规则。
+        // 结算时一项一项完整跑完，不会插进别的结算里。
         var ownerIndex = state.ActivePlayer;
         var owner = state.Players[ownerIndex];
         foreach (var crest in owner.CrestsInternal.ToArray())
         {
-            foreach (var effect in crest.Definition.StartOfOwnTurnEffects ?? [])
+            if ((crest.Definition.StartOfOwnTurnEffects ?? []).Count == 0)
             {
-                switch (effect.Kind)
-                {
-                    case CardEffectKind.DealDamageToOwnLeader:
-                        DealDamageToLeader(state, ownerIndex, effect.Amount);
-                        break;
-                    case CardEffectKind.FireRandomUnusedNumberedAbility:
-                        // 「从以下未发动的能力中随机发动1个能力」: the roll is recorded on this crest, so a slot
-                        // already spent is never picked again.
-                        ApplyRandomUnusedNumberedAbility(state, ownerIndex, crest, effect.ReferencedCardId!);
-                        break;
-                    default:
-                        throw new InvalidOperationException($"Unsupported crest start-of-turn effect: {effect.Kind}.");
-                }
+                continue;
+            }
 
-                if (state.IsGameOver)
-                {
-                    return;
-                }
+            state.PendingLastWordsInternal.Add(new PendingEffect(
+                PendingEffectPriority.OwnCrest,
+                crest.AcquiredSequence,
+                ownerIndex,
+                PendingEffectKind.CrestStartOfOwnTurn,
+                CrestId: crest.Definition.Id));
+        }
+    }
+
+    /// <summary>
+    /// 「自己的回合开始时」纹章效果：**只处理指定的那一枚纹章**，把它整段跑完。
+    /// 由队列按优先级调用；同一优先级里多枚纹章按获取顺序依次进来。
+    /// </summary>
+    private static void ResolveCrestStartOfOwnTurn(GameState state, int ownerIndex, string crestId)
+    {
+        var owner = state.Players[ownerIndex];
+        var crest = owner.CrestsInternal.FirstOrDefault(candidate => candidate.Definition.Id == crestId);
+        if (crest is null)
+        {
+            // 纹章在结算前已被移除（例如【吟唱】归零）—— 合法情况，无事可做。
+            return;
+        }
+
+        foreach (var effect in crest.Definition.StartOfOwnTurnEffects ?? [])
+        {
+            switch (effect.Kind)
+            {
+                case CardEffectKind.DealDamageToOwnLeader:
+                    DealDamageToLeader(state, ownerIndex, effect.Amount);
+                    break;
+                case CardEffectKind.FireRandomUnusedNumberedAbility:
+                    // 「从以下未发动的能力中随机发动1个能力」: the roll is recorded on this crest, so a slot
+                    // already spent is never picked again.
+                    ApplyRandomUnusedNumberedAbility(state, ownerIndex, crest, effect.ReferencedCardId!);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported crest start-of-turn effect: {effect.Kind}.");
+            }
+
+            if (state.IsGameOver)
+            {
+                return;
             }
         }
     }
@@ -5092,6 +5125,9 @@ public static class GameEngine
                     break;
                 case PendingEffectKind.EvolveEntrantPassive:
                     ResolveEvolveEntrantPassive(state, next.PlayerIndex, next.Card!);
+                    break;
+                case PendingEffectKind.CrestStartOfOwnTurn:
+                    ResolveCrestStartOfOwnTurn(state, next.PlayerIndex, next.CrestId!);
                     break;
                 default:
                     throw new InvalidOperationException(
