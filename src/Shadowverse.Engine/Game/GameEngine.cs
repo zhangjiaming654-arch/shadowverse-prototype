@@ -3473,19 +3473,25 @@ public static class GameEngine
             ApplyDrainHeal(state, attacker, attacker.Attack);
         }
 
-        if (attacker.HasBane)
-        {
-            defender.CurrentDefense = 0;
-        }
-
         DealDamageToFollower(
             state,
             state.ActivePlayer,
             attacker,
             defender.Attack);
+
+        // 【毁灭】不是"把对方防御直接置 0"，而是**照常造成伤害之后，再用能力破坏对方**
+        // （设计者裁决）。两者的区别在"无法被能力破坏"的目标上看得见：
+        //   - 直接把防御置 0 → 目标会以 0 防御留在场上
+        //   - 用能力破坏   → 目标**只受到伤害，不会被破坏**
+        // 自己回合中的超进化随从就是后者：既不受伤害、也不被能力破坏。
+        if (attacker.HasBane)
+        {
+            DestroyFollower(state, OtherPlayer(state.ActivePlayer), defender);
+        }
+
         if (defender.HasBane)
         {
-            attacker.CurrentDefense = 0;
+            DestroyFollower(state, state.ActivePlayer, attacker);
         }
 
         // Combat damage is simultaneous, then both destroyed followers enter their owner's graveyard.
@@ -5115,18 +5121,6 @@ public static class GameEngine
         return found;
     }
 
-    private static FollowerInstance? GetPlayedFollowerCounting(GameState state, CardInstance card)
-    {
-        // 返回 null 是**合法情况**：这张随从可能在它自己的【入场曲】结算过程中已经离场。
-        // 实测到的真实连锁（2026-10-02 诊断确认）：
-        //   铸铁亲信的入场曲破坏对手1个随从 → 那个随从的【谢幕曲】是"破坏对手的随机1个随从"
-        //   → 从它视角"对手"就是我方 → 我方那时场上只有铸铁亲信 → 它被带走。
-        // 于是紧接着的第 2 个入场曲效果（"牌组无重复则获得【疾驰】"）找不到自己。
-        // 这时"给自己加关键词"无事可做即可，**不该抛异常把整局打断**。
-        return state.Players[state.ActivePlayer].BoardInternal
-            .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId);
-    }
-
     /// <summary>「发动N次『对对手随机1个随从造成M点』」：每次独立随机，可重复命中同一个随从。</summary>
     private static void ApplyRepeatedRandomDamageToEnemyFollowers(GameState state, int times, int damage)
     {
@@ -5418,10 +5412,19 @@ public static class GameEngine
             return;
         }
 
-        DestroyFollower(state, playerIndex, follower);
+        // **这是"防御降到 0 以下"的状态检查，不是能力造成的破坏**（设计者裁决）。
+        // 所以超进化那条"自己回合中不被能力破坏"的免疫**对它不适用** ——
+        // 否则随从会带着 0 防御一直留在场上。
+        // 实测来源：超进化随从在自己回合攻击一个带【毁灭】的随从，
+        // 【毁灭】把攻击者防御直接置 0（不走伤害），随后状态检查被免疫挡掉。
+        DestroyFollower(state, playerIndex, follower, isStateCheck: true);
     }
 
-    private static bool DestroyFollower(GameState state, int playerIndex, FollowerInstance follower)
+    private static bool DestroyFollower(
+        GameState state,
+        int playerIndex,
+        FollowerInstance follower,
+        bool isStateCheck = false)
     {
         // 【怨灵】离场时消失：the follower leaves play without entering a graveyard or triggering Last Words.
         if (follower.Definition.BanishesWhenLeavingBoard)
@@ -5432,7 +5435,9 @@ public static class GameEngine
         // During their controller's own turn, a super-evolved follower cannot be
         // destroyed by an ability. Combat and ordinary destruction on later turns
         // still work normally.
-        if (follower.IsSuperEvolved && playerIndex == state.ActivePlayer)
+        // 超进化免疫**只挡"能力造成的破坏"**；isStateCheck（防御≤0 的状态检查）
+        // 是规则检查，必须照常破坏。
+        if (!isStateCheck && follower.IsSuperEvolved && playerIndex == state.ActivePlayer)
         {
             return false;
         }

@@ -9759,8 +9759,12 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         // （用斯洛士那种 -X/-X 是**验不到**的：那条路径本来就有破坏检查。）
         CardDefinition[] deck =
         [
-            .. Enumerable.Repeat(CardCatalog.Get(CardIds.LightLawLongAo), 20),
-            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SkyRidingGuardianCatalina), 20)
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.LightLawLongAo), 13),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SkyRidingGuardianCatalina), 13),
+            // 【毁灭】(Bane)：2 费，保证早期就能上场打架。
+            // 这正是实测出"0 防御存活"的那条链：超进化随从在自己回合攻击一个带【毁灭】的随从
+            // → 被【毁灭】破坏（能力破坏）→ 免疫把它挡掉 → 带着 0 防御留在场上。
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientHeavenbladePolalai), 14)
         ];
 
         foreach (var seed in Enumerable.Range(0, 40).Select(index => 71_000UL + (ulong)index))
