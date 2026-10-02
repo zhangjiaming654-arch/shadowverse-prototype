@@ -29,6 +29,16 @@ public sealed record CardInstance(
     /// </summary>
     internal List<string> FusedMaterialCardIdsInternal { get; } = [];
 
+    /// <summary>
+    /// 【奥义】槽的加数只算"**这张卡在手上时**"发生的进化（术语表原文：「在手牌中时自己的随从的进化次数」）。
+    /// 所以记下它**进手那一刻**玩家的本局进化计数，槽 = 回合数 + (当前计数 − 这个快照)。
+    /// 每次进手都重新打一次快照（离场后再回手，只算回手之后的那段）。
+    /// </summary>
+    internal int HandEntryEvolvedCountInternal { get; set; }
+
+    /// <summary>进手时的进化计数快照，公开只读供自检核对奥义槽算法。</summary>
+    public int HandEntryEvolvedCount => HandEntryEvolvedCountInternal;
+
     /// <summary>已融合素材的卡号，公开只读供控制台自检断言。</summary>
     public IReadOnlyList<string> FusedMaterialCardIds => FusedMaterialCardIdsInternal;
 
@@ -37,7 +47,8 @@ public sealed record CardInstance(
         var copy = new CardInstance(InstanceId, Definition, HasSuppressedLastWords)
         {
             CostReduction = CostReduction,
-            TemporaryCostReduction = TemporaryCostReduction
+            TemporaryCostReduction = TemporaryCostReduction,
+            HandEntryEvolvedCountInternal = HandEntryEvolvedCountInternal
         };
         copy.FusedMaterialCardIdsInternal.AddRange(FusedMaterialCardIdsInternal);
         return copy;

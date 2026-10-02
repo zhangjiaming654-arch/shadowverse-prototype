@@ -191,7 +191,7 @@ public static class GameEngine
             .Append(card.CostReduction).Append(',')
             .Append(card.TemporaryCostReduction).Append(',')
             // 【融合】素材决定"种类数"与变身结果，必须进指纹，否则搜索分支会分叉。
-            .Append(string.Join('|', card.FusedMaterialCardIdsInternal)).Append(';');
+            .Append(string.Join('|', card.FusedMaterialCardIdsInternal)).Append(',').Append(card.HandEntryEvolvedCountInternal).Append(';');
     }
 
     /// <summary>
@@ -362,7 +362,11 @@ public static class GameEngine
         opponent.DeckInternal.Clear();
 
         ShuffleCards(determinization, hiddenCards);
-        opponent.HandInternal.AddRange(hiddenCards.Take(hiddenHandCount));
+        foreach (var hidden in hiddenCards.Take(hiddenHandCount))
+        {
+            hidden.HandEntryEvolvedCountInternal = opponent.OwnFollowersEvolvedThisBattle;
+            opponent.HandInternal.Add(hidden);
+        }
         opponent.DeckInternal.AddRange(hiddenCards.Skip(hiddenHandCount));
 
         return determinization;
@@ -842,7 +846,7 @@ public static class GameEngine
         ApplyEnteringFollowerPassiveGrants(state, state.ActivePlayer, follower);
         ApplyFollowerEffect(state, action, card);
         ApplyEnhanceEffects(state, follower, resolvedEnhance);
-        ApplyOathAbilities(state, card.Definition);
+        ApplyOathAbilities(state, card);
 
         // 纹章「自己使用随从时，每回合1次，使其进化」。
         ApplyCrestEvolvePlayedFollower(state, follower);
@@ -2252,21 +2256,23 @@ public static class GameEngine
     /// The engine approximates the second term with "this player's evolutions this battle", because it
     /// does not track when a specific card entered the hand.
     /// </summary>
-    private static int OathGauge(GameState state, int playerIndex) =>
-        state.Players[playerIndex].OwnTurnNumber + state.Players[playerIndex].OwnFollowersEvolvedThisBattle;
+    private static int OathGauge(GameState state, int playerIndex, CardInstance card) =>
+        state.Players[playerIndex].OwnTurnNumber +
+        (state.Players[playerIndex].OwnFollowersEvolvedThisBattle - card.HandEntryEvolvedCountInternal);
 
     /// <summary>
     /// 【奥义】/【解放奥义】 on play: resolves the matching ability list when the gauge clears its threshold.
     /// </summary>
-    private static void ApplyOathAbilities(GameState state, CardDefinition definition)
+    private static void ApplyOathAbilities(GameState state, CardInstance card)
     {
+        var definition = card.Definition;
         if ((definition.OathEffects is not { Count: > 0 } && definition.SuperOathEffects is not { Count: > 0 }))
         {
             return;
         }
 
         var playerIndex = state.ActivePlayer;
-        var gauge = OathGauge(state, playerIndex);
+        var gauge = OathGauge(state, playerIndex, card);
 
         // 【奥义】/【解放奥义】的共同宿主：刚打出的这张随从（它还在场上、尚未进化）。
         var host = state.Players[playerIndex].BoardInternal
@@ -4727,10 +4733,13 @@ public static class GameEngine
     private static void AddCardToHandOrGrave(PlayerState player, CardInstance card)
     {
         if (player.HandInternal.Count >= PlayerState.HandLimit)
-        {            player.GraveyardInternal.Add(card);
+        {
+            player.GraveyardInternal.Add(card);
         }
         else
         {
+            // 【奥义】槽只算"在手上时"发生的进化 —— 进手这一刻打快照。
+            card.HandEntryEvolvedCountInternal = player.OwnFollowersEvolvedThisBattle;
             player.HandInternal.Add(card);
         }
     }
@@ -4979,6 +4988,7 @@ public static class GameEngine
             return;
         }
 
+        card.HandEntryEvolvedCountInternal = player.OwnFollowersEvolvedThisBattle;
         player.HandInternal.Add(card);
     }
 

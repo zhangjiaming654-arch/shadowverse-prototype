@@ -9001,6 +9001,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
 
         failures.AddRange(crestFailures);
         var oathLowChecks = 0;
+        var discriminatingChecks = 0;
         var oathHighChecks = 0;
         var oathFailures = new List<string>();
 
@@ -9040,8 +9041,17 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
 
                 if (granPlay is not null && granPlay.ModeChoiceIndex is not null)
                 {
-                    // 奥义槽 = 自己的回合数 + 本局进化次数（官方术语表的算法）。
-                    var gauge = active.OwnTurnNumber + active.OwnFollowersEvolvedThisBattle;
+                    // 奥义槽 = 自己的回合数 + **这张卡在手上时**发生的进化次数（术语表原文）。
+                    // 引擎按"进手时的进化计数快照"算差值 —— 所以这里也必须用同一个口径，
+                    // 否则自检的期望值本身就不对（我一开始就是写错成"本局总进化次数"）。
+                    var granCard = active.Hand.Single(card => card.InstanceId == granPlay.CardInstanceId);
+                    var gauge = active.OwnTurnNumber +
+                                (active.OwnFollowersEvolvedThisBattle - granCard.HandEntryEvolvedCount);
+                    // **有区分力的那一条**：错误的算法（本局总进化次数）会给出更大的槽。
+                    // 当"错算法≥10 但正确算法<10"时，正确实现**不该**进化 —— 这才能把两种算法分开。
+                    // （只断言"槽够就进化"是没用的：早抽到的卡快照=0，两个公式恰好一样。）
+                    var wrongGauge = active.OwnTurnNumber + active.OwnFollowersEvolvedThisBattle;
+                    var discriminating = wrongGauge >= 10 && gauge < 10;
                     var granInstanceId = granPlay.CardInstanceId;
 
                     state = GameEngine.Apply(state, granPlay);
@@ -9054,7 +9064,21 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                         continue;
                     }
 
-                    if (gauge >= 10)
+                    if (discriminating)
+                    {
+                        // 错算法说"够"、正确算法说"不够" ⇒ 正确实现必须**不进化**。
+                        if (played.EvolutionState != EvolutionState.Unevolved)
+                        {
+                            oathFailures.Add(
+                                $"把\"本局总进化次数\"当槽用会误判为够（错算法={wrongGauge}），" +
+                                $"但按术语表\"在手牌中时\"只有 {gauge}（<10）—— 它却进化了，说明槽算法仍不对");
+                        }
+                        else
+                        {
+                            discriminatingChecks++;
+                        }
+                    }
+                    else if (gauge >= 10)
                     {
                         if (played.EvolutionState == EvolutionState.Unevolved)
                         {
@@ -9210,7 +9234,11 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine("Sloth batch test passed.");
         Console.WriteLine($"【潜伏】：不可被攻击 {stealthAttackChecks} 次 ｜ 不被选为目标 {stealthSelectChecks} 次 ｜ 攻击后解除潜行 {stealthConsumeChecks} 次。");
         Console.WriteLine($"纹章·随机未发动能力：回合开始发动并记账 {crestTurnChecks} 次，已发动槽位轨迹 [{string.Join(",", crestSlotsSeen)}]。");
-        Console.WriteLine($"【奥义】槽=回合数+本局进化次数：<10 不进化 {oathLowChecks} 次 ｜ ≥10 进化 {oathHighChecks} 次。");
+        Console.WriteLine($"【奥义】槽=回合数+**在手牌中时**的进化次数：<10 不进化 {oathLowChecks} 次 ｜ ≥10 进化 {oathHighChecks} 次 ｜ 能区分两种算法的场合 {discriminatingChecks} 次。");
+        if (discriminatingChecks == 0)
+        {
+            Console.WriteLine("🟡 没有出现「错算法说够、正确算法说不够」的场合 —— 本批自检**无法区分**两种槽算法（如实标注）。");
+        }
         Console.WriteLine($"「创造物进入战场时」被动：米乌在场且创造物进场 {miuTriggerChecks} 次 ｜ 个性店主在场且创造物进场 {shopkeeperTriggerChecks} 次。");
     }
 
