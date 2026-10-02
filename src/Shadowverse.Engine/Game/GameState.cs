@@ -112,6 +112,13 @@ public sealed class GameState
     /// </summary>
     public long PlayedFollowerLookupMissesInternal { get; internal set; }
 
+    /// <summary>
+    /// 观察量：纹章"回合开始效果"的**实际结算顺序**（记录纹章 Id，按结算先后追加）。
+    /// 用于断言"同一优先级里多枚纹章按**获取从早到晚**发动"。
+    /// 只读观察，不参与任何决策。
+    /// </summary>
+    public List<string> CrestResolutionOrderInternal { get; } = [];
+
     public bool IsGameOver => Phase == GamePhase.GameOver;
 
     internal GameState DeepCopy()
@@ -129,6 +136,7 @@ public sealed class GameState
         copy.NextPendingEffectSequence = NextPendingEffectSequence;
         copy.NextCrestAcquiredSequence = NextCrestAcquiredSequence;
         copy.PlayedFollowerLookupMissesInternal = PlayedFollowerLookupMissesInternal;
+        copy.CrestResolutionOrderInternal.AddRange(CrestResolutionOrderInternal);
         return copy;
     }
 }

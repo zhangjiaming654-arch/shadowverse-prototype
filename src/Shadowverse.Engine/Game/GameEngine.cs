@@ -3932,6 +3932,7 @@ public static class GameEngine
     /// </summary>
     private static void ResolveCrestStartOfOwnTurn(GameState state, int ownerIndex, string crestId)
     {
+        state.CrestResolutionOrderInternal.Add(crestId);
         var owner = state.Players[ownerIndex];
         var crest = owner.CrestsInternal.FirstOrDefault(candidate => candidate.Definition.Id == crestId);
         if (crest is null)

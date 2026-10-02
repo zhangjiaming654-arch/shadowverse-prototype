@@ -9738,6 +9738,117 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// **纹章顺序护栏**：同一优先级（自己的纹章效果）里有**多枚**纹章时，
+    /// 必须按**获取的早晚**发动（先拿到的先发动）—— 设计者规则。
+    /// <para>
+    /// 做法：双方卡组都放入"会给对手塞纹章"的两张卡
+    /// （焦灰的安纳提玛·班德奈特 / 转动的《命运之轮》·斯洛士），
+    /// 让某一方在若干回合后同时持有两枚带"回合开始效果"的纹章；
+    /// 每次换手后读取"本回合开局实际结算的纹章顺序"，
+    /// 断言其**获取序号单调递增**。
+    /// </para>
+    /// </summary>
+    internal static void RunCrestResolutionOrderTest()
+    {
+        var failures = new List<string>();
+        var checks = 0;
+        var sawMultiCrest = 0;
+
+        // 双方卡组**全部只放这两张"塞纹章"的卡**（各 20 张），
+        // 让它们在早期就反复上场并进化/超进化，从而逼出"同一方同时持有两枚纹章"的局面。
+        CardDefinition[] deck =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SpinningWheelOfFortuneSloth), 20),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AshenAnathemaBanderst), 20)
+        ];
+
+        if (deck.Length != DeckDefinition.RequiredCardCount)
+        {
+            throw new InvalidOperationException($"纹章顺序测试的卡组必须 40 张，实际 {deck.Length}");
+        }
+
+        foreach (var seed in Enumerable.Range(0, 80).Select(index => 96_000UL + (ulong)index))
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("crest-a", deck),
+                new DeckDefinition("crest-b", deck),
+                seed);
+
+            for (var step = 0; step < 1200 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                // **要真的出牌、真的进化**，否则"给对手塞纹章"的那两张卡永远上不了场。
+                var chosen = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<SuperEvolveAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EvolveAction>().FirstOrDefault()
+                    ?? legalActions.OfType<PlaySpellAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+
+                if (chosen is not EndTurnAction)
+                {
+                    state = GameEngine.Apply(state, chosen);
+                    continue;
+                }
+
+                var logBefore = state.CrestResolutionOrderInternal.Count;
+                state = GameEngine.Apply(state, chosen);
+
+                var resolved = state.CrestResolutionOrderInternal.Skip(logBefore).ToArray();
+                if (resolved.Length < 2)
+                {
+                    continue;
+                }
+
+                checks++;
+                // 新回合的行动方就是这批纹章的持有者。
+                var holder = state.Players[state.ActivePlayer];
+                var sequences = resolved
+                    .Select(id => holder.Crests
+                        .FirstOrDefault(crest => crest.Definition.Id == id)?.AcquiredSequence ?? -1)
+                    .ToArray();
+
+                for (var index = 1; index < sequences.Length; index++)
+                {
+                    if (sequences[index] < sequences[index - 1])
+                    {
+                        failures.Add(
+                            $"纹章结算顺序错：实际结算 {string.Join(" → ", resolved)}，" +
+                            $"对应获取序号 {string.Join(" → ", sequences)} —— 必须从早到晚单调递增");
+                        break;
+                    }
+                }
+            }
+
+            sawMultiCrest += checks > 0 ? 1 : 0;
+        }
+
+        if (checks == 0)
+        {
+            failures.Add("没构造出「同时持有两枚带回合开始效果的纹章」这个局面 —— 本条断言没验到东西");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures.Take(5).ToList(), "纹章结算顺序");
+        }
+
+        Console.WriteLine("Crest resolution order test passed.");
+        Console.WriteLine($"纹章按获取早晚发动：验到 {checks} 次多纹章开局（来自 {sawMultiCrest} 局）。");
+    }
+
+    /// <summary>
     /// **结算顺序护栏**：入场曲必须完整结算完，才轮到对手的【谢幕曲】—— 不允许插入结算。
     /// <para>
     /// 局面（确定性）：我方场上只有「铸铁亲信」；对手场上有「渊底上校」。

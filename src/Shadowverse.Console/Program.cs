@@ -89,6 +89,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunStartAbilityTest();
     // 结算顺序护栏：入场曲完整结算完才轮到对手的谢幕曲（不允许插入结算）。
     AgentSelfTests.RunResolutionOrderTest();
+    // 纹章顺序护栏：同一优先级里多枚纹章按"获取从早到晚"发动。
+    AgentSelfTests.RunCrestResolutionOrderTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();
