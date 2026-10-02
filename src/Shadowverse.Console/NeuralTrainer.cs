@@ -348,8 +348,15 @@ public static class NeuralTrainer
         // 手调线性评估作为对照：把网络和它放在同一把尺子上。
         // 注意 Search 模式下这个对照只是在给出"线性模型在同样输入上能把这批标签拟到多好"，
         // 不是最终判据 —— 判据是下面的相关系数。
-        var handTunedWeights = LookaheadPlayerAgent.PositionWeights;
-        var handTunedScale = LookaheadPlayerAgent.ScoreScale;
+        // 对照权重按**特征维度**选：2.0 是 20 维、1.0 是 21 维，两者不是同一套。
+        // 原来写死用 1.0 的 —— 拿 20 维样本去拟合会直接长度不匹配。
+        var featureCount = trainFeatures[0].Length;
+        var handTunedWeights = featureCount == LookaheadPlayerAgentV2.PositionWeights.Length
+            ? LookaheadPlayerAgentV2.PositionWeights
+            : LookaheadPlayerAgent.PositionWeights;
+        var handTunedScale = featureCount == LookaheadPlayerAgentV2.PositionWeights.Length
+            ? LookaheadPlayerAgentV2.ScoreScale
+            : LookaheadPlayerAgent.ScoreScale;
         return new TrainResult(
             net,
             source,

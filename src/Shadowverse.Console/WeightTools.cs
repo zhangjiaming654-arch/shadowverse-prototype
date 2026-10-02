@@ -129,10 +129,11 @@ public static class WeightTools
                             return;
                         }
 
+                        var actingAgent = step.ActingPlayer == 0 ? firstAgent : secondAgent;
                         samples.Add((
-                            LookaheadPlayerAgent.PositionFeatures(step.BeforeState, step.ActingPlayer),
+                            FeaturesOf(actingAgent, step.BeforeState, step.ActingPlayer),
                             step.ActingPlayer,
-                            SearchValueOf(step.ActingPlayer == 0 ? firstAgent : secondAgent)));
+                            SearchValueOf(actingAgent)));
                     });
 
                 // The winner is only known once the match ends, so the labels are attached here.
@@ -202,6 +203,16 @@ public static class WeightTools
 
         return best;
     }
+
+    /// <summary>
+    /// 特征提取器**按牌手选**：2.0 的特征表和 1.0 不是同一套（2.0 多了 4 项引擎类特征）。
+    /// 原来采样写死用 1.0 的 —— 于是"用 2.0 采样本"采到的是 **1.0 的 21 维特征**，
+    /// 拟合出的权重根本用不到 2.0 的 20 维特征上。
+    /// </summary>
+    private static double[] FeaturesOf(IPlayerAgent agent, GameState state, int perspective) =>
+        agent is LookaheadPlayerAgentV2
+            ? LookaheadPlayerAgentV2.PositionFeatures(state, perspective)
+            : LookaheadPlayerAgent.PositionFeatures(state, perspective);
 
     private static int WriteSamples(
         string outputPath,
