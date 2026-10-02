@@ -908,8 +908,13 @@ public static class GameEngine
 
         ApplyEnteringFollowerPassiveGrants(state, state.ActivePlayer, follower);
         ApplyFollowerEffect(state, action, card);
-        ApplyEnhanceEffects(state, follower, resolvedEnhance);
+
+        // 【奥义】/【解放奥义】**属于"入场曲"这一档**（设计者规则），和入场曲一起结算，
+        // 不是排在后面的独立触发。所以它紧跟在入场曲之后、在【爆能强化】之前跑完，
+        // 而且中间不允许插入任何别人的触发。
         ApplyOathAbilities(state, card);
+
+        ApplyEnhanceEffects(state, follower, resolvedEnhance);
 
         // 纹章「自己使用随从时，每回合1次，使其进化」。
         ApplyCrestEvolvePlayedFollower(state, follower);
