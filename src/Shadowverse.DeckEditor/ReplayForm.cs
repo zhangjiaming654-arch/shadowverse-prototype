@@ -441,9 +441,13 @@ public sealed partial class ReplayForm : Form
         var firstRollouts = int.Parse((string)_firstRollouts.SelectedItem!, CultureInfo.InvariantCulture);
         var secondRollouts = int.Parse((string)_secondRollouts.SelectedItem!, CultureInfo.InvariantCulture);
 
-        var firstWins = 0;
-        var secondWins = 0;
-        var draws = 0;
+        // 种子先在**界面线程**上取好：CreateSeed 用的是共享随机源，不能让后台线程并发调用。
+        var seeds = new ulong[count];
+        for (var index = 0; index < count; index++)
+        {
+            seeds[index] = CreateSeed();
+        }
+
         var started = System.Diagnostics.Stopwatch.StartNew();
 
         try
@@ -452,58 +456,70 @@ public sealed partial class ReplayForm : Form
             _newMatchButton.Enabled = false;
             _matches.Clear();
 
-            // 进度写进 **回放那一栏的 _progressLabel** —— 那一栏实测一定能渲染。
-            // （曾经在顶部加过"第三行"专放进度，在 root 的 AutoSize 行里渲染不出来。）
             _progressLabel.ForeColor = Color.FromArgb(255, 214, 130);
             _progressLabel.Text = $"生成中 0/{count}…";
-            await Task.Yield();
 
-            for (var index = 1; index <= count; index++)
+            // **必须在后台线程上跑。**
+            // 之前是在界面线程上跑循环、每局之间 await Task.Yield() 让出一次 —— 那只保证
+            // "两局之间"能刷新，**一局内部界面照样冻死**（用户实测："好像还卡住了"）。
+            // 一局要几十秒，用户就看到画面不动。
+            // Progress<T> 在构造时捕获界面线程的同步上下文，所以 Report 会回到界面线程执行，
+            // 在后台线程里碰它也是安全的。
+            IProgress<string> progress = new Progress<string>(text => _progressLabel.Text = text);
+
+            var generated = await Task.Run(() =>
             {
-                var seed = CreateSeed();
-                var firstDeckDefinition = DeckCatalog.Create(firstDeck.Id, $"{firstDeck.Name} P1");
-                var secondDeckDefinition = DeckCatalog.Create(secondDeck.Id, $"{secondDeck.Name} P2");
-                var initial = GameEngine.CreateGame(firstDeckDefinition, secondDeckDefinition, seed);
-                var steps = new List<MatchStep>();
-                var result = MatchRunner.PlayToEnd(
-                    initial,
-                    CreateAgent(firstAgent, seed + 1, firstRollouts),
-                    CreateAgent(secondAgent, seed + 2, secondRollouts),
-                    onStep: steps.Add);
+                var matches = new List<ReplayMatch>(count);
+                var firstWins = 0;
+                var secondWins = 0;
+                var draws = 0;
 
-                _matches.Add(new ReplayMatch(
-                    index,
-                    seed,
-                    firstDeck.ToString(),
-                    secondDeck.ToString(),
-                    firstAgent,
-                    secondAgent,
-                    initial,
-                    steps,
-                    result.Winner));
-
-                switch (result.Winner)
+                for (var index = 1; index <= count; index++)
                 {
-                    case 0: firstWins++; break;
-                    case 1: secondWins++; break;
-                    default: draws++; break;
+                    var seed = seeds[index - 1];
+                    var firstDeckDefinition = DeckCatalog.Create(firstDeck.Id, $"{firstDeck.Name} P1");
+                    var secondDeckDefinition = DeckCatalog.Create(secondDeck.Id, $"{secondDeck.Name} P2");
+                    var initial = GameEngine.CreateGame(firstDeckDefinition, secondDeckDefinition, seed);
+                    var steps = new List<MatchStep>();
+                    var result = MatchRunner.PlayToEnd(
+                        initial,
+                        CreateAgent(firstAgent, seed + 1, firstRollouts),
+                        CreateAgent(secondAgent, seed + 2, secondRollouts),
+                        onStep: steps.Add);
+
+                    matches.Add(new ReplayMatch(
+                        index,
+                        seed,
+                        firstDeck.ToString(),
+                        secondDeck.ToString(),
+                        firstAgent,
+                        secondAgent,
+                        initial,
+                        steps,
+                        result.Winner));
+
+                    switch (result.Winner)
+                    {
+                        case 0: firstWins++; break;
+                        case 1: secondWins++; break;
+                        default: draws++; break;
+                    }
+
+                    var elapsed = started.Elapsed;
+                    var perGame = elapsed.TotalSeconds / index;
+                    var remaining = TimeSpan.FromSeconds(Math.Max(0, perGame * (count - index)));
+                    progress.Report(BuildGenerationStatus(
+                        index, count, firstAgent, firstWins, secondAgent, secondWins, draws,
+                        elapsed, remaining));
                 }
 
-                // —— 面板刷新 ——
-                var elapsed = started.Elapsed;
-                var perGame = elapsed.TotalSeconds / index;
-                var remaining = TimeSpan.FromSeconds(Math.Max(0, perGame * (count - index)));
-                _progressLabel.Text = BuildGenerationStatus(
-                    index, count, firstAgent, firstWins, secondAgent, secondWins, draws, elapsed, remaining);
+                return (Matches: matches, FirstWins: firstWins, SecondWins: secondWins, Draws: draws);
+            });
 
-                // **让出一次消息循环** —— 否则整批期间界面完全冻住，一次也刷不出来，
-                // 用户只能干等（这是本次改动的全部理由）。
-                await Task.Yield();
-            }
-
+            _matches.AddRange(generated.Matches);
             _progressLabel.Text = BuildGenerationStatus(
-                count, count, firstAgent, firstWins, secondAgent, secondWins, draws,
-                started.Elapsed, TimeSpan.Zero).Replace("　预计剩余 0秒", string.Empty);
+                count, count, firstAgent, generated.FirstWins, secondAgent, generated.SecondWins,
+                generated.Draws, started.Elapsed, TimeSpan.Zero).Replace("　预计剩余 0秒", string.Empty);
 
             PopulateMatchSelector();
             ShowResultSummary();
@@ -518,7 +534,6 @@ public sealed partial class ReplayForm : Form
             _newMatchButton.Enabled = true;
         }
     }
-
     /// <summary>生成进度那一行的文案。</summary>
     private static string BuildGenerationStatus(
         int done,
