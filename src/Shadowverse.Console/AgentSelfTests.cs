@@ -9738,6 +9738,90 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// **负防御护栏**：随从的当前防御降到 0 以下，就必须被破坏 —— 不论它是普通还是超进化。
+    /// <para>
+    /// 实测踩过（用户截图）：超进化的「拙劣的人偶」显示 **4/-7** 还留在场上。
+    /// 根因：防御≤0 的状态检查走 <c>DestroyFollower</c>，而那里有"自己回合中超进化随从不被能力破坏"
+    /// 的免疫，连**状态检查**一起挡掉了；而且之后没有任何地方会重查 —— 负防御就一直挂着。
+    /// </para>
+    /// <para>
+    /// 超进化免疫只该挡「能力造成的破坏」，不该挡"防御降到 0 以下"这个规则检查。
+    /// </para>
+    /// </summary>
+    internal static void RunNegativeDefenseTest()
+    {
+        var failures = new List<string>();
+        var checkedFollower = 0;
+
+        // 卡组用"会对敌方随机随从反复造成伤害"的两张卡 —— 这正是实测出负防御的那两条路径：
+        //   光之法则·龙敖【入场曲】：发动6次「对随机1个随从造成1点伤害」
+        //   卡塔莉娜【奥义】：对随机2个随从各造成5点
+        // （用斯洛士那种 -X/-X 是**验不到**的：那条路径本来就有破坏检查。）
+        CardDefinition[] deck =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.LightLawLongAo), 20),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SkyRidingGuardianCatalina), 20)
+        ];
+
+        foreach (var seed in Enumerable.Range(0, 40).Select(index => 71_000UL + (ulong)index))
+        {
+            var state = CompleteMulligan(GameEngine.CreateGame(
+                new DeckDefinition("neg-a", deck),
+                new DeckDefinition("neg-b", deck),
+                seed));
+
+            for (var step = 0; step < 600 && !state.IsGameOver; step++)
+            {
+                foreach (var player in state.Players)
+                {
+                    foreach (var follower in player.Board)
+                    {
+                        if (follower.CurrentDefense <= 0)
+                        {
+                            failures.Add(
+                                $"防御 {follower.CurrentDefense} 的随从 {follower.Definition.Id}" +
+                                $"#{(follower.InstanceId)} 还留在战场上（超进化={follower.IsSuperEvolved}）");
+                        }
+
+                        checkedFollower++;
+                    }
+                }
+
+                if (failures.Count > 0)
+                {
+                    break;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var chosen = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<SuperEvolveAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EvolveAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+                state = GameEngine.Apply(state, chosen);
+            }
+
+            if (failures.Count > 0)
+            {
+                break;
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures.Take(5).ToList(), "负防御");
+        }
+
+        Console.WriteLine("Negative defence test passed.");
+        Console.WriteLine($"负防御检查：扫过 {checkedFollower} 次战场随从，没有防御≤0 还留在场上的。");
+    }
+
+    /// <summary>
     /// **回放格式（SVP/R2）完整性护栏**：导出的 JSON 必须带**每步状态快照**和**全程卡表**。
     /// <para>
     /// R1 只有动作序列 → 事后分析只能"从动作推断"；R1 的卡表只含初始手牌+牌库 →

@@ -4939,6 +4939,9 @@ public static class GameEngine
 
             var target = candidates[NextInt(state, candidates.Length)];
             DealDamageToFollower(state, opponentIndex, target, damage);
+            // **扣血之后必须做"防御≤0 就破坏"的状态检查。** 漏了这一步，随从会以负防御一直
+            // 留在场上（实测：卡塔莉娜的【奥义】对「拙劣的人偶」打 10 点 → 3/-7 存活）。
+            DestroyFollowerIfNeeded(state, opponentIndex, target);
             if (state.IsGameOver)
             {
                 return;
@@ -5136,7 +5139,11 @@ public static class GameEngine
                 return;
             }
 
-            DealDamageToFollower(state, enemyIndex, candidates[NextInt(state, candidates.Length)], damage);
+            var struck = candidates[NextInt(state, candidates.Length)];
+            DealDamageToFollower(state, enemyIndex, struck, damage);
+            // 同上：漏了状态检查就会留下负防御的随从
+            //（实测：龙敖的【入场曲】对卡塔莉娜打 5 次 → 5/0 存活）。
+            DestroyFollowerIfNeeded(state, enemyIndex, struck);
             if (state.IsGameOver)
             {
                 return;

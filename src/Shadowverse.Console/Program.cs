@@ -97,6 +97,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunOnEvolveFieldPlacementTest();
     // 回放格式护栏：JSON 必须带每步状态快照和全程卡表。
     AgentSelfTests.RunMachineReplaySnapshotTest();
+    // 负防御护栏：防御降到 0 以下的随从必须被破坏。
+    AgentSelfTests.RunNegativeDefenseTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();
