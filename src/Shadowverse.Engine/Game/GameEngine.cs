@@ -3340,6 +3340,12 @@ public static class GameEngine
                 case CardEffectKind.AddCopyToHandWithoutLastWords:
                     AddCopiesToHand(state, ownerIndex, effect.ReferencedCardId!, effect.Amount, suppressLastWords: true);
                     break;
+                case CardEffectKind.DestroyRandomEnemyWardFollowers:
+                    // 「本随从进化时，破坏对手的战场上的随机2个拥有【守护】的随从」（BASE-104）。
+                    // 卡面写的是「本随从进化时」而不是【进化时】，所以**任何途径的进化**都要走这里 ——
+                    // 包括纹章的自动进化和【爆能强化】里的 EvolveSelf。
+                    DestroyRandomEnemyWardFollowers(state, effect.Amount);
+                    break;
                 default:
                     throw new InvalidOperationException(
                         $"Unsupported \"when this follower evolves\" effect: {effect.Kind}.");

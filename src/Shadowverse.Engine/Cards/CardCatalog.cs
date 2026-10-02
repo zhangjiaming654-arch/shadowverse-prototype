@@ -2343,7 +2343,15 @@ public static class CardCatalog
                         new CardEffect(CardEffectKind.GainStorm, 1)
                     ])
             ],
-            EvolutionEffects:
+            // 卡面是「**本随从进化时**」而不是【进化时】—— 所以**任何途径的进化都要触发它**，
+            // 包括「纹章：自己使用随从时每回合1次使其进化」和【爆能强化_9】里的 EvolveSelf。
+            // OnEvolveEffects 正是"所有进化途径都触发"那条路径（EvolveFollowerByAbility 会调它）；
+            // 记在 EvolutionEffects 里只在玩家主动进化时触发，纹章的自动进化就漏掉了。
+            // 卡面是「**本随从进化时**」而不是【进化时】—— 所以**任何途径的进化都要触发它**，
+            // 包括「纹章：自己使用随从时每回合1次使其进化」和【爆能强化_9】里的 EvolveSelf。
+            // OnEvolveEffects 正是"所有进化途径都触发"那条路径（EvolveFollowerByAbility 会调它）；
+            // 记在 EvolutionEffects 里只在玩家主动进化时触发，纹章的自动进化就漏掉了。
+            OnEvolveEffects:
             [
                 new CardEffect(CardEffectKind.DestroyRandomEnemyWardFollowers, 2)
             ]),

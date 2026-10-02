@@ -93,6 +93,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunCrestResolutionOrderTest();
     // 5 档跨类优先级护栏：同一批队列结算里优先级必须非递减。
     AgentSelfTests.RunCrossCategoryPriorityTest();
+    // 「本随从进化时」必须挂在 OnEvolveEffects（所有进化途径都触发）。
+    AgentSelfTests.RunOnEvolveFieldPlacementTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

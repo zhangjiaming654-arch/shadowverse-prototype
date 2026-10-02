@@ -199,6 +199,9 @@ public static class HumanActionResolver
     public static int? ModeIndexOf(GameAction action) => action switch
     {
         PlayFollowerAction play => play.ModeChoiceIndex,
+        // **法术也有【模式】**（例如「跑酷」的抉择）。之前漏了这一条，于是法术的两个模式
+        // 在界面上只能显示同一个通用标签，用户根本无从选起。
+        PlaySpellAction spell => spell.ModeChoiceIndex,
         EvolveAction evolve => evolve.ModeChoiceIndex,
         SuperEvolveAction super => super.ModeChoiceIndex,
         _ => null
@@ -212,10 +215,47 @@ public static class HumanActionResolver
         PlayFollowerAction play => observation.OwnHand
             .FirstOrDefault(card => card.InstanceId == play.CardInstanceId)
             ?.Definition.FanfareModeOptions,
+        PlaySpellAction spell => SpellModeOptionsOf(observation, spell.CardInstanceId),
         EvolveAction evolve => EvolutionModeOptionsOf(observation, evolve.FollowerInstanceId),
         SuperEvolveAction super => EvolutionModeOptionsOf(observation, super.FollowerInstanceId),
         _ => null
     };
+
+    /// <summary>
+    /// 法术的【模式】。目前只有一种编码：<c>ParkourChoiceOrAllModes</c> 把
+    /// "特征|阈值|卡名1|卡名2…" 打包在一个字符串里，每个卡名就是一个可选的模式
+    /// （「将1张『X』加入手牌」）。模式名直接取自卡牌目录，所以和卡面文字一致。
+    /// </summary>
+    private static IReadOnlyList<ModeDefinition>? SpellModeOptionsOf(
+        GameObservation observation,
+        int cardInstanceId)
+    {
+        var definition = observation.OwnHand
+            .FirstOrDefault(card => card.InstanceId == cardInstanceId)?.Definition;
+        var payload = definition?.SpellEffects?
+            .FirstOrDefault(effect => effect.Kind == CardEffectKind.ParkourChoiceOrAllModes)
+            ?.ReferencedCardId;
+        if (payload is null)
+        {
+            return null;
+        }
+
+        var parts = payload.Split('|');
+        if (parts.Length < 3)
+        {
+            return null;
+        }
+
+        return parts.Skip(2)
+            .Select(cardId =>
+            {
+                var name = CardCatalog.Get(cardId).Name;
+                return new ModeDefinition(
+                    $"将1张『{name}』加入手牌",
+                    [new CardEffect(CardEffectKind.AddCopyToHand, 1, cardId)]);
+            })
+            .ToArray();
+    }
 
     /// <summary>
     /// 这个动作选的模式叫什么。模式名本身就是完整的能力说明

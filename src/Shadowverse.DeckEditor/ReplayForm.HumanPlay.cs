@@ -71,6 +71,28 @@ public sealed partial class ReplayForm
     /// <summary>对手是谁（哪个版本、多少次推演）。每一步都会重画状态栏，所以要把它记下来，不能只写一次。</summary>
     private string _humanOpponentSummary = string.Empty;
 
+    /// <summary>
+    /// **纹章区**：显示双方主战者已经获得的纹章。
+    /// <para>
+    /// 纹章是**公开信息**，所以对手那一侧也要看得见 —— 以前界面上完全没有这块，
+    /// 用户看不出谁身上挂了什么纹章、还能触发什么。
+    /// </para>
+    /// <para>
+    /// 没有纹章时高度归零，不占版面（这段面板本来就挤，多一行会顶掉下面的内容）。
+    /// </para>
+    /// </summary>
+    private readonly Label _crestZone = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 0,
+        ForeColor = Color.FromArgb(206, 186, 255),
+        Font = new Font("Microsoft YaHei UI", 8.5F),
+        Text = string.Empty
+    };
+
+    /// <summary>纹章的完整能力说明放在悬停提示里（名称短、说明长，全塞进版面会顶掉别的内容）。</summary>
+    private readonly ToolTip _crestZoneToolTip = new();
+
     /// <summary>操作提示。换牌阶段和出牌阶段讲的话不一样，所以单独一个标签。</summary>
     private readonly Label _humanHint = new()
     {
@@ -267,6 +289,8 @@ public sealed partial class ReplayForm
         _humanPanel.Controls.Add(_thinkingPanel);
         _humanPanel.Controls.Add(_humanHint);
         _humanPanel.Controls.Add(_humanStatus);
+        // 纹章区紧贴状态栏下方；没有纹章时高度为 0，不占版面。
+        _humanPanel.Controls.Add(_crestZone);
         _humanPanel.Controls.Add(_agentLegend);
         _humanPanel.Controls.Add(_humanPlayButton);
         _humanPanel.Controls.Add(title);
@@ -454,6 +478,8 @@ public sealed partial class ReplayForm
                 "拖到己方另一个随从上 → 超进化时带动它；\n" +
                 "点一下自己的随从 → 菜单里选【进化】/【超进化】。";
         }
+
+        RefreshCrestZone(observation);
 
         _humanChoice = completion;
         ClearHumanActions();
@@ -1758,6 +1784,39 @@ public sealed partial class ReplayForm
         }
 
         System.Diagnostics.Debug.WriteLine("[人机对战] 界面出错：" + exception);
+    }
+
+    /// <summary>
+    /// 纹章区：把**双方**主战者已获得的纹章画出来。
+    /// <para>
+    /// 纹章是公开信息（对手挂着的纹章你本来就看得见），所以两边都列。
+    /// 纹章的完整能力说明放进标签的悬停提示里 —— 名称短、说明长，全塞进版面会顶掉别的内容。
+    /// </para>
+    /// <para>没有纹章时高度归零，不占版面。</para>
+    /// </summary>
+    private void RefreshCrestZone(GameObservation observation)
+    {
+        var mine = observation.Self.Crests ?? [];
+        var theirs = observation.Opponent.Crests ?? [];
+
+        var lines = new List<string>();
+        if (mine.Count > 0)
+        {
+            lines.Add("你的纹章：" + string.Join("　", mine.Select(crest => $"◆{crest.Name}")));
+        }
+
+        if (theirs.Count > 0)
+        {
+            lines.Add("对手纹章：" + string.Join("　", theirs.Select(crest => $"◆{crest.Name}")));
+        }
+
+        _crestZone.Text = string.Join("\n", lines);
+        _crestZone.Height = lines.Count == 0 ? 0 : (22 * lines.Count) + 6;
+
+        var tips = mine.Select(crest => $"【你的】{crest.Name}：{crest.EffectText}")
+            .Concat(theirs.Select(crest => $"【对手】{crest.Name}：{crest.EffectText}"))
+            .ToArray();
+        _crestZoneToolTip.SetToolTip(_crestZone, string.Join("\n\n", tips));
     }
 
     private static string DescribeOwnState(GameObservation observation)

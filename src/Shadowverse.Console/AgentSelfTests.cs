@@ -9738,6 +9738,66 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// **「本随从进化时」字段归属护栏**。
+    /// <para>
+    /// 卡面写「本随从进化时」的随从，效果必须挂在 <c>OnEvolveEffects</c> 上 ——
+    /// 那是"**任何途径的进化**都会触发"的路径（纹章的自动进化、【爆能强化】里的 EvolveSelf 都走它）。
+    /// 挂在 <c>EvolutionEffects</c>（【进化时】）上则只在玩家主动进化时触发，纹章的自动进化会漏掉。
+    /// </para>
+    /// <para>
+    /// 实测踩过：BASE-104「决断的交错·亚修雷&莉缇雅」卡面是「本随从进化时」，
+    /// 却被记进了 EvolutionEffects —— 纹章自动进化它时不结算效果。
+    /// </para>
+    /// </summary>
+    internal static void RunOnEvolveFieldPlacementTest()
+    {
+        var failures = new List<string>();
+        var checkedCards = 0;
+
+        foreach (var card in CardCatalog.All)
+        {
+            if (card.Type != CardType.Follower)
+            {
+                continue;
+            }
+
+            // 卡面里出现「本随从进化时」的，效果必须挂在 OnEvolveEffects。
+            var text = card.EffectText ?? string.Empty;
+            if (text.Contains("本随从进化时", StringComparison.Ordinal) &&
+                (card.OnEvolveEffects is null || card.OnEvolveEffects.Count == 0))
+            {
+                failures.Add($"{card.Id}「{card.Name}」卡面写「本随从进化时」，但 OnEvolveEffects 是空的");
+            }
+
+            // 反过来：卡面**没有**「本随从进化时」的，不该往 OnEvolveEffects 里塞东西
+            // （那是【进化时】，应该用 EvolutionEffects）。
+            if (!text.Contains("本随从进化时", StringComparison.Ordinal) &&
+                card.OnEvolveEffects is { Count: > 0 })
+            {
+                failures.Add($"{card.Id}「{card.Name}」卡面没有「本随从进化时」，却往 OnEvolveEffects 里放了效果");
+            }
+
+            if (text.Contains("本随从进化时", StringComparison.Ordinal))
+            {
+                checkedCards++;
+            }
+        }
+
+        if (checkedCards == 0)
+        {
+            failures.Add("全库没有一张卡面写「本随从进化时」—— 本条断言没验到东西");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures.Take(5).ToList(), "「本随从进化时」字段归属");
+        }
+
+        Console.WriteLine("On-evolve field placement test passed.");
+        Console.WriteLine($"「本随从进化时」字段归属：检查了 {checkedCards} 张卡。");
+    }
+
+    /// <summary>
     /// **5 档跨类优先级护栏**：同一批队列结算里，优先级必须**非递减**。
     /// <para>
     ///   0 随从自己的入场曲 ＞ 1 自己的纹章效果 ＞ 2 自己的其他随从的效果
