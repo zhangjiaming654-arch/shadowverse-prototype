@@ -452,9 +452,120 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
             FreeKillAdvantage(self, opponent),
             AttackAdvantage(self, opponent),
             StandingAdvantage(state, self, opponent),
-            WidthAdvantage(self, opponent)
+            WidthAdvantage(self, opponent),
+            // ── 以下四项是 2026-10-02 补的"引擎类"特征 ──
+            // 起因：宇宙鱼（引擎型卡组）比中速梦差 10 个 BO10 分。查证发现评估函数
+            // 对"引擎"几乎是瞎的：纹章只认一枚自伤纹章（其余恒为 0）、手牌与牌组只数张数、
+            // 累计进化次数（瞬念召唤/解放奥义的充能进度）根本没有这一项。
+            AccumulatedEvolutions(self) - AccumulatedEvolutions(opponent),
+            CrestEngineValue(self.Crests) - CrestEngineValue(opponent.Crests),
+            HandThreat(self) - HandThreat(opponent),
+            DeckSummonValue(self.Deck) - DeckSummonValue(opponent.Deck)
         ];
     }
+
+    /// <summary>本次对战中累计进化过多少次 —— 【瞬念召唤】与【解放奥义】的充能进度。</summary>
+    private static int AccumulatedEvolutions(PlayerState player) => player.OwnFollowersEvolvedThisBattle;
+
+    /// <summary>
+    /// 纹章作为**引擎**的价值：按纹章**实际带的效果**估值，而不是只认某一枚。
+    /// 原实现只在 <see cref="CrestBurden"/> 里认「焦灰的安纳提玛」一枚、其余恒为 0，
+    /// 于是「束刃的罪人：自己使用随从时每回合1次使其进化」这种引擎价值算出来是 0。
+    /// </summary>
+    private static int CrestEngineValue(IReadOnlyList<CrestInstance>? crests)
+    {
+        if (crests is null)
+        {
+            return 0;
+        }
+
+        var value = 0;
+        foreach (var crest in crests)
+        {
+            var definition = crest.Definition;
+            value += (definition.PassiveEffects?.Count ?? 0) * 4;          // 持续被动最值钱
+            value += (definition.StartOfOwnTurnEffects?.Count ?? 0) * 3;   // 每回合白拿
+            value += (definition.EndOfOwnTurnEffects?.Count ?? 0) * 2;
+            value += (definition.OwnLeaderRestoredEffects?.Count ?? 0);
+            value += (definition.LastWordsEffects?.Count ?? 0);
+            value -= CountSelfDamage(definition) * 3;                      // 自伤是负担
+        }
+
+        return value;
+    }
+
+    private static int CountSelfDamage(CrestDefinition definition) =>
+        (definition.StartOfOwnTurnEffects ?? [])
+            .Concat(definition.OwnLeaderRestoredEffects ?? [])
+            .Count(effect => effect.Kind == CardEffectKind.DealDamageToOwnLeader);
+
+    /// <summary>
+    /// 手牌的**威胁**（而不只是张数）。手里攥着一张【解放奥义】能打 10 点的斩杀牌，
+    /// 和攥着一张废牌，`Hand.Count` 完全看不出区别。
+    /// </summary>
+    private static int HandThreat(PlayerState player) =>
+        player.Hand.Sum(card => CardThreat(card.Definition));
+
+    /// <summary>一张牌所有效果里能造成的伤害总量（覆盖入场曲/奥义/解放奥义/法术本体/谢幕曲等）。</summary>
+    private static int CardThreat(CardDefinition definition)
+    {
+        var total = 0;
+        foreach (var effect in AllEffectsOf(definition))
+        {
+            total += effect.Kind switch
+            {
+                CardEffectKind.DealDamageToEnemyFollowerOrLeader => effect.Amount,
+                CardEffectKind.DealDamageToEnemyLeader => effect.Amount,
+                CardEffectKind.DealDamageToRandomEnemyFollower => effect.Amount,
+                CardEffectKind.DealDamageToAllEnemyFollowers => effect.Amount,
+                CardEffectKind.DealDamageToAllEnemyFollowersAndLeader => effect.Amount,
+                CardEffectKind.DealDamageToEnemyFollower => effect.Amount,
+                // 「发动 N 次、每次 M 点」——总量是两者相乘。
+                CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly => effect.Amount * effect.SecondaryAmount,
+                CardEffectKind.DealDamageToRandomEnemyFollowerRepeatedly => effect.Amount * effect.SecondaryAmount,
+                CardEffectKind.DealDamageToRandomEnemyFollowerCount => effect.Amount * effect.SecondaryAmount,
+                _ => 0
+            };
+        }
+
+        return total;
+    }
+
+    /// <summary>一张牌上所有可能造成伤害的效果槽。</summary>
+    private static IEnumerable<CardEffect> AllEffectsOf(CardDefinition definition)
+    {
+        if (definition.Effect is not null)
+        {
+            yield return definition.Effect;
+        }
+
+        foreach (var group in new[]
+                 {
+                     definition.SpellEffects,
+                     definition.FanfareEffects,
+                     definition.OathEffects,
+                     definition.SuperOathEffects,
+                     definition.LastWordsEffects,
+                     definition.OnEvolveEffects,
+                     definition.EvolutionEffects,
+                     definition.PassiveEffects
+                 })
+        {
+            if (group is null)
+            {
+                continue;
+            }
+
+            foreach (var effect in group)
+            {
+                yield return effect;
+            }
+        }
+    }
+
+    /// <summary>牌组里"会自动跳出来"的卡（【瞬念召唤】）的价值 —— 也是张数看不出来的。</summary>
+    private static int DeckSummonValue(IReadOnlyList<CardInstance>? deck) =>
+        deck?.Count(card => card.Definition.TranscendentSummon is not null) * 3 ?? 0;
 
     /// <summary>
     /// 白吃数差：我方能用某个随从击杀、且不会被反杀的目标个数，减去对手对我方能做到同样事情的个数。
@@ -515,7 +626,16 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
         0.0,   // 白吃数差（交换效率）
         0.0,   // 场面总攻击力差
         0.0,   // 已站住随从数差（节奏归属）
-        0.0    // 场面宽度差
+        0.0,   // 场面宽度差
+        // 以下四项是 2026-10-02 补的"引擎类"特征。
+        // **手调初值**（不是拟合值）：`--fit-weights` 目前按 1.0 的 21 维拟合
+        // （NeuralTrainer 用的是 LookaheadPlayerAgent.PositionWeights），**拟合不了 V2 的 20 维**。
+        // 按项目先例（当年那 4 项"场面交换"特征也是先手调再实测），先给一组手调值再量效果；
+        // 等拟合工具支持 V2 之后再换成数据驱动的权重。
+        0.30,  // 累计进化次数差（瞬念召唤/解放奥义的充能进度）
+        0.25,  // 自己的纹章引擎价值差
+        0.10,  // 手牌威胁差
+        0.15   // 牌组瞬念召唤价值差
     ];
 
     /// <summary>Divides the weighted feature sum before the logistic squash.</summary>
