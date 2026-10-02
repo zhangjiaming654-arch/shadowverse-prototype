@@ -9755,6 +9755,10 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         var failures = new List<string>();
         var emptyFireChecks = 0;
         var secondFollowerChecks = 0;
+        var snapshotChecks = 0;
+        var lastEvolvedByPlayer = new int[2];
+        // 见过的卡实例号 ⇒ 用来识别"新进手"的卡，在新进手那一瞬间核对快照。
+        var seenInHand = new HashSet<int>();
 
         // 束刃的纹章要求"牌组中没有重复卡牌"，所以这副必须是 40 张全不同。
         CardDefinition[] deckCards =
@@ -9800,15 +9804,48 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                     break;
                 }
 
-                var active = state.Players[state.ActivePlayer];
+                var activePlayerId = state.ActivePlayer;
+                var active = state.Players[activePlayerId];
                 if (active.OwnTurnNumber != lastTurnNumber)
                 {
                     lastTurnNumber = active.OwnTurnNumber;
                     emptyFiredThisTurn = false;
                 }
 
+                // **直接验规则**：术语表说奥义槽只加"在手牌中时"发生的进化。
+                // 判据：新进手的卡，其快照必须落在[该玩家上次观察到的计数, 该玩家当前计数]区间内。
+                // 快照是"进手那一刻"打的，而同一动作里可能既有进手、又有进化，所以只能定区间。
+                // 两个坑：①不能拿"观察时刻"做等号比较（会假报错）②必须**按玩家分别追踪**，
+                // 否则回合切换后拿到的是另一个人的计数，区间直接倒挂。
+                foreach (var handCard in active.Hand)
+                {
+                    if (!seenInHand.Add(handCard.InstanceId))
+                    {
+                        continue;
+                    }
+
+                    var low = lastEvolvedByPlayer[activePlayerId];
+                    var high = active.OwnFollowersEvolvedThisBattle;
+                    if (handCard.HandEntryEvolvedCount < low || handCard.HandEntryEvolvedCount > high)
+                    {
+                        failures.Add(
+                            $"卡「{handCard.Definition.Name}」进手快照={handCard.HandEntryEvolvedCount} 不在合法区间 " +
+                            $"[{low}, {high}] —— 说明它进手时没打快照（旧值残留），" +
+                            "奥义槽会把进手前的进化也算进去");
+                    }
+                    else
+                    {
+                        snapshotChecks++;
+                    }
+                }
+
+                lastEvolvedByPlayer[activePlayerId] = active.OwnFollowersEvolvedThisBattle;
+
+
+
                 var hasCrest = active.Crests.Any(crest =>
                     crest.Definition.Id == CrestIds.BladeboundSinnerCatherslott);
+
 
                 // 优先：① 还没拿到纹章时先打束刃 ② 束刃在场就进化它（纹章靠这一步给）
                 if (!hasCrest)
@@ -9936,6 +9973,14 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         Console.WriteLine("Crest x Oath interaction test passed.");
         Console.WriteLine($"纹章空放（奥义先进化了古兰&姬塔，纹章什么也没做但次数照扣）：{emptyFireChecks} 次。");
         Console.WriteLine($"空放之后同回合第二张随从**未被纹章进化**：{secondFollowerChecks} 次（读法 A）。");
+        if (snapshotChecks == 0)
+        {
+            failures.Add("没验到「进手时打快照」—— 奥义槽的半条规则未被验证");
+        }
+
+        Console.WriteLine(
+            $"进手快照核对：{snapshotChecks} 张新进手的卡，快照都等于进手时刻的进化计数" +
+            "（= 槽只算「在手牌中时」的进化）。");
     }
 
     /// <summary>
