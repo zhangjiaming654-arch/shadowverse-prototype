@@ -29,12 +29,37 @@ internal enum PendingEffectPriority
     EnemyFollower = 4
 }
 
-/// <summary>队列里的一条待结算触发效果。<see cref="Sequence"/> 用于同优先级内的稳定先后。</summary>
+/// <summary>待结算触发效果的**种类**；决定要用哪个结算器把它**完整**跑完。</summary>
+internal enum PendingEffectKind
+{
+    /// <summary>【谢幕曲】。</summary>
+    LastWords,
+    /// <summary>「自己的创造物·随从进入战场时」这类随从被动。</summary>
+    FollowerPassive,
+    /// <summary>自己的回合开始时触发的纹章效果。</summary>
+    CrestStartOfOwnTurn,
+    /// <summary>自己的回合结束时触发的纹章效果。</summary>
+    CrestEndOfOwnTurn,
+    /// <summary>「自己的主战者回复时」触发的纹章效果。</summary>
+    CrestLeaderRestored
+}
+
+/// <summary>
+/// 队列里的一条待结算触发效果。
+/// <para>
+/// **不变式**：取出任意一条后，必须把它**完整**结算完，才允许开始下一条 ——
+/// 也就是不允许任何形式的插入结算。
+/// </para>
+/// <para><see cref="Sequence"/> 是同级内的稳定先后；对纹章来源它等于纹章的获取顺序，
+/// 从而满足"多个纹章按获得早晚发动"。</para>
+/// </summary>
 internal readonly record struct PendingEffect(
     PendingEffectPriority Priority,
     long Sequence,
     int PlayerIndex,
-    CardInstance Card);
+    PendingEffectKind Kind,
+    CardInstance? Card = null,
+    string? CrestId = null);
 
 /// <summary>
 /// Full internal state. It contains hidden information and must never be passed directly to an agent.

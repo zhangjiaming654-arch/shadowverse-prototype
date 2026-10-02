@@ -324,7 +324,7 @@ public static class GameEngine
         // 所以不会出现"入场曲被对手谢幕曲打断"的插入结算。
         if (!next.IsGameOver)
         {
-            DrainPendingLastWords(next);
+            DrainPendingEffects(next);
         }
 
         if (!next.IsGameOver)
@@ -335,7 +335,7 @@ public static class GameEngine
         // 上面的被动触发（例如米乌造成伤害）可能又破坏了随从 → 再清一次队列。
         if (!next.IsGameOver)
         {
-            DrainPendingLastWords(next);
+            DrainPendingEffects(next);
         }
 
         return next;
@@ -5061,17 +5061,28 @@ public static class GameEngine
     /// 这样谢幕曲不会插入到入场曲/攻击结算的中间。
     /// 队列里新产生的破坏（谢幕曲自己又破坏了东西）会继续入队，所以这里循环到清空为止。
     /// </summary>
-    private static void DrainPendingLastWords(GameState state)
+    private static void DrainPendingEffects(GameState state)
     {
         while (state.PendingLastWordsInternal.Count > 0 && !state.IsGameOver)
         {
-            // 按**优先级**取（同级按入队先后），不是先来先结算。
+            // 按**优先级**取（同级按 Sequence；纹章来源的 Sequence 就是纹章获取顺序）。
             var next = state.PendingLastWordsInternal
                 .OrderBy(pending => (int)pending.Priority)
                 .ThenBy(pending => pending.Sequence)
                 .First();
             state.PendingLastWordsInternal.Remove(next);
-            ApplyLastWordsEffects(state, next.PlayerIndex, next.Card);
+
+            // **完整结算这一项**：下面的每个 case 都会把该项的所有效果跑完才返回。
+            // 期间新产生的触发只会**入队**，不会就地插入 —— 这就是"不允许插入结算"的保证。
+            switch (next.Kind)
+            {
+                case PendingEffectKind.LastWords:
+                    ApplyLastWordsEffects(state, next.PlayerIndex, next.Card!);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Pending effect kind {next.Kind} has no resolver yet.");
+            }
         }
     }
 
@@ -5120,7 +5131,7 @@ public static class GameEngine
         {
             owner.GraveyardInternal.Add(follower.Card);
             // 【谢幕曲】**不在这里结算** —— 就地结算等于"插入结算"，会打断正在进行的入场曲。
-            // 只入队，由 DrainPendingLastWords 在动作完整结算完之后统一按顺序结清。
+            // 只入队，由 DrainPendingEffects 在动作完整结算完之后，按优先级、逐项完整结清。
             // 【谢幕曲】属于**持有者**：持有者是我方 → ③自己的其他随从；持有者是对方 → ⑤对方随从。
             // （按设计者给的结算优先级排，不是先来先结算。）
             state.PendingLastWordsInternal.Add(new PendingEffect(
@@ -5129,6 +5140,7 @@ public static class GameEngine
                     : PendingEffectPriority.EnemyFollower,
                 state.NextPendingEffectSequence++,
                 playerIndex,
+                PendingEffectKind.LastWords,
                 follower.Card));
             return true;
         }
