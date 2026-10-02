@@ -278,6 +278,9 @@ public static class GameEngine
             case FuseAction fuse:
                 ApplyFuse(next, fuse);
                 break;
+            case UseStartAbilityAction startAbility:
+                ApplyUseStartAbility(next, startAbility);
+                break;
             case PlaySpellAction playSpell:
                 ApplyPlaySpell(next, playSpell);
                 break;
@@ -420,6 +423,32 @@ public static class GameEngine
                 GetCardCost(card, active.CurrentPlayPoints) <= active.CurrentPlayPoints)
             {
                 actions.AddRange(GetSpellActions(state, card));
+            }
+
+            // 【启动】：自己场上护符的启动能力，1回合仅限1次（记在护符实例上）。
+            foreach (var amulet in active.AmuletsInternal)
+            {
+                if (amulet.Definition.StartAbility is not { } start ||
+                    amulet.StartAbilityUsedOnOwnTurnInternal == active.OwnTurnNumber ||
+                    start.Cost > active.CurrentPlayPoints)
+                {
+                    continue;
+                }
+
+                // "选择自己的1张手牌"：每张合法手牌各给一个动作；没有需要手牌的启动能力时给一个无目标动作。
+                var needsHandTarget = start.Effects.Any(effect =>
+                    effect.Kind == CardEffectKind.TransformOwnHandCardIntoRandomOpponentDeckCopy);
+                if (needsHandTarget)
+                {
+                    foreach (var handCard in active.HandInternal)
+                    {
+                        actions.Add(new UseStartAbilityAction(amulet.InstanceId, handCard.InstanceId));
+                    }
+                }
+                else
+                {
+                    actions.Add(new UseStartAbilityAction(amulet.InstanceId));
+                }
             }
 
             // 【融合】：1回合仅限1次。生成 1～3 张素材的组合 —— "没有指定数量时可融合任意数量"，
@@ -3295,6 +3324,10 @@ public static class GameEngine
         }
 
         state.Players[state.ActivePlayer].AttackedEnemyLeaderThisTurn = true;
+
+        // 「光之法则·龙敖」纹章：「对手的拥有【疾驰】的随从攻击主战者时，回合结束前，使其-3/-0」。
+        // "对手"是纹章持有者的对手 —— 也就是正在攻击的这一方；被攻击的主战者是纹章持有者。
+        ApplyStormAttackerWeakeningCrest(state, attacker);
     }
 
     private static void ApplyAttackFollower(GameState state, AttackFollowerAction action)
@@ -4826,6 +4859,107 @@ public static class GameEngine
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// 「光之法则·龙敖」纹章：对手（纹章持有者的对手，即攻击方）的**拥有【疾驰】**的随从攻击主战者时，
+    /// 回合结束前使其 −3/−0。削弱记在 <c>TemporaryAttackBonus</c> 上，回合结束时由
+    /// <c>RemoveEndOfTurnBonuses</c> 清掉 —— 正好是卡面要的"回合结束前"。
+    /// </summary>
+    private static void ApplyStormAttackerWeakeningCrest(GameState state, FollowerInstance attacker)
+    {
+        if (!attacker.HasStorm)
+        {
+            return;
+        }
+
+        // 被攻击的主战者 = 攻击方的对手。只有它的主战者区域里有这个纹章才触发。
+        var defenderIndex = OtherPlayer(state.ActivePlayer);
+        var hasCrest = state.Players[defenderIndex].CrestsInternal.Any(crest =>
+            (crest.Definition.PassiveEffects ?? []).Any(effect =>
+                effect.Kind == CardEffectKind.WeakenStormAttackerOnLeaderAttack));
+        if (!hasCrest)
+        {
+            return;
+        }
+
+        attacker.TemporaryAttackBonus -= 3;
+    }
+
+    /// <summary>
+    /// 【启动】：发动护符的启动能力。1回合仅限1次，可带费用（术语表）。
+    /// </summary>
+    private static void ApplyUseStartAbility(GameState state, UseStartAbilityAction action)
+    {
+        var active = state.Players[state.ActivePlayer];
+        var amulet = active.AmuletsInternal
+            .FirstOrDefault(candidate => candidate.InstanceId == action.AmuletInstanceId)
+            ?? throw new InvalidOperationException("The amulet is not on the active player's board.");
+        var start = amulet.Definition.StartAbility
+            ?? throw new InvalidOperationException($"『{amulet.Definition.Name}』 has no Start ability.");
+
+        if (amulet.StartAbilityUsedOnOwnTurnInternal == active.OwnTurnNumber)
+        {
+            throw new InvalidOperationException("A Start ability can only be used once per turn.");
+        }
+
+        if (start.Cost > active.CurrentPlayPoints)
+        {
+            throw new InvalidOperationException("Not enough play points for this Start ability.");
+        }
+
+        active.CurrentPlayPoints -= start.Cost;
+        amulet.StartAbilityUsedOnOwnTurnInternal = active.OwnTurnNumber;
+
+        foreach (var effect in start.Effects)
+        {
+            switch (effect.Kind)
+            {
+                case CardEffectKind.TransformOwnHandCardIntoRandomOpponentDeckCopy:
+                    ApplyTransformOwnHandCardIntoRandomOpponentDeckCopy(
+                        state,
+                        action.HandCardTargetInstanceId);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported Start ability effect: {effect.Kind}.");
+            }
+
+            if (state.IsGameOver)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 「选择自己的1张手牌，使其变身为对手的牌组中的随机1张卡牌的复制卡牌」。
+    /// 是**复制**：原卡被替换成对手牌组里那张卡的同名新实例，对手牌组本身不动。
+    /// </summary>
+    private static void ApplyTransformOwnHandCardIntoRandomOpponentDeckCopy(
+        GameState state,
+        int? handCardInstanceId)
+    {
+        if (handCardInstanceId is not { } targetId)
+        {
+            throw new InvalidOperationException("This Start ability needs one of your own hand cards.");
+        }
+
+        var player = state.Players[state.ActivePlayer];
+        var target = player.HandInternal.FirstOrDefault(card => card.InstanceId == targetId)
+            ?? throw new InvalidOperationException("The chosen hand card is not in hand.");
+
+        var opponentDeck = state.Players[OtherPlayer(state.ActivePlayer)].DeckInternal;
+        if (opponentDeck.Count == 0)
+        {
+            return;
+        }
+
+        var source = opponentDeck[NextInt(state, opponentDeck.Count)];
+        var index = player.HandInternal.IndexOf(target);
+        player.HandInternal[index] = new CardInstance(
+            target.InstanceId,
+            source.Definition,
+            target.HasSuppressedLastWords);
     }
 
     private static void AddCardToHandOrGrave(PlayerState player, CardInstance card)

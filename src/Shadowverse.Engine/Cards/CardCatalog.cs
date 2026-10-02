@@ -273,13 +273,15 @@ public static class CrestCatalog
                     1,
                     CardIds.SpecialTargetHaremhani)
             ]),
-        // 🟡 光之法则·龙敖的纹章：【吟唱_2】已实现；但"对手的【疾驰】随从攻击主战者时使其-3/-0"
-        // 这条触发**未实现**（需要"攻击主战者时"对攻击者施加回合内削弱，属新触发点）。
         new(
             CrestIds.LightLawLongAo,
             "光之法则·龙敖",
             "【吟唱_2】\n对手的拥有【疾驰】的随从攻击主战者时，回合结束前，使其-3/-0。",
-            Countdown: 2)
+            Countdown: 2,
+            PassiveEffects:
+            [
+                new CardEffect(CardEffectKind.WeakenStormAttackerOnLeaderAttack, 3)
+            ])
     ];
 
     private static readonly IReadOnlyDictionary<string, CrestDefinition> DefinitionsById =
@@ -2437,7 +2439,14 @@ public static class CardCatalog
             "【启动】选择自己的1张手牌，使其变身为对手的牌组中的随机1张卡牌的复制卡牌。",
             Effect: null,
             CardRarity.Silver,
-            CardProfession.Neutral),
+            CardProfession.Neutral,
+            StartAbility: new StartAbilityDefinition(
+                0,
+                [
+                    new CardEffect(
+                        CardEffectKind.TransformOwnHandCardIntoRandomOpponentDeckCopy,
+                        1)
+                ])),
         new(
             CardIds.LightLawLongAo,
             "光之法则·龙敖",

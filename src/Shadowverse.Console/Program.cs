@@ -85,6 +85,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunFifthBatchTest();
     // 束刃纹章 × 【奥义】的交互（读法 A：空放也消耗次数）。
     AgentSelfTests.RunCrestOathInteractionTest();
+    // 【启动】：护符启动能力 / 1回合1次 / 手牌变身成对手牌组复制。
+    AgentSelfTests.RunStartAbilityTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

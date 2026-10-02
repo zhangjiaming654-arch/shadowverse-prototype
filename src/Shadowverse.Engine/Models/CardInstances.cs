@@ -146,6 +146,9 @@ public sealed class FollowerInstance
 /// <summary>A permanent amulet occupying one shared board slot. It cannot attack or be attacked.</summary>
 public sealed class AmuletInstance
 {
+    /// <summary>【启动】「1回合仅限1次」：记下最近一次启动时的持有者回合数。</summary>
+    public int StartAbilityUsedOnOwnTurnInternal { get; internal set; } = -1;
+
     public AmuletInstance(CardInstance card, CrystallizeDefinition? crystallized = null)
     {
         if (crystallized is null && card.Definition.Type != CardType.Amulet)
@@ -172,7 +175,11 @@ public sealed class AmuletInstance
     public int? Countdown { get; internal set; }
 
     /// <summary>Copies the amulet **and its card**; see <see cref="FollowerInstance.DeepCopy"/> for why.</summary>
-    internal AmuletInstance DeepCopy() => new(Card.CopyForState(), Crystallized) { Countdown = Countdown };
+    internal AmuletInstance DeepCopy() => new(Card.CopyForState(), Crystallized)
+    {
+        Countdown = Countdown,
+        StartAbilityUsedOnOwnTurnInternal = StartAbilityUsedOnOwnTurnInternal
+    };
 }
 
 public enum TimedLeaderEffectKind

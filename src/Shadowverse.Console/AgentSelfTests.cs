@@ -9738,6 +9738,143 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// 【启动】自检（术语表：「1回合仅限1次，拥有启动能力的**护符**…」）：
+    /// 「被侵略的世界」打出后应能被启动，把手上1张卡变成**对手牌组中随机1张卡的复制**，
+    /// 且**同一回合不能启动第二次**。
+    /// </summary>
+    internal static void RunStartAbilityTest()
+    {
+        var failures = new List<string>();
+        var startUsedChecks = 0;
+        var transformedChecks = 0;
+        var oncePerTurnChecks = 0;
+
+        var world = CardCatalog.Get(CardIds.InvadedWorld);
+        CardDefinition[] deckCards =
+        [
+            .. Enumerable.Repeat(world, 6),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Gladiator), DeckDefinition.RequiredCardCount - 6)
+        ];
+        // 对手牌组用**可辨识**的卡，便于断言"变成的是对手牌组里的卡"。
+        CardDefinition[] opponentCards =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientCreation), DeckDefinition.RequiredCardCount)
+        ];
+
+        foreach (var seed in new ulong[] { 97_001, 97_002, 97_003, 97_004, 97_005, 97_006 })
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("start-ability", deckCards),
+                new DeckDefinition("start-ability-opp", opponentCards),
+                seed);
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+
+                // 优先：先把「被侵略的世界」放上场（启动需要它在场上）。
+                var worldPlay = legalActions.OfType<PlayAmuletAction>().FirstOrDefault(action =>
+                    active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id ==
+                    CardIds.InvadedWorld);
+                if (worldPlay is not null)
+                {
+                    state = GameEngine.Apply(state, worldPlay);
+                    continue;
+                }
+
+                var starts = legalActions.OfType<UseStartAbilityAction>().ToArray();
+                if (starts.Length > 0)
+                {
+                    var start = starts[0];
+                    var targetId = start.HandCardTargetInstanceId!.Value;
+                    var before = active.Hand.Single(card => card.InstanceId == targetId).Definition.Id;
+
+                    // 启动是"变成对手牌组里的卡"——对手牌组全是『古老的创造物』，
+                    // 所以目标卡启动后必须变成它（且不是本来那张）。
+                    var expectedId = CardCatalog.Get(CardIds.AncientCreation).Id;
+                    state = GameEngine.Apply(state, start);
+
+                    var after = state.Players[state.ActivePlayer].Hand
+                        .SingleOrDefault(card => card.InstanceId == targetId);
+                    if (after is null)
+                    {
+                        failures.Add("【启动】后那张手牌没了 —— 它应该被「变身」而不是被移除");
+                    }
+                    else if (after.Definition.Id == expectedId && before != expectedId)
+                    {
+                        transformedChecks++;
+                    }
+                    else if (before != expectedId)
+                    {
+                        failures.Add(
+                            $"【启动】应把手牌变成对手牌组里的『古老的创造物』，实际变成「{after.Definition.Name}」");
+                    }
+
+                    startUsedChecks++;
+
+                    // 「1回合仅限1次」是**每张护符各自1次**（暗影诗的【启动】按卡计），
+                    // 所以这里只断言"**同一张护符**同回合不能再启动"，不是"全场只能启动一次"。
+                    // （我第一版写成全场一次，被自己的断言报错 —— 是我测试写错，不是实现错。）
+                    var sameAmuletAgain = GameEngine.GetLegalActions(state)
+                        .OfType<UseStartAbilityAction>()
+                        .Any(candidate => candidate.AmuletInstanceId == start.AmuletInstanceId);
+                    if (sameAmuletAgain)
+                    {
+                        failures.Add("【启动】同一张护符1回合仅限1次，但它同回合又被给出了启动动作");
+                    }
+                    else
+                    {
+                        oncePerTurnChecks++;
+                    }
+
+                    continue;
+                }
+
+                var action = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<AttackFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+                state = GameEngine.Apply(state, action);
+            }
+        }
+
+        if (startUsedChecks == 0)
+        {
+            failures.Add("一次【启动】都没发生 —— 启动动作没生成出来");
+        }
+
+        if (transformedChecks == 0)
+        {
+            failures.Add("没验到「【启动】把手牌变成对手牌组里的卡的复制」");
+        }
+
+        if (oncePerTurnChecks == 0)
+        {
+            failures.Add("没验到「【启动】1回合仅限1次」");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "启动");
+        }
+
+        Console.WriteLine("Start ability test passed.");
+        Console.WriteLine($"【启动】发动 {startUsedChecks} 次 ｜ 手牌变成对手牌组的卡 {transformedChecks} 次 ｜ 同回合不可再启动 {oncePerTurnChecks} 次。");
+    }
+
+    /// <summary>
     /// 束刃纹章 × 【奥义】的交互（**用户裁定：读法 A**）。
     /// <para>
     /// 场景：纹章在场，奥义槽已满，本回合第一张出「古兰&姬塔」。

@@ -18,6 +18,14 @@ public sealed record PlayFollowerAction(
     int? ModeChoiceIndex = null,
     IReadOnlyList<int>? OwnHandCardTargetInstanceIds = null) : GameAction;
 
+/// <summary>
+/// 【启动】：发动自己场上某张护符的启动能力。1回合仅限1次（记在护符实例上）。
+/// <see cref="HandCardTargetInstanceId"/> 供"选择自己的1张手牌"这类启动效果使用。
+/// </summary>
+public sealed record UseStartAbilityAction(
+    int AmuletInstanceId,
+    int? HandCardTargetInstanceId = null) : GameAction;
+
 /// <summary>Plays an amulet into one of the five shared board slots.</summary>
 public sealed record PlayAmuletAction(int CardInstanceId) : GameAction;
 

@@ -372,7 +372,10 @@ public enum CardEffectKind
     /// <summary>「发动N次『对对手的战场上的随机1个随从造成M点伤害』」：
     /// 次数在 <see cref="CardEffect.Amount"/>，伤害在 <see cref="CardEffect.SecondaryAmount"/>。
     /// 与 <see cref="DealDamageToRandomEnemyFollowerCount"/> 不同：这里每次都是独立随机（可重复命中同一个）。</summary>
-    DealDamageToRandomEnemyFollowerRepeatedly
+    DealDamageToRandomEnemyFollowerRepeatedly,
+    /// <summary>纹章「对手的拥有【疾驰】的随从攻击主战者时，回合结束前使其 −3/−0」。
+    /// 是纹章上的**被动触发**，由攻击主战者的路径检查（见 <c>ApplyStormAttackerWeakeningCrest</c>）。</summary>
+    WeakenStormAttackerOnLeaderAttack
 }
 
 /// <summary>
@@ -401,6 +404,13 @@ public sealed record FusionDefinition(
         TransformByTotalCost is null &&
         TransformWhenDistinctMaterialKindsAtLeast is null;
 }
+
+/// <summary>
+/// 【启动】（官方术语表）：**1回合仅限1次**，拥有启动能力的**护符**可发动。
+/// 部分启动能力指定所需费用，能量点足够时消耗后发动。所以效果里要付的费用记在
+/// <see cref="Cost"/>，判定与扣除由引擎在 `ApplyUseStartAbility` 里做。
+/// </summary>
+public sealed record StartAbilityDefinition(int Cost, IReadOnlyList<CardEffect> Effects);
 
 /// <summary>
 /// 【瞬念召唤】：「在牌组中发动」——自己的回合开始时，若本次对战中自己的随从进化次数达到
@@ -773,7 +783,9 @@ public sealed record CardDefinition(
     int? IncomingDamageCap = null,
     int? IncomingDamageFloor = null,
     /// <summary>【瞬念召唤】。null 表示不能瞬念召唤。</summary>
-    TranscendentSummonDefinition? TranscendentSummon = null)
+    TranscendentSummonDefinition? TranscendentSummon = null,
+    /// <summary>【启动】能力。null 表示这张卡不能启动。</summary>
+    StartAbilityDefinition? StartAbility = null)
 {
     /// <summary>
     /// 【进化时】真正可以选的模式：卡牌自己印的进化模式，或者它重复的【入场曲】模式（两者不会同时有）。
