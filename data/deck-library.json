@@ -163,7 +163,7 @@
     },
     {
       "id": "DECK-004",
-      "name": "\u65B0\u5361\u7EC4",
+      "name": "\u5B87\u5B99\u9C7C",
       "description": "\u7531\u5361\u7EC4\u7F16\u8F91\u5668\u521B\u5EFA\u3002",
       "entries": [
         {
@@ -288,6 +288,34 @@
         },
         {
           "cardId": "BASE-057",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-107",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-108",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-109",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-113",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-110",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-111",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-112",
           "count": 1
         }
       ]

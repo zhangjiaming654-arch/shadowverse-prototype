@@ -10128,7 +10128,7 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
         var failures = new List<string>();
         var isaacChecks = 0;
         var rushGrantChecks = 0;
-        var damageCapChecks = 0;
+        // 伤害上限的断言直接查卡定义（下面 ①），这里不再用计数器。
         var transcendentChecks = 0;
         var crestCountdownChecks = 0;
         var crestLastWordsChecks = 0;
