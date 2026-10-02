@@ -841,6 +841,14 @@ public static class GameEngine
         active.CurrentPlayPoints -= playCost;
         active.HandInternal.Remove(card);
         var follower = new FollowerInstance(card, state.TurnNumber);
+        // 「使手牌中的所有随从 +A/+B」的加成在进场时落到随从身上。
+        if (card.HandAttackBonusInternal != 0 || card.HandDefenseBonusInternal != 0)
+        {
+            follower.Attack += card.HandAttackBonusInternal;
+            follower.MaxDefense += card.HandDefenseBonusInternal;
+            follower.CurrentDefense += card.HandDefenseBonusInternal;
+        }
+
         active.BoardInternal.Add(follower);
 
         ApplyEnteringFollowerPassiveGrants(state, state.ActivePlayer, follower);
@@ -1115,6 +1123,34 @@ public static class GameEngine
                         effect.Amount,
                         (CardKeyword)effect.SecondaryAmount);
                     break;
+                case CardEffectKind.DealDamageToEnemyFollowerIfDeckHasNoDuplicates:
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        ApplyDamageToSelectedEnemyFollowers(
+                            state,
+                            action.EnemyFollowerTargetInstanceIds,
+                            effect.Amount);
+                    }
+
+                    break;
+                case CardEffectKind.GrantSelfStormIfDeckHasNoDuplicates:
+                    if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
+                    {
+                        GrantFollowerKeywords(GetPlayedFollower(state, follower), CardKeyword.Storm);
+                    }
+
+                    break;
+                case CardEffectKind.GrantSelfBarrierIfSuperEvolutionUnlocked:
+                    // 术语表：超进化从**先手第7回合、后手第6回合**解禁（与 CanSuperEvolve 同一口径）。
+                    if (state.Players[state.ActivePlayer].OwnTurnNumber >= SuperEvolutionUnlockTurn(state))
+                    {
+                        GrantFollowerKeywords(GetPlayedFollower(state, follower), CardKeyword.Barrier);
+                    }
+
+                    break;
+                case CardEffectKind.BuffAllFollowerCardsInOpponentHand:
+                    BuffAllFollowerCardsInHand(state, OtherPlayer(state.ActivePlayer), effect.Amount, 0);
+                    break;
                 case CardEffectKind.GrantWardToEnemyFollower:
                     GrantWardToEnemyFollower(state, action.EnemyFollowerTargetInstanceIds);
                     break;
@@ -1126,7 +1162,9 @@ public static class GameEngine
                     }
 
                     break;
-                case CardEffectKind.DealDamageToRandomEnemyFollowerCount:
+                case CardEffectKind.DealDamageToRandomEnemyFollowerRepeatedly:
+                    ApplyRepeatedRandomDamageToEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
+                    break;
                     ApplyDamageToRandomEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
                     break;
                 case CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly:
@@ -1714,6 +1752,15 @@ public static class GameEngine
                 case CardEffectKind.DealDamageToRandomEnemyFollowerAndLeader:
                     EnsureSpellHasNoTarget(action);
                     ApplyDamageToRandomEnemyFollowerAndLeader(state, effect.Amount);
+                    break;
+                case CardEffectKind.DealDamageToAllEnemyFollowersAndLeaderWithSuperOathUpgrade:
+                    EnsureSpellHasNoTarget(action);
+                    // 「【解放奥义】**改为**6点」——是替换，不是叠加。
+                    ApplyDamageToAllEnemyFollowersAndLeader(
+                        state,
+                        OathGauge(state, state.ActivePlayer, card) >= 15
+                            ? effect.SecondaryAmount
+                            : effect.Amount);
                     break;
                 case CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder:
                     EnsureSpellHasNoTarget(action);
@@ -2769,6 +2816,9 @@ public static class GameEngine
                 break;
             case CardEffectKind.DestroyRandomEnemyWardFollowers:
                 DestroyRandomEnemyWardFollowers(state, effect.Amount);
+                break;
+            case CardEffectKind.DealDamageToRandomEnemyFollowerRepeatedly:
+                ApplyRepeatedRandomDamageToEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
                 break;
             case CardEffectKind.DealDamageToRandomEnemyFollowerCount:
                 // 【奥义】这类效果走的是进化分发器，所以它也必须在这里被认到。
@@ -4726,6 +4776,54 @@ public static class GameEngine
             else
             {
                 DealDamageToFollower(state, enemyIndex, enemyBoard[choice], damage);
+            }
+        }
+    }
+
+    /// <summary>超进化解禁回合：先手第7、后手第6（术语表）。与 <c>CanSuperEvolve</c> 同一规则。</summary>
+    private static int SuperEvolutionUnlockTurn(GameState state) =>
+        state.ActivePlayer == state.StartingPlayer ? 7 : 6;
+
+    /// <summary>「使对手的手牌中的所有随从 +A/+B」：只动**手牌里的随从卡**，不改战场。</summary>
+    private static void BuffAllFollowerCardsInHand(GameState state, int playerIndex, int attack, int defense)
+    {
+        foreach (var card in state.Players[playerIndex].HandInternal
+                     .Where(candidate => candidate.Definition.Type == CardType.Follower))
+        {
+            card.HandAttackBonusInternal += attack;
+            card.HandDefenseBonusInternal += defense;
+        }
+    }
+
+    /// <summary>
+    /// 在 <c>ApplyFollowerEffect</c> 里拿到"刚打出的那个随从"**场上的实例**。
+    /// 那个方法的 <c>follower</c> 参数是手牌里的 <see cref="CardInstance"/>，不是 <see cref="FollowerInstance"/>，
+    /// 所以授予关键词这类需要实例的操作必须先从战场按卡实例号找回来。
+    /// </summary>
+    private static FollowerInstance GetPlayedFollower(GameState state, CardInstance card)
+    {
+        return state.Players[state.ActivePlayer].BoardInternal
+            .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId)
+            ?? throw new InvalidOperationException(
+                "The played follower is not on the board; keyword grants need the board instance.");
+    }
+
+    /// <summary>「发动N次『对对手随机1个随从造成M点』」：每次独立随机，可重复命中同一个随从。</summary>
+    private static void ApplyRepeatedRandomDamageToEnemyFollowers(GameState state, int times, int damage)
+    {
+        var enemyIndex = OtherPlayer(state.ActivePlayer);
+        for (var shot = 0; shot < times; shot++)
+        {
+            var candidates = state.Players[enemyIndex].BoardInternal.ToArray();
+            if (candidates.Length == 0)
+            {
+                return;
+            }
+
+            DealDamageToFollower(state, enemyIndex, candidates[NextInt(state, candidates.Length)], damage);
+            if (state.IsGameOver)
+            {
+                return;
             }
         }
     }

@@ -160,6 +160,137 @@
           "count": 3
         }
       ]
+    },
+    {
+      "id": "DECK-004",
+      "name": "\u65B0\u5361\u7EC4",
+      "description": "\u7531\u5361\u7EC4\u7F16\u8F91\u5668\u521B\u5EFA\u3002",
+      "entries": [
+        {
+          "cardId": "BASE-060",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-061",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-064",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-066",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-067",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-068",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-070",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-071",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-074",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-075",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-077",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-079",
+          "count": 3
+        },
+        {
+          "cardId": "BASE-080",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-081",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-083",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-084",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-087",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-089",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-090",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-099",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-100",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-101",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-102",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-104",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-024",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-063",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-073",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-078",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-103",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-106",
+          "count": 1
+        },
+        {
+          "cardId": "BASE-057",
+          "count": 1
+        }
+      ]
     }
   ]
 }

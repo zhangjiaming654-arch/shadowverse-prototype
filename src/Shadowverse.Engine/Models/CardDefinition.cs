@@ -352,7 +352,27 @@ public enum CardEffectKind
     DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
     /// <summary>「召唤1个『X』，**使其**进化」：只让被召唤的那一个进化（发声者自己在场时用
     /// <see cref="SummonFollowerAndEvolveBoth"/>）。</summary>
-    SummonFollowerAndEvolveIt
+    SummonFollowerAndEvolveIt,
+    /// <summary>「若牌组中没有重复卡牌，则对对手的1个随从造成N点伤害」（比"打4回4"少了回复那一半）。</summary>
+    DealDamageToEnemyFollowerIfDeckHasNoDuplicates,
+    /// <summary>「若牌组中没有重复卡牌，则本随从获得【疾驰】」。</summary>
+    GrantSelfStormIfDeckHasNoDuplicates,
+    /// <summary>
+    /// 「对对手的所有随从和主战者造成A点伤害。【解放奥义】**改为**B点伤害」。
+    /// <see cref="CardEffect.Amount"/> = 基础值，<see cref="CardEffect.SecondaryAmount"/> = 解放奥义后的值。
+    /// <b>注意是"改为"不是"加上"</b> —— 槽满时打出的是 6 点，不是 3+6=9 点。
+    /// </summary>
+    DealDamageToAllEnemyFollowersAndLeaderWithSuperOathUpgrade,
+    /// <summary>「使对手的手牌中的所有随从 +A/+0」（<see cref="CardEffect.Amount"/> = A）。</summary>
+    BuffAllFollowerCardsInOpponentHand,
+    /// <summary>【启动】「选择自己的1张手牌，使其变身为对手牌组中随机1张卡的复制」。</summary>
+    TransformOwnHandCardIntoRandomOpponentDeckCopy,
+    /// <summary>「若为超进化已解禁的回合，则本随从获得【屏障】」——解禁回合：先手第7、后手第6（术语表）。</summary>
+    GrantSelfBarrierIfSuperEvolutionUnlocked,
+    /// <summary>「发动N次『对对手的战场上的随机1个随从造成M点伤害』」：
+    /// 次数在 <see cref="CardEffect.Amount"/>，伤害在 <see cref="CardEffect.SecondaryAmount"/>。
+    /// 与 <see cref="DealDamageToRandomEnemyFollowerCount"/> 不同：这里每次都是独立随机（可重复命中同一个）。</summary>
+    DealDamageToRandomEnemyFollowerRepeatedly
 }
 
 /// <summary>

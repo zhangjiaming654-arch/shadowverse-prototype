@@ -36,6 +36,14 @@ public sealed record CardInstance(
     /// </summary>
     internal int HandEntryEvolvedCountInternal { get; set; }
 
+    /// <summary>
+    /// 「使手牌中的所有随从 +A/+B」：加成记在**手牌里的卡**上，进场时加到随从身上。
+    /// 与随从身上的临时加成分开，因为此时它还不是随从。
+    /// </summary>
+    internal int HandAttackBonusInternal { get; set; }
+
+    internal int HandDefenseBonusInternal { get; set; }
+
     /// <summary>进手时的进化计数快照，公开只读供自检核对奥义槽算法。</summary>
     public int HandEntryEvolvedCount => HandEntryEvolvedCountInternal;
 
@@ -48,7 +56,9 @@ public sealed record CardInstance(
         {
             CostReduction = CostReduction,
             TemporaryCostReduction = TemporaryCostReduction,
-            HandEntryEvolvedCountInternal = HandEntryEvolvedCountInternal
+            HandEntryEvolvedCountInternal = HandEntryEvolvedCountInternal,
+            HandAttackBonusInternal = HandAttackBonusInternal,
+            HandDefenseBonusInternal = HandDefenseBonusInternal
         };
         copy.FusedMaterialCardIdsInternal.AddRange(FusedMaterialCardIdsInternal);
         return copy;

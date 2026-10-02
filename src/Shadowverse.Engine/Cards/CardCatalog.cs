@@ -172,6 +172,14 @@ public static class CardIds
     public const string SpecialTargetHaremhani = "BASE-105";
     public const string HeirOfTheCelestialDirectorSaintDefen = "BASE-106";
 
+    public const string RustyRecruit = "BASE-107";
+    public const string JingleAngelLia = "BASE-108";
+    public const string InvadedWorld = "BASE-109";
+    public const string LightLawLongAo = "BASE-110";
+    public const string CastIronConfidant = "BASE-111";
+    public const string ChaoticWarTide = "BASE-112";
+    public const string NightKingRisesAgainSho = "BASE-113";
+
     /// <summary>
     /// Marker used where an effect's card text names no trait at all, so every trait qualifies —
     /// 「遗忘的纯真·爱卡」 says just "your own follower" with no type named.
@@ -195,6 +203,9 @@ public static class CrestIds
 
     /// <summary>「特殊目标·海雷姆哈妮」的纹章（【吟唱_2】+【谢幕曲】）。</summary>
     public const string SpecialTargetHaremhani = "CREST-006";
+
+    /// <summary>「光之法则·龙敖」的纹章：【吟唱_2】+ 对手疾驰随从攻击主战者时削弱它。</summary>
+    public const string LightLawLongAo = "CREST-007";
 }
 
 /// <summary>Definitions for named effects that persist in a leader's crest area.</summary>
@@ -261,7 +272,14 @@ public static class CrestCatalog
                     CardEffectKind.SummonFollowerAndEvolveIt,
                     1,
                     CardIds.SpecialTargetHaremhani)
-            ])
+            ]),
+        // 🟡 光之法则·龙敖的纹章：【吟唱_2】已实现；但"对手的【疾驰】随从攻击主战者时使其-3/-0"
+        // 这条触发**未实现**（需要"攻击主战者时"对攻击者施加回合内削弱，属新触发点）。
+        new(
+            CrestIds.LightLawLongAo,
+            "光之法则·龙敖",
+            "【吟唱_2】\n对手的拥有【疾驰】的随从攻击主战者时，回合结束前，使其-3/-0。",
+            Countdown: 2)
     ];
 
     private static readonly IReadOnlyDictionary<string, CrestDefinition> DefinitionsById =
@@ -2371,6 +2389,123 @@ public static class CardCatalog
                     CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly,
                     5,
                     SecondaryAmount: 2)
+            ]),
+        new(
+            CardIds.RustyRecruit,
+            "青锈小卒",
+            1,
+            1,
+            1,
+            CardKeyword.Rush,
+            CardType.Follower,
+            "【入场曲】若自己的牌组中没有重复卡牌，则选择对手的战场上的1个随从，对其造成5点伤害。\n【突进】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DealDamageToEnemyFollowerIfDeckHasNoDuplicates, 5)
+            ]),
+        new(
+            CardIds.JingleAngelLia,
+            "叮当天使·莉亚",
+            2,
+            0,
+            2,
+            CardKeyword.Ward,
+            CardType.Follower,
+            "【守护】\n【谢幕曲】抽取1张卡牌。\n【进化时】抽取1张卡牌。",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Neutral,
+            LastWordsEffects:
+            [
+                new CardEffect(CardEffectKind.DrawCards, 1)
+            ],
+            EvolutionEffects:
+            [
+                new CardEffect(CardEffectKind.DrawCards, 1)
+            ]),
+        new(
+            CardIds.InvadedWorld,
+            "被侵略的世界",
+            3,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Amulet,
+            "【启动】选择自己的1张手牌，使其变身为对手的牌组中的随机1张卡牌的复制卡牌。",
+            Effect: null,
+            CardRarity.Silver,
+            CardProfession.Neutral),
+        new(
+            CardIds.LightLawLongAo,
+            "光之法则·龙敖",
+            5,
+            6,
+            6,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】发动6次「对对手的战场上的随机1个随从造成1点伤害」。使对手的手牌中的所有随从+1/+0。\n【奥义】使自己获得『纹章：光之法则·龙敖』。",
+            Effect: null,
+            CardRarity.Rainbow,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DealDamageToRandomEnemyFollowerRepeatedly, 6, SecondaryAmount: 1),
+                new CardEffect(CardEffectKind.BuffAllFollowerCardsInOpponentHand, 1)
+            ],
+            OathEffects:
+            [
+                new CardEffect(CardEffectKind.GiveSelfCrest, 1, CrestIds.LightLawLongAo)
+            ]),
+        new(
+            CardIds.CastIronConfidant,
+            "铸铁亲信",
+            5,
+            3,
+            3,
+            CardKeyword.None,
+            CardType.Follower,
+            "【入场曲】选择对手的战场上的1个随从，破坏该随从。若自己的牌组中没有重复卡牌，则本随从获得【疾驰】。",
+            Effect: null,
+            CardRarity.Gold,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.DestroyEnemyFollower, 1),
+                new CardEffect(CardEffectKind.GrantSelfStormIfDeckHasNoDuplicates, 1)
+            ]),
+        new(
+            CardIds.ChaoticWarTide,
+            "混沌军势",
+            6,
+            0,
+            0,
+            CardKeyword.None,
+            CardType.Spell,
+            "对对手的战场上的所有随从和对手的主战者造成3点伤害。【解放奥义】改为6点伤害。",
+            new CardEffect(
+                CardEffectKind.DealDamageToAllEnemyFollowersAndLeaderWithSuperOathUpgrade,
+                3,
+                SecondaryAmount: 6),
+            CardRarity.Gold,
+            CardProfession.Nemesis),
+        new(
+            CardIds.NightKingRisesAgainSho,
+            "夜王再起·翔",
+            3,
+            2,
+            1,
+            CardKeyword.Storm,
+            CardType.Follower,
+            "【入场曲】若为超进化已解禁的回合，则本随从获得【屏障】。\n【疾驰】",
+            Effect: null,
+            CardRarity.Bronze,
+            CardProfession.Nemesis,
+            FanfareEffects:
+            [
+                new CardEffect(CardEffectKind.GrantSelfBarrierIfSuperEvolutionUnlocked, 1)
             ])
     ];
 
