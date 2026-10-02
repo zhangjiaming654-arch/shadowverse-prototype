@@ -1365,6 +1365,7 @@ public static class GameEngine
                 default:
                     throw new InvalidOperationException($"Unsupported follower effect: {effect.Kind}.");
             }
+
         }
     }
 
@@ -4899,9 +4900,12 @@ public static class GameEngine
     /// </summary>
     private static FollowerInstance? GetPlayedFollower(GameState state, CardInstance card)
     {
-        // 返回 null 是**正常情况**，不是错误：这张随从可能在它自己的【入场曲】结算过程中
-        // 已经离场（被破坏 / 被消滅 / 被变身）。"给它自己加关键词"这时无事可做即可。
-        // 之前这里抛异常，会让整局（进而整个基准跑）中断 —— 属于我自己的实现错误。
+        // 返回 null 是**合法情况**：这张随从可能在它自己的【入场曲】结算过程中已经离场。
+        // 实测到的真实连锁（2026-10-02 诊断确认）：
+        //   铸铁亲信的入场曲破坏对手1个随从 → 那个随从的【谢幕曲】是"破坏对手的随机1个随从"
+        //   → 从它视角"对手"就是我方 → 我方那时场上只有铸铁亲信 → 它被带走。
+        // 于是紧接着的第 2 个入场曲效果（"牌组无重复则获得【疾驰】"）找不到自己。
+        // 这时"给自己加关键词"无事可做即可，**不该抛异常把整局打断**。
         return state.Players[state.ActivePlayer].BoardInternal
             .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId);
     }
