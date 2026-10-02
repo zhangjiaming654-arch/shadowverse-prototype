@@ -42,6 +42,40 @@ public sealed partial class ReplayForm : Form
     private readonly Button _newMatchButton = new ReadableToolbarButton { Text = "生成对局", AutoSize = true };
 
     /// <summary>
+    /// **批量生成的进度面板。** 生成 N 局是在界面线程上逐局跑的，原来整批期间界面完全冻住、
+    /// 没有任何反馈，用户只能干等（反馈原话："干等太无聊了"）。
+    /// 这里在每局之间让出一次消息循环，界面就能刷出"已打多少局、谁领先、还要多久"。
+    /// </summary>
+    private readonly Label _generationStatus = new()
+    {
+        AutoSize = true,
+        ForeColor = Color.FromArgb(255, 214, 130),
+        Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
+        BackColor = Color.FromArgb(20, 35, 52),
+        Padding = new Padding(12, 6, 12, 6),
+        Margin = new Padding(0),
+        Text = string.Empty
+    };
+
+    private readonly ProgressBar _generationBar = new()
+    {
+        Width = 260,
+        Height = 18,
+        Style = ProgressBarStyle.Continuous,
+        Margin = new Padding(10, 4, 0, 0)
+    };
+
+    private readonly FlowLayoutPanel _generationLine = new()
+    {
+        Dock = DockStyle.Fill,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        FlowDirection = FlowDirection.LeftToRight,
+        WrapContents = false,
+        Visible = false
+    };
+
+    /// <summary>
     /// 前瞻牌手对每个候选动作向前模拟的次数。次数越多判断噪声越小，耗时按比例增加。
     /// 两边分开设置，才能做"同一个牌手、两种搜索量对打"这个真正有用的对照——
     /// 两边设成一样的话，分不清是谁在受益。
@@ -191,7 +225,7 @@ public sealed partial class ReplayForm : Form
             BackColor = SurfaceBackground,
             Padding = new Padding(8),
             ColumnCount = 1,
-            RowCount = 2
+            RowCount = 3
         };
         controls.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         controls.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -238,6 +272,11 @@ public sealed partial class ReplayForm : Form
         ]);
         controls.Controls.Add(setupLine, 0, 0);
         controls.Controls.Add(playbackLine, 0, 1);
+
+        // 第三行：批量生成进度（默认隐藏，点"生成对局"才出现）。
+        _generationLine.Controls.AddRange([_generationStatus, _generationBar]);
+        controls.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        controls.Controls.Add(_generationLine, 0, 2);
         return controls;
     }
 
@@ -423,7 +462,7 @@ public sealed partial class ReplayForm : Form
         _secondDeck.SelectedItem = defaultDeck;
     }
 
-    private void GenerateMatches()
+    private async void GenerateMatches()
     {
         if (_firstDeck.SelectedItem is not ReplayDeckChoice firstDeck ||
             _secondDeck.SelectedItem is not ReplayDeckChoice secondDeck ||
@@ -433,14 +472,29 @@ public sealed partial class ReplayForm : Form
             return;
         }
 
+        var count = Decimal.ToInt32(_matchCount.Value);
+        var firstRollouts = int.Parse((string)_firstRollouts.SelectedItem!, CultureInfo.InvariantCulture);
+        var secondRollouts = int.Parse((string)_secondRollouts.SelectedItem!, CultureInfo.InvariantCulture);
+
+        var firstWins = 0;
+        var secondWins = 0;
+        var draws = 0;
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
             UseWaitCursor = true;
             _newMatchButton.Enabled = false;
             _matches.Clear();
-            var count = Decimal.ToInt32(_matchCount.Value);
-            var firstRollouts = int.Parse((string)_firstRollouts.SelectedItem!, CultureInfo.InvariantCulture);
-            var secondRollouts = int.Parse((string)_secondRollouts.SelectedItem!, CultureInfo.InvariantCulture);
+
+            // 进度面板出现并归零。
+            _generationLine.Visible = true;
+            _generationBar.Minimum = 0;
+            _generationBar.Maximum = Math.Max(1, count);
+            _generationBar.Value = 0;
+            _generationStatus.Text = $"准备中… 0/{count}";
+            await Task.Yield();
+
             for (var index = 1; index <= count; index++)
             {
                 var seed = CreateSeed();
@@ -464,7 +518,30 @@ public sealed partial class ReplayForm : Form
                     initial,
                     steps,
                     result.Winner));
+
+                switch (result.Winner)
+                {
+                    case 0: firstWins++; break;
+                    case 1: secondWins++; break;
+                    default: draws++; break;
+                }
+
+                // —— 面板刷新 ——
+                _generationBar.Value = Math.Min(index, _generationBar.Maximum);
+                var elapsed = started.Elapsed;
+                var perGame = elapsed.TotalSeconds / index;
+                var remaining = TimeSpan.FromSeconds(Math.Max(0, perGame * (count - index)));
+                _generationStatus.Text = BuildGenerationStatus(
+                    index, count, firstAgent, firstWins, secondAgent, secondWins, draws, elapsed, remaining);
+
+                // **让出一次消息循环** —— 否则整批期间界面完全冻住，一次也刷不出来，
+                // 用户只能干等（这是本次改动的全部理由）。
+                await Task.Yield();
             }
+
+            _generationStatus.Text = BuildGenerationStatus(
+                count, count, firstAgent, firstWins, secondAgent, secondWins, draws,
+                started.Elapsed, TimeSpan.Zero).Replace("｜预计剩余 0 秒", string.Empty);
 
             PopulateMatchSelector();
             ShowResultSummary();
@@ -478,6 +555,42 @@ public sealed partial class ReplayForm : Form
             UseWaitCursor = false;
             _newMatchButton.Enabled = true;
         }
+    }
+
+    /// <summary>生成进度那一行的文案。</summary>
+    private static string BuildGenerationStatus(
+        int done,
+        int total,
+        string firstAgent,
+        int firstWins,
+        string secondAgent,
+        int secondWins,
+        int draws,
+        TimeSpan elapsed,
+        TimeSpan remaining)
+    {
+        var percent = total == 0 ? 100 : done * 100.0 / total;
+        var drawText = draws > 0 ? $"　平 {draws}" : string.Empty;
+        var remainText = done >= total ? string.Empty : $"　预计剩余 {DescribeDuration(remaining)}";
+        return $"生成中 {done}/{total}（{percent:F0}%）　" +
+               $"{firstAgent} {firstWins} 胜　:　{secondWins} 胜 {secondAgent}{drawText}　" +
+               $"已用 {DescribeDuration(elapsed)}{remainText}";
+    }
+
+    /// <summary>把时长写成"1分23秒"这种一眼能读的形式。</summary>
+    private static string DescribeDuration(TimeSpan span)
+    {
+        if (span.TotalSeconds < 1)
+        {
+            return "0秒";
+        }
+
+        if (span.TotalMinutes < 1)
+        {
+            return $"{span.TotalSeconds:F0}秒";
+        }
+
+        return $"{(int)span.TotalMinutes}分{span.Seconds}秒";
     }
 
     /// <summary>
