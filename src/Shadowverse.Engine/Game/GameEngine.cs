@@ -87,6 +87,13 @@ public static class GameEngine
             AppendPlayerFingerprint(builder, seat, state.Players[seat]);
         }
 
+        // 【谢幕曲】待结算队列也是状态：它决定"下一步会发生什么"，必须进指纹。
+        builder.Append('|');
+        foreach (var pending in state.PendingLastWordsInternal)
+        {
+            builder.Append(pending.PlayerIndex).Append(':').Append(pending.Card.InstanceId).Append(',');
+        }
+
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(builder.ToString())));
     }
@@ -178,6 +185,7 @@ public static class GameEngine
         builder.Append(';');
         builder.Append(player.LeaderDamageTakenBonusInternal).Append(';');
         builder.Append(player.FusedThisTurnInternal ? 1 : 0).Append(';');
+        builder.Append(';');
     }
 
     private static void AppendCardFingerprint(System.Text.StringBuilder builder, CardInstance card)
@@ -310,9 +318,22 @@ public static class GameEngine
         // fires once per entry regardless of how the follower arrived (played, summoned, generated,
         // transformed) — none of those routes trigger a Fanfare, but this is a passive trigger, not a
         // Fanfare, so it must still fire.
+        // 【谢幕曲】统一在这里结算：此刻当前动作的即时效果（含整段【入场曲】）已经全部结算完，
+        // 所以不会出现"入场曲被对手谢幕曲打断"的插入结算。
+        if (!next.IsGameOver)
+        {
+            DrainPendingLastWords(next);
+        }
+
         if (!next.IsGameOver)
         {
             ApplyEnteringTraitFollowerTriggers(next);
+        }
+
+        // 上面的被动触发（例如米乌造成伤害）可能又破坏了随从 → 再清一次队列。
+        if (!next.IsGameOver)
+        {
+            DrainPendingLastWords(next);
         }
 
         return next;
@@ -5031,6 +5052,21 @@ public static class GameEngine
             target.HasSuppressedLastWords);
     }
 
+    /// <summary>
+    /// 清空【谢幕曲】待结算队列。**在一个动作的所有即时效果都结算完之后**调用，
+    /// 这样谢幕曲不会插入到入场曲/攻击结算的中间。
+    /// 队列里新产生的破坏（谢幕曲自己又破坏了东西）会继续入队，所以这里循环到清空为止。
+    /// </summary>
+    private static void DrainPendingLastWords(GameState state)
+    {
+        while (state.PendingLastWordsInternal.Count > 0 && !state.IsGameOver)
+        {
+            var (playerIndex, card) = state.PendingLastWordsInternal[0];
+            state.PendingLastWordsInternal.RemoveAt(0);
+            ApplyLastWordsEffects(state, playerIndex, card);
+        }
+    }
+
     private static void AddCardToHandOrGrave(PlayerState player, CardInstance card)
     {
         if (player.HandInternal.Count >= PlayerState.HandLimit)
@@ -5075,7 +5111,9 @@ public static class GameEngine
         if (owner.BoardInternal.Remove(follower))
         {
             owner.GraveyardInternal.Add(follower.Card);
-            ApplyLastWordsEffects(state, playerIndex, follower.Card);
+            // 【谢幕曲】**不在这里结算** —— 就地结算等于"插入结算"，会打断正在进行的入场曲。
+            // 只入队，由 DrainPendingLastWords 在动作完整结算完之后统一按顺序结清。
+            state.PendingLastWordsInternal.Add((playerIndex, follower.Card));
             return true;
         }
 
