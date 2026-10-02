@@ -2177,47 +2177,31 @@ public static class GameEngine
                     player.EnteredTraitFollowerKindIdsInternal.Add(entrant.Definition.Id);
                 }
 
-                foreach (var watcher in creationWatchers)
+                // **不再就地结算**：只把"这个实例的进场被动"入队，由 DrainPendingEffects
+                // 按优先级、逐项完整结算。（就地结算会让它插进正在进行的入场曲里。）
+                if (creationWatchers.Length > 0)
                 {
-                    foreach (var effect in watcher.Definition.PassiveEffects ?? [])
-                    {
-                        switch (effect.Kind)
-                        {
-                            case CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters:
-                                ApplyDamageToRandomEnemyFollower(state, effect.Amount);
-                                break;
-                            case CardEffectKind.RestoreOwnLeaderWhenCreationEnters:
-                                RestoreLeaderHealth(state, playerIndex, effect.Amount);
-                                break;
-                            case CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters:
-                                DestroyRandomEnemyFollower(state, OtherPlayer(state.ActivePlayer));
-                                break;
-                            case CardEffectKind.GrantRushToEnteringCreationFollower:
-                                // 「自己的创造物·随从进入战场时，使其获得【突进】」——授予在**进场那个实例**上。
-                                entrant.GrantedKeywords |= CardKeyword.Rush;
-                                break;
-                        }
-                    }
+                    state.PendingLastWordsInternal.Add(new PendingEffect(
+                        PendingEffectPriority.OwnOtherFollower,
+                        state.NextPendingEffectSequence++,
+                        playerIndex,
+                        PendingEffectKind.FollowerPassiveForEntrant,
+                        entrant.Card));
                 }
 
-                // 「其他随从进入战场时使其进化」：能力造成的进化不消耗进化点。
-                foreach (var watcher in costWatchers)
+                if (costWatchers.Length > 0 && costWatchers.Any(watcher =>
+                        watcher.InstanceId != entrant.InstanceId &&
+                        entrant.Definition.Cost >= (watcher.Definition.PassiveEffects ?? [])
+                            .First(effect => effect.Kind ==
+                                CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast)
+                            .Amount))
                 {
-                    var threshold = (watcher.Definition.PassiveEffects ?? [])
-                        .First(effect => effect.Kind ==
-                            CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast)
-                        .Amount;
-                    if (entrant.InstanceId != watcher.InstanceId &&
-                        entrant.Definition.Cost >= threshold &&
-                        entrant.EvolutionState == EvolutionState.Unevolved)
-                    {
-                        EvolveFollowerByAbility(state, entrant.InstanceId);
-                    }
-                }
-
-                if (state.IsGameOver)
-                {
-                    return;
+                    state.PendingLastWordsInternal.Add(new PendingEffect(
+                        PendingEffectPriority.OwnOtherFollower,
+                        state.NextPendingEffectSequence++,
+                        playerIndex,
+                        PendingEffectKind.EvolveEntrantPassive,
+                        entrant.Card));
                 }
 
                 progressed = true;
@@ -5077,6 +5061,10 @@ public static class GameEngine
                 .First();
             state.PendingLastWordsInternal.Remove(next);
 
+            // **闭环**：上一项结算过程中可能又召回了新的随从（例如店主/米乌的被动连带召唤），
+            // 它们同样要触发"创造物进场"被动。重扫一次把它们补进队列，再继续按优先级取下一项。
+            ApplyEnteringTraitFollowerTriggers(state);
+
             // **完整结算这一项**：下面的每个 case 都会把该项的所有效果跑完才返回。
             // 期间新产生的触发只会**入队**，不会就地插入 —— 这就是"不允许插入结算"的保证。
             switch (next.Kind)
@@ -5084,9 +5072,96 @@ public static class GameEngine
                 case PendingEffectKind.LastWords:
                     ApplyLastWordsEffects(state, next.PlayerIndex, next.Card!);
                     break;
+                case PendingEffectKind.FollowerPassiveForEntrant:
+                    ResolveEnteringTraitPassiveForEntrant(state, next.PlayerIndex, next.Card!);
+                    break;
+                case PendingEffectKind.EvolveEntrantPassive:
+                    ResolveEvolveEntrantPassive(state, next.PlayerIndex, next.Card!);
+                    break;
                 default:
                     throw new InvalidOperationException(
                         $"Pending effect kind {next.Kind} has no resolver yet.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 「自己的创造物·随从进入战场时」被动：**只处理指定那一个进场实例**，把它整段跑完。
+    /// 由队列按优先级调用，所以不会插进别人的结算里。
+    /// </summary>
+    private static void ResolveEnteringTraitPassiveForEntrant(
+        GameState state,
+        int playerIndex,
+        CardInstance entrantCard)
+    {
+        var player = state.Players[playerIndex];
+        var entrant = player.BoardInternal
+            .FirstOrDefault(candidate => candidate.Card.InstanceId == entrantCard.InstanceId);
+        if (entrant is null)
+        {
+            // 进场后又在结算前离场 —— 合法情况（例如被对手谢幕曲带走），无事可做。
+            return;
+        }
+
+        foreach (var watcher in player.BoardInternal
+                     .Where(candidate => (candidate.Definition.PassiveEffects ?? [])
+                         .Any(effect => IsEnteringCreationTrigger(effect.Kind)))
+                     .ToArray())
+        {
+            foreach (var effect in watcher.Definition.PassiveEffects ?? [])
+            {
+                switch (effect.Kind)
+                {
+                    case CardEffectKind.DealDamageToRandomEnemyFollowerWhenCreationEnters:
+                        ApplyDamageToRandomEnemyFollower(state, effect.Amount);
+                        break;
+                    case CardEffectKind.RestoreOwnLeaderWhenCreationEnters:
+                        RestoreLeaderHealth(state, playerIndex, effect.Amount);
+                        break;
+                    case CardEffectKind.DestroyRandomEnemyFollowerWhenCreationEnters:
+                        DestroyRandomEnemyFollower(state, OtherPlayer(playerIndex));
+                        break;
+                    case CardEffectKind.GrantRushToEnteringCreationFollower:
+                        entrant.GrantedKeywords |= CardKeyword.Rush;
+                        break;
+                }
+
+                if (state.IsGameOver)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>「其他随从进入战场时使其进化」被动：只处理指定那一个进场实例。</summary>
+    private static void ResolveEvolveEntrantPassive(
+        GameState state,
+        int playerIndex,
+        CardInstance entrantCard)
+    {
+        var player = state.Players[playerIndex];
+        var entrant = player.BoardInternal
+            .FirstOrDefault(candidate => candidate.Card.InstanceId == entrantCard.InstanceId);
+        if (entrant is null)
+        {
+            return;
+        }
+
+        foreach (var watcher in player.BoardInternal.ToArray())
+        {
+            var rule = (watcher.Definition.PassiveEffects ?? [])
+                .FirstOrDefault(effect => effect.Kind ==
+                    CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast);
+            if (rule is null || watcher.InstanceId == entrant.InstanceId)
+            {
+                continue;
+            }
+
+            if (entrant.Definition.Cost >= rule.Amount &&
+                entrant.EvolutionState == EvolutionState.Unevolved)
+            {
+                EvolveFollowerByAbility(state, entrant.InstanceId);
             }
         }
     }

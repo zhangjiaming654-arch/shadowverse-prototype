@@ -34,8 +34,10 @@ internal enum PendingEffectKind
 {
     /// <summary>【谢幕曲】。</summary>
     LastWords,
-    /// <summary>「自己的创造物·随从进入战场时」这类随从被动。</summary>
-    FollowerPassive,
+    /// <summary>「自己的创造物·随从进入战场时」这类随从被动（针对某个刚进场的实例）。</summary>
+    FollowerPassiveForEntrant,
+    /// <summary>「其他随从进入战场时使其进化」被动（针对某个刚进场的实例）。</summary>
+    EvolveEntrantPassive,
     /// <summary>自己的回合开始时触发的纹章效果。</summary>
     CrestStartOfOwnTurn,
     /// <summary>自己的回合结束时触发的纹章效果。</summary>
