@@ -42,4 +42,7 @@ outputs/resume-complete.log
 outputs/*-config.json
 outputs/*.err
 outputs/archive/
-
+# 运行时/临时文件，不该进版本库
+outputs/live-progress.json
+# 运行时/临时文件，不该进版本库
+outputs/cm.txt
