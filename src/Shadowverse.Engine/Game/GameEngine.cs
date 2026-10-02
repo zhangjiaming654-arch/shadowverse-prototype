@@ -1172,7 +1172,11 @@ public static class GameEngine
                 case CardEffectKind.GrantSelfStormIfDeckHasNoDuplicates:
                     if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
                     {
-                        GrantFollowerKeywords(GetPlayedFollower(state, follower), CardKeyword.Storm);
+                        var stormTarget = GetPlayedFollower(state, follower);
+                        if (stormTarget is not null)
+                        {
+                            GrantFollowerKeywords(stormTarget, CardKeyword.Storm);
+                        }
                     }
 
                     break;
@@ -1180,7 +1184,11 @@ public static class GameEngine
                     // 术语表：超进化从**先手第7回合、后手第6回合**解禁（与 CanSuperEvolve 同一口径）。
                     if (state.Players[state.ActivePlayer].OwnTurnNumber >= SuperEvolutionUnlockTurn(state))
                     {
-                        GrantFollowerKeywords(GetPlayedFollower(state, follower), CardKeyword.Barrier);
+                        var barrierTarget = GetPlayedFollower(state, follower);
+                        if (barrierTarget is not null)
+                        {
+                            GrantFollowerKeywords(barrierTarget, CardKeyword.Barrier);
+                        }
                     }
 
                     break;
@@ -2904,15 +2912,14 @@ public static class GameEngine
             case CardEffectKind.EvolveSelfByOath:
                 // 【奥义】本随从进化：这条效果由"打出该卡时"的奥义结算触发，那时这张随从刚上场、
                 // 尚未进化，所以按卡号把它找出来进化（不消耗进化点）。
-                if (evolvedFollower is null)
-                {
-                    throw new InvalidOperationException(
-                        "【奥义】本随从进化 requires the playing card's follower; it cannot resolve from an evolution context.");
-                }
-
-                var oathTarget = state.Players[state.ActivePlayer].BoardInternal
-                    .FirstOrDefault(candidate => candidate.Definition.Id == evolvedFollower.Definition.Id &&
-                                                 candidate.EvolutionState == EvolutionState.Unevolved);
+                // 宿主为 null 是**正常情况**：那张随从可能在它自己的【入场曲】结算中已经离场
+                // （被破坏 / 被消滅 / 被变身）。"本随从进化"这时无事可做即可 —— 不该抛异常把整局打断。
+                // （和 GetPlayedFollower 那次是同一个根因，我连着犯了两次。）
+                var oathTarget = evolvedFollower is null
+                    ? null
+                    : state.Players[state.ActivePlayer].BoardInternal
+                        .FirstOrDefault(candidate => candidate.Definition.Id == evolvedFollower.Definition.Id &&
+                                                     candidate.EvolutionState == EvolutionState.Unevolved);
                 if (oathTarget is not null)
                 {
                     EvolveFollowerByAbility(state, oathTarget.InstanceId);
@@ -4890,12 +4897,13 @@ public static class GameEngine
     /// 那个方法的 <c>follower</c> 参数是手牌里的 <see cref="CardInstance"/>，不是 <see cref="FollowerInstance"/>，
     /// 所以授予关键词这类需要实例的操作必须先从战场按卡实例号找回来。
     /// </summary>
-    private static FollowerInstance GetPlayedFollower(GameState state, CardInstance card)
+    private static FollowerInstance? GetPlayedFollower(GameState state, CardInstance card)
     {
+        // 返回 null 是**正常情况**，不是错误：这张随从可能在它自己的【入场曲】结算过程中
+        // 已经离场（被破坏 / 被消滅 / 被变身）。"给它自己加关键词"这时无事可做即可。
+        // 之前这里抛异常，会让整局（进而整个基准跑）中断 —— 属于我自己的实现错误。
         return state.Players[state.ActivePlayer].BoardInternal
-            .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId)
-            ?? throw new InvalidOperationException(
-                "The played follower is not on the board; keyword grants need the board instance.");
+            .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId);
     }
 
     /// <summary>「发动N次『对对手随机1个随从造成M点』」：每次独立随机，可重复命中同一个随从。</summary>
