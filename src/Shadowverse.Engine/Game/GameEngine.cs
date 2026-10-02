@@ -88,10 +88,12 @@ public static class GameEngine
         }
 
         // 【谢幕曲】待结算队列也是状态：它决定"下一步会发生什么"，必须进指纹。
-        builder.Append('|');
+        builder.Append('|').Append(state.NextPendingEffectSequence).Append('|')
+            .Append(state.NextCrestAcquiredSequence).Append('|');
         foreach (var pending in state.PendingLastWordsInternal)
         {
-            builder.Append(pending.PlayerIndex).Append(':').Append(pending.Card.InstanceId).Append(',');
+            builder.Append((int)pending.Priority).Append(':').Append(pending.Sequence).Append(':')
+                .Append(pending.PlayerIndex).Append(':').Append(pending.Card.InstanceId).Append(',');
         }
 
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
@@ -1815,8 +1817,7 @@ public static class GameEngine
                 case CardEffectKind.GiveSelfCrestIfDeckHasNoDuplicates:
                     if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
                     {
-                        GiveCrest(
-                            state.Players[state.ActivePlayer],
+                        GiveCrest(state, state.Players[state.ActivePlayer],
                             CrestCatalog.Get(effect.ReferencedCardId!));
                     }
 
@@ -2901,8 +2902,7 @@ public static class GameEngine
                 // 「若自己的牌组中没有重复卡牌，则使自己获得纹章」：条件是**牌组**，不是战场。
                 if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
                 {
-                    GiveCrest(
-                        state.Players[state.ActivePlayer],
+                    GiveCrest(state, state.Players[state.ActivePlayer],
                         CrestCatalog.Get(effect.ReferencedCardId!));
                 }
 
@@ -2912,7 +2912,7 @@ public static class GameEngine
                 break;
             case CardEffectKind.GiveSelfCrest:
                 // 【奥义】「使自己获得『纹章：X』」（光之法则·龙敖）——奥义效果走的是进化分发器。
-                GiveCrest(state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
+                GiveCrest(state, state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
                 break;
             case CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder:
                 // 愚劣的兵器【进化时】：「对对手所有随从分配3点伤害」。
@@ -3240,10 +3240,10 @@ public static class GameEngine
                         effect.ReferencedCardId);
                     break;
                 case CardEffectKind.GiveEnemyCrest:
-                    GiveCrest(state.Players[OtherPlayer(state.ActivePlayer)], CrestCatalog.Get(effect.ReferencedCardId!));
+                    GiveCrest(state, state.Players[OtherPlayer(state.ActivePlayer)], CrestCatalog.Get(effect.ReferencedCardId!));
                     break;
                 case CardEffectKind.GiveSelfCrest:
-                    GiveCrest(state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
+                    GiveCrest(state, state.Players[state.ActivePlayer], CrestCatalog.Get(effect.ReferencedCardId!));
                     break;
                 case CardEffectKind.DealDamageToEnemyLeaderEqualToOwnFollowerCountWithPrintedCostAtLeast:
                     // 卡密希拉【超进化时】：按"自己战场上原始费用≥N的随从张数"打对手主战者。
@@ -4222,7 +4222,7 @@ public static class GameEngine
         }
     }
 
-    private static void GiveCrest(PlayerState player, CrestDefinition definition)
+    private static void GiveCrest(GameState state, PlayerState player, CrestDefinition definition)
     {
         // The official leader area allows at most five crests/faiths total. A named crest
         // is unique, so trying to grant an existing one does not create a duplicate copy.
@@ -4232,7 +4232,11 @@ public static class GameEngine
             return;
         }
 
-        player.CrestsInternal.Add(new CrestInstance(definition));
+        // 记录获取顺序：同优先级里的多个纹章按"从早到晚获得"的顺序发动。
+        player.CrestsInternal.Add(new CrestInstance(definition)
+        {
+            AcquiredSequence = state.NextCrestAcquiredSequence++
+        });
     }
 
     private static void RemoveTimedLeaderEffectsExpiringAtEndOfTurn(GameState state, int endingPlayerIndex)
@@ -5061,9 +5065,13 @@ public static class GameEngine
     {
         while (state.PendingLastWordsInternal.Count > 0 && !state.IsGameOver)
         {
-            var (playerIndex, card) = state.PendingLastWordsInternal[0];
-            state.PendingLastWordsInternal.RemoveAt(0);
-            ApplyLastWordsEffects(state, playerIndex, card);
+            // 按**优先级**取（同级按入队先后），不是先来先结算。
+            var next = state.PendingLastWordsInternal
+                .OrderBy(pending => (int)pending.Priority)
+                .ThenBy(pending => pending.Sequence)
+                .First();
+            state.PendingLastWordsInternal.Remove(next);
+            ApplyLastWordsEffects(state, next.PlayerIndex, next.Card);
         }
     }
 
@@ -5113,7 +5121,15 @@ public static class GameEngine
             owner.GraveyardInternal.Add(follower.Card);
             // 【谢幕曲】**不在这里结算** —— 就地结算等于"插入结算"，会打断正在进行的入场曲。
             // 只入队，由 DrainPendingLastWords 在动作完整结算完之后统一按顺序结清。
-            state.PendingLastWordsInternal.Add((playerIndex, follower.Card));
+            // 【谢幕曲】属于**持有者**：持有者是我方 → ③自己的其他随从；持有者是对方 → ⑤对方随从。
+            // （按设计者给的结算优先级排，不是先来先结算。）
+            state.PendingLastWordsInternal.Add(new PendingEffect(
+                playerIndex == state.ActivePlayer
+                    ? PendingEffectPriority.OwnOtherFollower
+                    : PendingEffectPriority.EnemyFollower,
+                state.NextPendingEffectSequence++,
+                playerIndex,
+                follower.Card));
             return true;
         }
 
@@ -5243,8 +5259,7 @@ public static class GameEngine
                     break;
                 case CardEffectKind.GiveSelfCrest:
                     // 【谢幕曲】「使自己获得『纹章：X』」——"自己"是这张随从的主人。
-                    GiveCrest(
-                        state.Players[ownerIndex],
+                    GiveCrest(state, state.Players[ownerIndex],
                         CrestCatalog.Get(effect.ReferencedCardId!));
                     break;
                 case CardEffectKind.DrawCards:

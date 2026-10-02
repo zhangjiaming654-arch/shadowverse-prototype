@@ -10,6 +10,33 @@ public enum GamePhase
 }
 
 /// <summary>
+/// 触发式效果的**结算优先级**（由卡牌设计者给定，数字越小越先结算）。
+/// <para>
+///   0 随从自己的入场曲 ＞ 1 自己的纹章效果 ＞ 2 自己的其他随从的效果
+///   ＞ 3 对方主战者纹章效果 ＞ 4 对方随从效果
+/// </para>
+/// <para>
+/// 【入场曲】是**即时结算**的（不入队，就是正在执行的那一段），
+/// 队列里只会出现 1～4 这几档的后续触发。
+/// </para>
+/// </summary>
+internal enum PendingEffectPriority
+{
+    OwnFanfare = 0,
+    OwnCrest = 1,
+    OwnOtherFollower = 2,
+    EnemyCrest = 3,
+    EnemyFollower = 4
+}
+
+/// <summary>队列里的一条待结算触发效果。<see cref="Sequence"/> 用于同优先级内的稳定先后。</summary>
+internal readonly record struct PendingEffect(
+    PendingEffectPriority Priority,
+    long Sequence,
+    int PlayerIndex,
+    CardInstance Card);
+
+/// <summary>
 /// Full internal state. It contains hidden information and must never be passed directly to an agent.
 /// </summary>
 public sealed class GameState
@@ -43,7 +70,13 @@ public sealed class GameState
     /// </para>
     /// <para>破坏时只入队，由 <c>GameEngine.DrainPendingLastWords</c> 在动作结算完之后统一清空。</para>
     /// </summary>
-    internal List<(int PlayerIndex, CardInstance Card)> PendingLastWordsInternal { get; } = [];
+    internal List<PendingEffect> PendingLastWordsInternal { get; } = [];
+
+    /// <summary>同优先级内的稳定先后（入队序号）。进指纹，保证可复现。</summary>
+    internal long NextPendingEffectSequence { get; set; }
+
+    /// <summary>纹章获取顺序的计数器（全局递增，跨双方）。</summary>
+    internal long NextCrestAcquiredSequence { get; set; }
 
     public bool IsGameOver => Phase == GamePhase.GameOver;
 
@@ -59,6 +92,8 @@ public sealed class GameState
             NextInstanceId = NextInstanceId
         };
         copy.PendingLastWordsInternal.AddRange(PendingLastWordsInternal);
+        copy.NextPendingEffectSequence = NextPendingEffectSequence;
+        copy.NextCrestAcquiredSequence = NextCrestAcquiredSequence;
         return copy;
     }
 }

@@ -226,6 +226,12 @@ public sealed class CrestInstance
     public int? Countdown { get; internal set; }
 
     /// <summary>
+    /// 获得这张纹章的**先后顺序**（全局递增）。同一优先级（例如"自己的纹章效果"）里有多个纹章时，
+    /// 按这个顺序**从早到晚**发动 —— 卡牌设计者给定的规则。
+    /// </summary>
+    public long AcquiredSequence { get; internal set; } = -1;
+
+    /// <summary>
     /// 「从以下未发动的能力中随机发动1个能力」: which numbered slots this crest has already rolled.
     /// The ability only ever picks from the slots it has not used yet, and this record must survive
     /// <see cref="DeepCopy"/> or a search branch would re-roll an already-spent slot.
@@ -244,7 +250,8 @@ public sealed class CrestInstance
         {
             LastOwnLeaderRestoreTriggerTurn = LastOwnLeaderRestoreTriggerTurn,
             LastEvolvePlayedFollowerTriggerTurn = LastEvolvePlayedFollowerTriggerTurn,
-            Countdown = Countdown
+            Countdown = Countdown,
+            AcquiredSequence = AcquiredSequence
         };
         copy.UsedAbilitySlotsInternal.UnionWith(UsedAbilitySlotsInternal);
         return copy;
