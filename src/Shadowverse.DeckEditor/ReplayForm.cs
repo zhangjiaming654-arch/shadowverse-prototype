@@ -42,43 +42,6 @@ public sealed partial class ReplayForm : Form
     private readonly Button _newMatchButton = new ReadableToolbarButton { Text = "生成对局", AutoSize = true };
 
     /// <summary>
-    /// **批量生成的进度面板。** 生成 N 局是在界面线程上逐局跑的，原来整批期间界面完全冻住、
-    /// 没有任何反馈，用户只能干等（反馈原话："干等太无聊了"）。
-    /// 这里在每局之间让出一次消息循环，界面就能刷出"已打多少局、谁领先、还要多久"。
-    /// </summary>
-    private readonly Label _generationStatus = new()
-    {
-        AutoSize = true,
-        ForeColor = Color.FromArgb(255, 214, 130),
-        Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold),
-        BackColor = Color.FromArgb(20, 35, 52),
-        Padding = new Padding(12, 6, 12, 6),
-        Margin = new Padding(0),
-        Text = "生成进度：尚未开始（点“生成对局”后这里会实时显示局数与双方胜负）"
-    };
-
-    private readonly ProgressBar _generationBar = new()
-    {
-        Width = 260,
-        Height = 18,
-        Style = ProgressBarStyle.Continuous,
-        Margin = new Padding(10, 4, 0, 0)
-    };
-
-    private readonly FlowLayoutPanel _generationLine = new()
-    {
-        // 固定高度 + Dock.Top：Dock.Fill 放在 AutoSize 行里时，TableLayoutPanel 取到的
-        // 首选高度可能是 0，整行就渲染不出来（实测用户反馈"没看到"）。
-        // 这里给它确定的高度，并且**默认就可见** —— 打开界面就能确认这一行存在。
-        Dock = DockStyle.Top,
-        Height = 36,
-        AutoSize = false,
-        FlowDirection = FlowDirection.LeftToRight,
-        WrapContents = false,
-        Visible = true
-    };
-
-    /// <summary>
     /// 前瞻牌手对每个候选动作向前模拟的次数。次数越多判断噪声越小，耗时按比例增加。
     /// 两边分开设置，才能做"同一个牌手、两种搜索量对打"这个真正有用的对照——
     /// 两边设成一样的话，分不清是谁在受益。
@@ -228,7 +191,7 @@ public sealed partial class ReplayForm : Form
             BackColor = SurfaceBackground,
             Padding = new Padding(8),
             ColumnCount = 1,
-            RowCount = 3
+            RowCount = 2
         };
         controls.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         controls.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -276,11 +239,9 @@ public sealed partial class ReplayForm : Form
         controls.Controls.Add(setupLine, 0, 0);
         controls.Controls.Add(playbackLine, 0, 1);
 
-        // 第三行：批量生成进度。**固定高度**——AutoSize 行在子控件事先不可见时
-        // 可能把行高算成 0，导致整行渲染不出来。这里给死高度，保证一定看得见。
-        _generationLine.Controls.AddRange([_generationStatus, _generationBar]);
-        controls.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        controls.Controls.Add(_generationLine, 0, 2);
+        // 注：曾经在这里加过"第三行"专放生成进度，但实测在 root 的 AutoSize 行里
+        // 这一行渲染不出来（试过 Dock.Top+固定高、AutoSize、Absolute 行高三种都不行）。
+        // 改成写进**已经确定能渲染**的 _progressLabel（回放那一栏），见 GenerateMatches。
         return controls;
     }
 
@@ -491,12 +452,10 @@ public sealed partial class ReplayForm : Form
             _newMatchButton.Enabled = false;
             _matches.Clear();
 
-            // 进度面板出现并归零。
-            _generationLine.Visible = true;
-            _generationBar.Minimum = 0;
-            _generationBar.Maximum = Math.Max(1, count);
-            _generationBar.Value = 0;
-            _generationStatus.Text = $"准备中… 0/{count}";
+            // 进度写进 **回放那一栏的 _progressLabel** —— 那一栏实测一定能渲染。
+            // （曾经在顶部加过"第三行"专放进度，在 root 的 AutoSize 行里渲染不出来。）
+            _progressLabel.ForeColor = Color.FromArgb(255, 214, 130);
+            _progressLabel.Text = $"生成中 0/{count}…";
             await Task.Yield();
 
             for (var index = 1; index <= count; index++)
@@ -531,11 +490,10 @@ public sealed partial class ReplayForm : Form
                 }
 
                 // —— 面板刷新 ——
-                _generationBar.Value = Math.Min(index, _generationBar.Maximum);
                 var elapsed = started.Elapsed;
                 var perGame = elapsed.TotalSeconds / index;
                 var remaining = TimeSpan.FromSeconds(Math.Max(0, perGame * (count - index)));
-                _generationStatus.Text = BuildGenerationStatus(
+                _progressLabel.Text = BuildGenerationStatus(
                     index, count, firstAgent, firstWins, secondAgent, secondWins, draws, elapsed, remaining);
 
                 // **让出一次消息循环** —— 否则整批期间界面完全冻住，一次也刷不出来，
@@ -543,9 +501,9 @@ public sealed partial class ReplayForm : Form
                 await Task.Yield();
             }
 
-            _generationStatus.Text = BuildGenerationStatus(
+            _progressLabel.Text = BuildGenerationStatus(
                 count, count, firstAgent, firstWins, secondAgent, secondWins, draws,
-                started.Elapsed, TimeSpan.Zero).Replace("｜预计剩余 0 秒", string.Empty);
+                started.Elapsed, TimeSpan.Zero).Replace("　预计剩余 0秒", string.Empty);
 
             PopulateMatchSelector();
             ShowResultSummary();
