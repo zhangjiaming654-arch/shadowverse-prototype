@@ -858,33 +858,19 @@ public sealed partial class ReplayForm : Form
         }
     }
 
-    private static object BuildMachineReplay(ReplayMatch match)
-    {
-        var final = match.Steps[^1].AfterState;
-        return new
-        {
-            v = 1,
-            f = "SVP/R1",
-            seed = match.Seed.ToString(),
-            p = new[]
-            {
-                new { d = match.FirstDeckInfo, a = match.FirstAgentInfo },
-                new { d = match.SecondDeckInfo, a = match.SecondAgentInfo }
-            },
-            first = match.InitialState.StartingPlayer,
-            win = match.Winner,
-            z = new[] { final.Players[0].Health, final.Players[1].Health },
-            i = InitialCardMap(match.InitialState),
-            e = match.Steps.Select(ToMachineEvent).ToArray()
-        };
-    }
-
-    private static object[][][] InitialCardMap(GameState initialState) => initialState.Players
-        .Select(player => player.Hand.Concat(player.Deck)
-            .Select(card => new object[] { card.InstanceId, card.Definition.Id })
-            .ToArray())
-        .ToArray();
-
+    /// <summary>
+    /// 机器可读回放：**序列化逻辑在引擎里**（<see cref="MachineReplay"/>），
+    /// 这样命令行也能导出同一份格式，自检才验得到。
+    /// </summary>
+    private static object BuildMachineReplay(ReplayMatch match) => MachineReplay.Build(
+        match.Seed,
+        match.FirstDeckInfo,
+        match.FirstAgentInfo,
+        match.SecondDeckInfo,
+        match.SecondAgentInfo,
+        match.InitialState,
+        match.Winner,
+        match.Steps);
     // Compact event schema: [turn, actor, action-code, ...action-specific values].
     private static object?[] ToMachineEvent(MatchStep step)
     {

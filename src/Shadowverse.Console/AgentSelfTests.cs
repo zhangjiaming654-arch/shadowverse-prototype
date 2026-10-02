@@ -9738,6 +9738,146 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// **回放格式（SVP/R2）完整性护栏**：导出的 JSON 必须带**每步状态快照**和**全程卡表**。
+    /// <para>
+    /// R1 只有动作序列 → 事后分析只能"从动作推断"；R1 的卡表只含初始手牌+牌库 →
+    /// 对局中生成的衍生卡还原不出卡名。这两条是本断言要锁住的。
+    /// </para>
+    /// </summary>
+    internal static void RunMachineReplaySnapshotTest()
+    {
+        var failures = new List<string>();
+
+        // 用会产出衍生卡的牌组（创造物体系），保证对局里真的会出现"新实例"。
+        CardDefinition[] deck =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.Parkour), 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AnalyzedCreation), 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientCreation), 10),
+            .. CardCatalog.All.Where(card => card.IsCollectible)
+                .OrderBy(card => card.Id, StringComparer.Ordinal)
+                .Take(DeckDefinition.RequiredCardCount - 30)
+        ];
+
+        if (deck.Length != DeckDefinition.RequiredCardCount)
+        {
+            throw new InvalidOperationException($"回放测试的卡组必须 40 张，实际 {deck.Length}");
+        }
+
+        var steps = new List<MatchStep>();
+        var state = GameEngine.CreateGame(
+            new DeckDefinition("replay-a", deck),
+            new DeckDefinition("replay-b", deck),
+            seed: 91_337);
+        var result = MatchRunner.PlayToEnd(
+            CompleteMulligan(state),
+            new GreedyPlayerAgent(),
+            new GreedyPlayerAgent(),
+            onStep: steps.Add);
+
+        var json = MachineReplay.Serialize(
+            seed: 91_337,
+            firstDeckInfo: "DECK-X - 测试甲",
+            firstAgentInfo: "测试牌手甲",
+            secondDeckInfo: "DECK-Y - 测试乙",
+            secondAgentInfo: "测试牌手乙",
+            initialState: state,
+            winner: result.Winner,
+            steps: steps);
+
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        // ① 版本与格式自描述（旧消费者靠它区分 R1 / R2）。
+        if (root.GetProperty("f").GetString() != "SVP/R2" || root.GetProperty("v").GetInt32() != 2)
+        {
+            failures.Add("格式标识不是 SVP/R2 v2");
+        }
+
+        // ② 每一步都有快照，且步数与动作数一致。
+        var snap = root.GetProperty("snap");
+        var events = root.GetProperty("e");
+        if (snap.GetArrayLength() != steps.Count || events.GetArrayLength() != steps.Count)
+        {
+            failures.Add($"快照数 {snap.GetArrayLength()} / 动作数 {events.GetArrayLength()} 与步数 {steps.Count} 不一致");
+        }
+
+        // 快照为空就直接判失败并返回 —— 否则下面按索引取值会抛异常，
+        // 护栏就变成"崩掉"而不是"干净报红"了。
+        if (snap.GetArrayLength() == 0)
+        {
+            failures.Add("回放里没有任何状态快照（snap 为空）—— R2 要求每一步都有快照");
+            ReportParkourFailures(failures, "回放格式 SVP/R2");
+        }
+
+        // ③ 最后一份快照的生命值必须等于 z。
+        var last = snap[snap.GetArrayLength() - 1];
+        var z = root.GetProperty("z");
+        if (last[2][0].GetInt32() != z[0].GetInt32() || last[3][0].GetInt32() != z[1].GetInt32())
+        {
+            failures.Add("最后一份快照的生命值与 z 不一致");
+        }
+
+        // ④ 快照里的每个实例都能在卡表 i 里查到 —— 否则事后会出现还原不出卡名的 ?#NN。
+        var known = new HashSet<int>();
+        foreach (var seatMap in root.GetProperty("i").EnumerateArray())
+        {
+            foreach (var entry in seatMap.EnumerateArray())
+            {
+                known.Add(entry[0].GetInt32());
+            }
+        }
+
+        var unknownInstances = new HashSet<int>();
+        var sawBoard = 0;
+        var sawCrestOrAmulet = 0;
+        foreach (var snapshot in snap.EnumerateArray())
+        {
+            foreach (var seat in new[] { 2, 3 })
+            {
+                var board = snapshot[seat][9];
+                if (board.GetArrayLength() > 0)
+                {
+                    sawBoard++;
+                }
+
+                foreach (var follower in board.EnumerateArray())
+                {
+                    if (!known.Contains(follower[0].GetInt32()))
+                    {
+                        unknownInstances.Add(follower[0].GetInt32());
+                    }
+                }
+
+                if (snapshot[seat][10].GetArrayLength() > 0 || snapshot[seat][11].GetArrayLength() > 0)
+                {
+                    sawCrestOrAmulet++;
+                }
+            }
+        }
+
+        if (unknownInstances.Count > 0)
+        {
+            failures.Add($"快照里有 {unknownInstances.Count} 个实例不在卡表 i 中（例：{string.Join(",", unknownInstances.Take(5))}）");
+        }
+
+        if (sawBoard == 0)
+        {
+            failures.Add("整局没有任何一步的战场非空 —— 本条断言没验到东西");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "回放格式 SVP/R2");
+        }
+
+        Console.WriteLine("Machine replay snapshot test passed.");
+        Console.WriteLine(
+            $"SVP/R2 回放：{steps.Count} 步，每步都有快照；战场非空 {sawBoard} 次，" +
+            $"纹章/护符出现 {sawCrestOrAmulet} 次，卡表实例 {known.Count} 个。");
+    }
+
+    /// <summary>
     /// **「本随从进化时」字段归属护栏**。
     /// <para>
     /// 卡面写「本随从进化时」的随从，效果必须挂在 <c>OnEvolveEffects</c> 上 ——

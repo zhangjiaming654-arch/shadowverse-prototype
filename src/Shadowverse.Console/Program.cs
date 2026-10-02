@@ -95,6 +95,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunCrossCategoryPriorityTest();
     // 「本随从进化时」必须挂在 OnEvolveEffects（所有进化途径都触发）。
     AgentSelfTests.RunOnEvolveFieldPlacementTest();
+    // 回放格式护栏：JSON 必须带每步状态快照和全程卡表。
+    AgentSelfTests.RunMachineReplaySnapshotTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

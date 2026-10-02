@@ -93,7 +93,7 @@ public static class GameEngine
         foreach (var pending in state.PendingLastWordsInternal)
         {
             builder.Append((int)pending.Priority).Append(':').Append(pending.Sequence).Append(':')
-                .Append(pending.PlayerIndex).Append(':').Append(pending.Card.InstanceId).Append(',');
+                .Append(pending.PlayerIndex).Append(':').Append(pending.Card?.InstanceId ?? -1).Append(',');
         }
 
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
@@ -1238,8 +1238,6 @@ public static class GameEngine
                 case CardEffectKind.DealDamageToRandomEnemyFollowerRepeatedly:
                     ApplyRepeatedRandomDamageToEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
                     break;
-                    ApplyDamageToRandomEnemyFollowers(state, effect.Amount, effect.SecondaryAmount);
-                    break;
                 case CardEffectKind.DealRandomDamageToEnemyFollowerOrLeaderRepeatedly:
                     ApplyRepeatedRandomDamageToEnemyFollowerOrLeader(
                         state,
@@ -1513,22 +1511,32 @@ public static class GameEngine
 
     private static void ApplyEnhanceEffects(
         GameState state,
-        FollowerInstance follower,
+        FollowerInstance? follower,
         EnhanceDefinition? resolvedEnhance)
     {
-        if (resolvedEnhance is null || follower.Definition.EnhanceEffects is null)
+        // follower 可能为 null：它来自 GetPlayedFollower，而那张随从完全可能在
+        // 自己的【入场曲】结算中已经离场（被对手谢幕曲带走等）—— 合法情况，直接跳过。
+        if (follower is null || resolvedEnhance is null)
         {
             return;
         }
 
-        foreach (var effect in follower.Definition.EnhanceEffects
+        // 落成非空局部变量：下面 foreach 的 LINQ lambda 会捕获外层变量，
+        // 编译器的可空流分析在 lambda 之后不再保留"follower 非空"这个结论。
+        var played = follower;
+        if (played.Definition.EnhanceEffects is null)
+        {
+            return;
+        }
+
+        foreach (var effect in played.Definition.EnhanceEffects
                      .Where(enhance => enhance.Cost <= resolvedEnhance.Cost)
                      .SelectMany(enhance => enhance.Effects))
         {
             switch (effect.Kind)
             {
                 case CardEffectKind.GainStats:
-                    IncreaseFollowerStats(follower, effect.Amount);
+                    IncreaseFollowerStats(played, effect.Amount);
                     break;
                 case CardEffectKind.SearchDeckForFollowerWithMinimumCostToHand:
                     SearchDeckForFollowerWithMinimumCostToHand(state, effect.Amount);
@@ -1540,13 +1548,13 @@ public static class GameEngine
                     SummonFollowers(state, effect.ReferencedCardId!, effect.Amount);
                     break;
                 case CardEffectKind.GainStorm:
-                    GrantFollowerKeywords(follower, CardKeyword.Storm);
+                    GrantFollowerKeywords(played, CardKeyword.Storm);
                     break;
                 case CardEffectKind.EvolveSelf:
                     // 爆能强化9「本随从进化」：能力造成的进化不消耗进化点。
-                    if (follower is not null && follower.EvolutionState == EvolutionState.Unevolved)
+                    if (played.EvolutionState == EvolutionState.Unevolved)
                     {
-                        EvolveFollowerByAbility(state, follower.InstanceId);
+                        EvolveFollowerByAbility(state, played.InstanceId);
                     }
 
                     break;
@@ -1686,8 +1694,8 @@ public static class GameEngine
                 .Where(follower => !follower.HasAura && !follower.HasStealth)
                 .ToArray();
             return destroyTargets.Length == 0
-                ? [null]
-                : destroyTargets.Select(follower => (SpellTarget)new FollowerTarget(follower.InstanceId)).ToArray();
+                ? [(SpellTarget?)null]
+                : destroyTargets.Select(follower => (SpellTarget?)new FollowerTarget(follower.InstanceId)).ToArray();
         }
 
         if (effects.Any(effect => effect.Kind == CardEffectKind.TransformInto))
