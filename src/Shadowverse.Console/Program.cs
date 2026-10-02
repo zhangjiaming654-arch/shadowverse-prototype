@@ -87,6 +87,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunCrestOathInteractionTest();
     // 【启动】：护符启动能力 / 1回合1次 / 手牌变身成对手牌组复制。
     AgentSelfTests.RunStartAbilityTest();
+    // 结算顺序护栏：入场曲完整结算完才轮到对手的谢幕曲（不允许插入结算）。
+    AgentSelfTests.RunResolutionOrderTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

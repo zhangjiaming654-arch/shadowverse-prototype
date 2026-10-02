@@ -9738,6 +9738,186 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// **结算顺序护栏**：入场曲必须完整结算完，才轮到对手的【谢幕曲】—— 不允许插入结算。
+    /// <para>
+    /// 局面（确定性）：我方场上只有「铸铁亲信」；对手场上有「渊底上校」。
+    /// 铸铁亲信入场曲 = 破坏对手1个随从 → 命中渊底上校 → 它的【谢幕曲】= 「破坏对手随机1个随从」
+    /// → 我方只有铸铁亲信 → 必然命中它。
+    /// </para>
+    /// <para>
+    /// 正确的顺序 ⇒ 入场曲的两个效果都跑完（破坏对手随从 + 若牌组无重复则自己获得【疾驰】），
+    /// 之后才结算谢幕曲把它带走。
+    /// 错误的顺序（插入结算）⇒ 铸铁亲信在入场曲结算中途就死了，
+    /// 它入场曲的第二个效果会去找自己却找不到（这正是之前崩溃/静默丢失的成因）。
+    /// </para>
+    /// <para>
+    /// 断言两件事：**入场曲那一半确实生效了**（对手随从被破坏）、**谢幕曲那一半也确实结算了**
+    /// （我方随从被带走）。两条同时成立，才说明是"先完整入场曲、后谢幕曲"，
+    /// 而不是"入场曲被打断后草草收场"。
+    /// </para>
+    /// </summary>
+    internal static void RunResolutionOrderTest()
+    {
+        const int mySeat = 0;
+        var failures = new List<string>();
+        var sawFanfareHalf = 0;
+        var sawLastWordsHalf = 0;
+        var sawBothHalves = 0;
+        var sawSinnerPlayable = 0;
+        var sawColonelOnBoard = 0;
+
+        // 我方：**40 张互不相同**（必须无重复，否则铸铁亲信的"牌组无重复则获得【疾驰】"
+        // 这个第 2 个入场曲效果不会执行，也就不会去场上找自己 —— 断言就失去可区分信号）。
+        CardDefinition[] myCards =
+        [
+            CardCatalog.Get(CardIds.CastIronConfidant),
+            .. CardCatalog.All
+                .Where(card => card.IsCollectible && card.Id != CardIds.CastIronConfidant)
+                .OrderBy(card => card.Id, StringComparer.Ordinal)
+                .Take(DeckDefinition.RequiredCardCount - 1)
+        ];
+        // 对手：全是渊底上校，保证它一定在场、且谢幕曲必然指向我方。
+        CardDefinition[] enemyCards = Enumerable
+            .Repeat(CardCatalog.Get(CardIds.AbyssalColonel), DeckDefinition.RequiredCardCount)
+            .ToArray();
+
+        if (myCards.Length != DeckDefinition.RequiredCardCount ||
+            myCards.GroupBy(card => card.Id, StringComparer.Ordinal).Any(group => group.Count() != 1))
+        {
+            throw new InvalidOperationException("结算顺序测试的我方卡组必须 40 张且无重复");
+        }
+
+        foreach (var seed in Enumerable.Range(0, 80).Select(index => 98_000UL + (ulong)index))
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("order-own", myCards),
+                new DeckDefinition("order-enemy", enemyCards),
+                seed);
+
+            for (var step = 0; step < 900 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var active = state.Players[state.ActivePlayer];
+                var enemyIndex = OtherPlayerIndex(state.ActivePlayer);
+
+                // 只在这个局面下做检查：手上有铸铁亲信，对手场上有渊底上校。
+                // 注意：record 对**数组属性**是按引用比较的，所以不能手搓一个 PlayFollowerAction 去 Contains。
+                // 直接从引擎生成的合法动作里挑"带了目标"的那一个。
+                var sinner = legalActions.OfType<PlayFollowerAction>().FirstOrDefault(action =>
+                    action.EnemyFollowerTargetInstanceIds is { Count: > 0 } &&
+                    active.Hand.Single(card => card.InstanceId == action.CardInstanceId).Definition.Id ==
+                    CardIds.CastIronConfidant);
+                var enemyBoard = state.Players[enemyIndex].Board;
+                if (sinner is not null) { sawSinnerPlayable++; }
+                if (enemyBoard.Any(f => f.Definition.Id == CardIds.AbyssalColonel)) { sawColonelOnBoard++; }
+
+                // 只有"我方原本一个随从都没有"时才是确定性的：打出铸铁亲信后我方场上只有它，
+                // "破坏对手随机1个随从"必然命中它。（否则随机可能打中别的随从，断言就不准。）
+                if (sinner is not null &&
+                    active.Board.Count == 0 &&
+                    enemyBoard.Any(f => f.Definition.Id == CardIds.AbyssalColonel))
+                {
+                    var target = enemyBoard.First(f => f.Definition.Id == CardIds.AbyssalColonel);
+                    var withTarget = sinner;
+                    {
+                        var playedInstanceId = withTarget.CardInstanceId;
+                        // **可区分信号**：入场曲结算途中去找"刚打出的那张"却找不到的次数。
+                        // 正确顺序下它必须不增加；插入结算时它必然 +1（随从在入场曲跑完前就没了）。
+                        var missesBefore = state.PlayedFollowerLookupMissesInternal;
+
+                        state = GameEngine.Apply(state, withTarget);
+
+                        var noInsertion = state.PlayedFollowerLookupMissesInternal == missesBefore;
+
+                        var after = state.Players[state.ActivePlayer];
+                        var afterEnemyIndex = OtherPlayerIndex(state.ActivePlayer);
+
+                        // ① 入场曲那一半：目标（渊底上校）被破坏。
+                        var fanfareHalf = !state.Players[afterEnemyIndex].Board
+                            .Any(f => f.InstanceId == target.InstanceId)
+                            || state.Players[afterEnemyIndex].Graveyard
+                                .Any(c => c.Definition.Id == CardIds.AbyssalColonel);
+                        // ② 谢幕曲那一半：刚打出的那张被带走（我方原本没有随从，所以随机必然命中它）。
+                        var lastWordsHalf = !after.Board.Any(f => f.InstanceId == playedInstanceId);
+
+                        if (fanfareHalf)
+                        {
+                            sawFanfareHalf++;
+                        }
+
+                        if (lastWordsHalf)
+                        {
+                            sawLastWordsHalf++;
+                        }
+
+                        if (fanfareHalf && lastWordsHalf && noInsertion)
+                        {
+                            sawBothHalves++;
+                        }
+                        else
+                        {
+                            failures.Add(
+                                $"结算顺序异常：入场曲那一半={fanfareHalf}（对手随从被破坏）｜" +
+                                $"谢幕曲那一半={lastWordsHalf}（我方随从被带走）｜" +
+                                $"**无插入结算**={noInsertion}" +
+                                $"（入场曲结算中途丢失发声者 {state.PlayedFollowerLookupMissesInternal - missesBefore} 次）" +
+                                " —— 三者都必须成立");
+                        }
+
+                        continue;
+                    }
+                }
+
+                // **我方除了铸铁亲信不出任何随从** —— 这样在它被打出的那一刻，我方场上只有它，
+                // "破坏对手随机1个随从"就必然命中它，局面才是确定性的。
+                // 对手照常出牌（否则渊底上校永远上不了场）。
+                GameAction action;
+                if (state.ActivePlayer == mySeat)
+                {
+                    action = legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                        ?? legalActions[0];
+                }
+                else
+                {
+                    action = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                        ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                        ?? legalActions[0];
+                }
+
+                state = GameEngine.Apply(state, action);
+            }
+        }
+
+        if (sawBothHalves == 0)
+        {
+            failures.Add(
+                "没构造出「入场曲破坏带谢幕曲的随从」这个局面 —— 本条断言没验到东西" +
+                $"（铸铁亲信可打出 {sawSinnerPlayable} 次 ｜ 对手场上有渊底上校 {sawColonelOnBoard} 次）");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures, "结算顺序");
+        }
+
+        Console.WriteLine("Resolution order test passed.");
+        Console.WriteLine(
+            $"入场曲完整结算 + 谢幕曲随后结算：两种半边都成立 {sawBothHalves} 次" +
+            $"（入场曲半边 {sawFanfareHalf} ｜ 谢幕曲半边 {sawLastWordsHalf}）。");
+    }
+
+    /// <summary>
     /// 【启动】自检（术语表：「1回合仅限1次，拥有启动能力的**护符**…」）：
     /// 「被侵略的世界」打出后应能被启动，把手上1张卡变成**对手牌组中随机1张卡的复制**，
     /// 且**同一回合不能启动第二次**。

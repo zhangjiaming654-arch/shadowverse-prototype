@@ -4914,6 +4914,21 @@ public static class GameEngine
     /// </summary>
     private static FollowerInstance? GetPlayedFollower(GameState state, CardInstance card)
     {
+        var found = state.Players[state.ActivePlayer].BoardInternal
+            .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId);
+        if (found is null)
+        {
+            // 观察量：说明"入场曲还没结算完，这张随从就已经不在场上了"。
+            // **正确顺序下这个数必须保持 0** —— 它正是"插入结算"的可区分信号，
+            // 也是结算顺序断言的能量来源（死亡后看不出 Storm，但这个能看出来）。
+            state.PlayedFollowerLookupMissesInternal++;
+        }
+
+        return found;
+    }
+
+    private static FollowerInstance? GetPlayedFollowerCounting(GameState state, CardInstance card)
+    {
         // 返回 null 是**合法情况**：这张随从可能在它自己的【入场曲】结算过程中已经离场。
         // 实测到的真实连锁（2026-10-02 诊断确认）：
         //   铸铁亲信的入场曲破坏对手1个随从 → 那个随从的【谢幕曲】是"破坏对手的随机1个随从"
@@ -5214,6 +5229,10 @@ public static class GameEngine
             // 只入队，由 DrainPendingEffects 在动作完整结算完之后，按优先级、逐项完整结清。
             // 【谢幕曲】属于**持有者**：持有者是我方 → ③自己的其他随从；持有者是对方 → ⑤对方随从。
             // （按设计者给的结算优先级排，不是先来先结算。）
+            // 【谢幕曲】**不在这里结算** —— 就地结算等于"插入结算"，会打断正在进行的入场曲。
+            // 只入队，由 DrainPendingEffects 在动作完整结算完之后，按优先级、逐项完整结清。
+            // 【谢幕曲】**不在这里结算** —— 就地结算等于"插入结算"，会打断正在进行的入场曲。
+            // 只入队，由 DrainPendingEffects 在动作完整结算完之后，按优先级、逐项完整结清。
             state.PendingLastWordsInternal.Add(new PendingEffect(
                 playerIndex == state.ActivePlayer
                     ? PendingEffectPriority.OwnOtherFollower

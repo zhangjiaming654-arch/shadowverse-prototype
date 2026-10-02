@@ -105,6 +105,13 @@ public sealed class GameState
     /// <summary>纹章获取顺序的计数器（全局递增，跨双方）。</summary>
     internal long NextCrestAcquiredSequence { get; set; }
 
+    /// <summary>
+    /// 观察量：**入场曲结算中途去找"刚打出的那张随从"却找不到**的次数。
+    /// 正确顺序下必须恒为 0 —— 入场曲完整结算完之前，那张随从一定还在场上。
+    /// 它是"插入结算"唯一的可区分信号（随从死后看不出它当时有没有拿到关键词）。
+    /// </summary>
+    public long PlayedFollowerLookupMissesInternal { get; internal set; }
+
     public bool IsGameOver => Phase == GamePhase.GameOver;
 
     internal GameState DeepCopy()
@@ -121,6 +128,7 @@ public sealed class GameState
         copy.PendingLastWordsInternal.AddRange(PendingLastWordsInternal);
         copy.NextPendingEffectSequence = NextPendingEffectSequence;
         copy.NextCrestAcquiredSequence = NextCrestAcquiredSequence;
+        copy.PlayedFollowerLookupMissesInternal = PlayedFollowerLookupMissesInternal;
         return copy;
     }
 }
