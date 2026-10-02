@@ -54,7 +54,7 @@ public sealed partial class ReplayForm : Form
         BackColor = Color.FromArgb(20, 35, 52),
         Padding = new Padding(12, 6, 12, 6),
         Margin = new Padding(0),
-        Text = string.Empty
+        Text = "生成进度：尚未开始（点“生成对局”后这里会实时显示局数与双方胜负）"
     };
 
     private readonly ProgressBar _generationBar = new()
@@ -67,12 +67,15 @@ public sealed partial class ReplayForm : Form
 
     private readonly FlowLayoutPanel _generationLine = new()
     {
-        Dock = DockStyle.Fill,
-        AutoSize = true,
-        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        // 固定高度 + Dock.Top：Dock.Fill 放在 AutoSize 行里时，TableLayoutPanel 取到的
+        // 首选高度可能是 0，整行就渲染不出来（实测用户反馈"没看到"）。
+        // 这里给它确定的高度，并且**默认就可见** —— 打开界面就能确认这一行存在。
+        Dock = DockStyle.Top,
+        Height = 36,
+        AutoSize = false,
         FlowDirection = FlowDirection.LeftToRight,
         WrapContents = false,
-        Visible = false
+        Visible = true
     };
 
     /// <summary>
@@ -273,9 +276,10 @@ public sealed partial class ReplayForm : Form
         controls.Controls.Add(setupLine, 0, 0);
         controls.Controls.Add(playbackLine, 0, 1);
 
-        // 第三行：批量生成进度（默认隐藏，点"生成对局"才出现）。
+        // 第三行：批量生成进度。**固定高度**——AutoSize 行在子控件事先不可见时
+        // 可能把行高算成 0，导致整行渲染不出来。这里给死高度，保证一定看得见。
         _generationLine.Controls.AddRange([_generationStatus, _generationBar]);
-        controls.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        controls.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         controls.Controls.Add(_generationLine, 0, 2);
         return controls;
     }
