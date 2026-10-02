@@ -497,7 +497,26 @@ public sealed class BaselineGreedyPlayerAgent : IPlayerAgent
             CardEffectKind.DestroyEnemyFollower => ScoreDestroyFollower(action.Target, observation),
             CardEffectKind.DealDamageToAllFollowersByFollowerCount =>
                 ScoreAllFollowersByFollowerCount(observation),
-            _ => throw new InvalidOperationException($"Unsupported spell effect: {effect.Kind}.")
+            // 搜索牌组 / 条件抽牌 / 条件破坏：对估分而言都按"过牌"或"去除"近似。
+            // 这些是**估分用的启发式**，不是规则实现 —— 规则以 GameEngine 为准。
+            CardEffectKind.SearchDeckToHand => 20 + (effect.Amount * 5),
+            CardEffectKind.DrawTraitCards => observation.Self.DeckCount < effect.Amount
+                ? -100_000
+                : 20 + (effect.Amount * 5),
+            CardEffectKind.DrawCardsIfDeckHasNoDuplicates => observation.Self.DeckCount < effect.Amount
+                ? -100_000
+                : 20 + (effect.Amount * 5),
+            CardEffectKind.DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates =>
+                ScoreDestroyFollower(action.Target, observation),
+            CardEffectKind.DealDamageToAllEnemyFollowersAndLeaderWithSuperOathUpgrade =>
+                ScoreRandomFollowerDamage(effect.Amount, observation) + ScoreLeaderDamage(effect.Amount, observation),
+            CardEffectKind.DealDamageToAllEnemyFollowers =>
+                ScoreRandomFollowerDamage(effect.Amount, observation),
+            // 兜底：**不再抛异常炸掉整局**。
+            // 这里只是"这个动作值多少分"的启发式；遇到还没估分规则的新效果，
+            // 记 0 分（中性）远好过让玩家的整局中断。规则正确性由 GameEngine 负责，
+            // 它那边对未知效果仍然会抛错 —— 那条才是真正该守的线。
+            _ => 0
         };
 
     private static int ScoreDestroyFollower(SpellTarget? target, GameObservation observation) =>
