@@ -1032,7 +1032,9 @@ public sealed partial class ReplayForm
 
         void Down(object? sender, MouseEventArgs args)
         {
-            if (args.Button != MouseButtons.Left || _pendingActions is null)
+            // 【融合】选素材期间，左键属于"点选素材"，不再触发出牌拖拽。
+            if (args.Button != MouseButtons.Left || _pendingActions is null ||
+                _fusionCardInstanceId is not null)
             {
                 return;
             }
@@ -1554,6 +1556,7 @@ public sealed partial class ReplayForm
             if (tile.Tag is CardInstance card && _interactionAttached.Add(tile))
             {
                 AttachHandDrag(tile, card.InstanceId);
+                AttachFusionContext(tile, card.InstanceId);
             }
         }
 
@@ -1813,4 +1816,199 @@ public sealed partial class ReplayForm
     /// </summary>
     private static string DescribeAction(GameObservation observation, GameAction action) =>
         HumanActionText.Describe(observation, action);
+
+    // ───────────────────────────── 【融合】 ─────────────────────────────
+
+    private Button? _fusionConfirmButton;
+    private Button? _fusionCancelButton;
+    private int? _fusionCardInstanceId;
+    private readonly HashSet<int> _fusionSelection = [];
+    private readonly Dictionary<Panel, Color> _fusionHighlighted = [];
+
+    /// <summary>
+    /// 【融合】：右键点带【融合】的手牌 → **紧贴这张牌**弹出【融合】【取消】两个小按钮。
+    /// 弹出期间可以左键点选合法素材（合法目标高亮，**可多选**，术语表："没有指定数量时可融合任意数量"）。
+    /// <para>
+    /// 「点取消不消耗融合次数」是天然成立的：取消只清界面、**根本不调用引擎**，
+    /// 而"1回合仅限1次"只在 <c>GameEngine.ApplyFuse</c> 里扣。再右键会重新弹出这两个按钮。
+    /// </para>
+    /// </summary>
+    private void AttachFusionContext(Panel tile, int cardInstanceId)
+    {
+        void OnUp(object? sender, MouseEventArgs args)
+        {
+            if (args.Button == MouseButtons.Right)
+            {
+                OpenFusionButtons(tile, cardInstanceId);
+            }
+        }
+
+        tile.MouseUp += OnUp;
+        foreach (Control child in tile.Controls)
+        {
+            child.MouseUp += OnUp;
+        }
+
+        void OnDown(object? sender, MouseEventArgs args)
+        {
+            if (args.Button != MouseButtons.Left || _fusionCardInstanceId is null)
+            {
+                return;
+            }
+
+            if (tile.Tag is CardInstance handCard && _fusionHighlighted.ContainsKey(tile))
+            {
+                ToggleFusionMaterial(tile, handCard.InstanceId);
+            }
+        }
+
+        tile.MouseDown += OnDown;
+        foreach (Control child in tile.Controls)
+        {
+            child.MouseDown += OnDown;
+        }
+    }
+
+    private void OpenFusionButtons(Panel tile, int cardInstanceId)
+    {
+        CloseFusionUi();
+
+        if (_pendingActions is not { } actions)
+        {
+            return;
+        }
+
+        if (tile.Tag is not CardInstance card || card.Definition.Fusion is null)
+        {
+            _humanHint.Text = "这张牌没有【融合】能力。";
+            return;
+        }
+
+        var legal = actions.OfType<FuseAction>()
+            .Where(action => action.CardInstanceId == cardInstanceId)
+            .ToList();
+        if (legal.Count == 0)
+        {
+            _humanHint.Text = "现在不能融合这张牌：本回合已经融合过，或场上/手上没有合法素材。";
+            return;
+        }
+
+        _fusionCardInstanceId = cardInstanceId;
+        _fusionSelection.Clear();
+
+        // 合法素材 = 所有合法融合动作里出现过的那些手牌。
+        var legalMaterialIds = legal
+            .SelectMany(action => action.MaterialInstanceIds)
+            .ToHashSet();
+
+        foreach (Panel handTile in _selfHand.Controls.OfType<Panel>())
+        {
+            if (handTile.Tag is CardInstance handCard && legalMaterialIds.Contains(handCard.InstanceId))
+            {
+                _fusionHighlighted[handTile] = handTile.BackColor;
+                handTile.BackColor = Color.FromArgb(70, 116, 62);
+            }
+        }
+
+        var anchor = PointToClient(tile.PointToScreen(Point.Empty));
+        _fusionConfirmButton = new Button
+        {
+            Text = "融合",
+            AutoSize = false,
+            Size = new Size(64, 26),
+            Location = new Point(anchor.X, Math.Max(0, anchor.Y - 28)),
+            BackColor = Color.FromArgb(38, 111, 155),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            UseVisualStyleBackColor = false
+        };
+        _fusionCancelButton = new Button
+        {
+            Text = "取消",
+            AutoSize = false,
+            Size = new Size(64, 26),
+            Location = new Point(anchor.X + 68, Math.Max(0, anchor.Y - 28)),
+            BackColor = Color.FromArgb(54, 77, 101),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            UseVisualStyleBackColor = false
+        };
+
+        _fusionConfirmButton.Click += (_, _) => ConfirmFusion();
+        _fusionCancelButton.Click += (_, _) =>
+        {
+            CloseFusionUi();
+            _humanHint.Text = "已取消融合（未消耗本回合的融合次数，可以再次右键这张牌）。";
+        };
+
+        Controls.Add(_fusionConfirmButton);
+        Controls.Add(_fusionCancelButton);
+        _fusionConfirmButton.BringToFront();
+        _fusionCancelButton.BringToFront();
+
+        _humanHint.Text = $"【融合】{card.Definition.Name}：左键点击绿色高亮的素材（可多选），再点【融合】确认；点【取消】不消耗次数。";
+    }
+
+    private void ToggleFusionMaterial(Panel tile, int materialInstanceId)
+    {
+        if (_fusionSelection.Contains(materialInstanceId))
+        {
+            _fusionSelection.Remove(materialInstanceId);
+            tile.BackColor = Color.FromArgb(70, 116, 62);
+        }
+        else
+        {
+            _fusionSelection.Add(materialInstanceId);
+            tile.BackColor = Color.FromArgb(150, 96, 40);
+        }
+
+        _humanHint.Text = $"已选 {_fusionSelection.Count} 张素材。再点一次可以取消选择，或点【融合】确认。";
+    }
+
+    private void ConfirmFusion()
+    {
+        if (_pendingActions is not { } actions || _fusionCardInstanceId is not { } cardId)
+        {
+            CloseFusionUi();
+            return;
+        }
+
+        // 精确匹配：选中的集合必须正好等于某个合法动作的素材集合。
+        // 引擎按"1～3 张的组合"生成动作，所以超出范围的选法会在这里被挡住并说明原因。
+        var match = actions.OfType<FuseAction>().FirstOrDefault(action =>
+            action.CardInstanceId == cardId &&
+            action.MaterialInstanceIds.Count == _fusionSelection.Count &&
+            action.MaterialInstanceIds.All(_fusionSelection.Contains));
+
+        if (match is null)
+        {
+            _humanHint.Text = _fusionSelection.Count == 0
+                ? "还没有选素材：先左键点击绿色高亮的牌。"
+                : "这个素材组合不合法（可能超过 3 张、费用/类别不符，或本回合已融合过）。";
+            return;
+        }
+
+        CloseFusionUi();
+        CommitHumanAction(match);
+    }
+
+    private void CloseFusionUi()
+    {
+        _fusionConfirmButton?.Dispose();
+        _fusionCancelButton?.Dispose();
+        _fusionConfirmButton = null;
+        _fusionCancelButton = null;
+        _fusionCardInstanceId = null;
+        _fusionSelection.Clear();
+
+        foreach (var (tile, original) in _fusionHighlighted)
+        {
+            if (!tile.IsDisposed)
+            {
+                tile.BackColor = original;
+            }
+        }
+
+        _fusionHighlighted.Clear();
+    }
 }
