@@ -91,6 +91,8 @@ if (args.Contains("--effect-test", StringComparer.OrdinalIgnoreCase))
     AgentSelfTests.RunResolutionOrderTest();
     // 纹章顺序护栏：同一优先级里多枚纹章按"获取从早到晚"发动。
     AgentSelfTests.RunCrestResolutionOrderTest();
+    // 5 档跨类优先级护栏：同一批队列结算里优先级必须非递减。
+    AgentSelfTests.RunCrossCategoryPriorityTest();
     AgentSelfTests.RunStoredDeckRuleTest();
     AgentSelfTests.RunOpponentDeckInferenceTest();
     AgentSelfTests.RunGreedyStarchiumPriorityTest();

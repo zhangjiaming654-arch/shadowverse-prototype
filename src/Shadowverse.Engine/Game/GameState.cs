@@ -43,7 +43,9 @@ internal enum PendingEffectKind
     /// <summary>自己的回合结束时触发的纹章效果。</summary>
     CrestEndOfOwnTurn,
     /// <summary>「自己的主战者回复时」触发的纹章效果。</summary>
-    CrestLeaderRestored
+    CrestLeaderRestored,
+    /// <summary>「自己使用随从时，每回合1次，使其进化」。</summary>
+    CrestEvolvePlayedFollower
 }
 
 /// <summary>
@@ -119,6 +121,14 @@ public sealed class GameState
     /// </summary>
     public List<string> CrestResolutionOrderInternal { get; } = [];
 
+    /// <summary>
+    /// 观察量：**每批**队列结算的"优先级 + 种类"序列（批与批之间用 "|" 分隔）。
+    /// 用于断言 5 档优先级：同一批内优先级必须**非递减**
+    /// （0 入场曲 ＞ 1 自己纹章 ＞ 2 自己其他随从 ＞ 3 对方纹章 ＞ 4 对方随从）。
+    /// 只读观察，不参与任何决策。
+    /// </summary>
+    public List<string> ResolutionOrderLogInternal { get; } = [];
+
     public bool IsGameOver => Phase == GamePhase.GameOver;
 
     internal GameState DeepCopy()
@@ -137,6 +147,7 @@ public sealed class GameState
         copy.NextCrestAcquiredSequence = NextCrestAcquiredSequence;
         copy.PlayedFollowerLookupMissesInternal = PlayedFollowerLookupMissesInternal;
         copy.CrestResolutionOrderInternal.AddRange(CrestResolutionOrderInternal);
+        copy.ResolutionOrderLogInternal.AddRange(ResolutionOrderLogInternal);
         return copy;
     }
 }

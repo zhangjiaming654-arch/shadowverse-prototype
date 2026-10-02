@@ -916,8 +916,9 @@ public static class GameEngine
 
         ApplyEnhanceEffects(state, follower, resolvedEnhance);
 
-        // 纹章「自己使用随从时，每回合1次，使其进化」。
-        ApplyCrestEvolvePlayedFollower(state, follower);
+        // 纹章「自己使用随从时，每回合1次，使其进化」：属于第 2 档（自己的纹章效果），
+        // 排在入场曲之后，所以**只入队**，由外层按优先级结算。
+        EnqueueCrestEvolvePlayedFollower(state, follower);
     }
 
     private static void ApplyPlayAmulet(GameState state, PlayAmuletAction action)
@@ -4536,6 +4537,52 @@ public static class GameEngine
         crest.LastEvolvePlayedFollowerTriggerTurn = player.OwnTurnNumber;
     }
 
+    /// <summary>
+    /// 「自己使用随从时，每回合1次，使其进化」——**回合开始的纹章触发**之外的另一条纹章触发。
+    /// 按设计者优先级它属于第 2 档（自己的纹章效果），排在入场曲（第 0 档）之后，
+    /// 所以**只入队**，由外层按优先级逐项完整结算，不插进入场曲里。
+    /// </summary>
+    private static void EnqueueCrestEvolvePlayedFollower(GameState state, FollowerInstance playedFollower)
+    {
+        var playerIndex = state.ActivePlayer;
+        var player = state.Players[playerIndex];
+        var crest = player.CrestsInternal.FirstOrDefault(candidate =>
+            (candidate.Definition.PassiveEffects ?? []).Any(effect =>
+                effect.Kind == CardEffectKind.EvolvePlayedFollowerOncePerTurn));
+        if (crest is null || crest.LastEvolvePlayedFollowerTriggerTurn == player.OwnTurnNumber)
+        {
+            return;
+        }
+
+        // 先把"本回合已用"打上，避免同一回合里被重复入队。
+        crest.LastEvolvePlayedFollowerTriggerTurn = player.OwnTurnNumber;
+        state.PendingLastWordsInternal.Add(new PendingEffect(
+            PendingEffectPriority.OwnCrest,
+            crest.AcquiredSequence,
+            playerIndex,
+            PendingEffectKind.CrestEvolvePlayedFollower,
+            playedFollower.Card));
+    }
+
+    /// <summary>结算「使用随从时使其进化」：只处理这一个被使用的随从实例。</summary>
+    private static void ResolveCrestEvolvePlayedFollower(GameState state, int playerIndex, CardInstance card)
+    {
+        state.CrestResolutionOrderInternal.Add($"EvolvePlayedFollower:{card.Definition.Id}");
+        var player = state.Players[playerIndex];
+        var follower = player.BoardInternal
+            .FirstOrDefault(candidate => candidate.Card.InstanceId == card.InstanceId);
+        if (follower is null)
+        {
+            // 该随从在结算前已离场（例如被对手谢幕曲带走）—— 合法情况，无事可做。
+            return;
+        }
+
+        if (follower.EvolutionState == EvolutionState.Unevolved)
+        {
+            EvolveFollowerByAbility(state, follower.InstanceId);
+        }
+    }
+
     /// <summary>「召唤1个『X』，使其获得【毁灭】和【守护】」：关键词授予在**实例**上，
     /// 因为被召唤的衍生卡是共享的卡定义，不能改。 </summary>
     private static void SummonFollowersWithKeywords(
@@ -5191,6 +5238,11 @@ public static class GameEngine
     /// </summary>
     private static void DrainPendingEffects(GameState state)
     {
+        if (state.PendingLastWordsInternal.Count > 0)
+        {
+            state.ResolutionOrderLogInternal.Add("|");
+        }
+
         while (state.PendingLastWordsInternal.Count > 0 && !state.IsGameOver)
         {
             // 按**优先级**取（同级按 Sequence；纹章来源的 Sequence 就是纹章获取顺序）。
@@ -5199,6 +5251,13 @@ public static class GameEngine
                 .ThenBy(pending => pending.Sequence)
                 .First();
             state.PendingLastWordsInternal.Remove(next);
+            // 记录"本次选了谁" + **选的那一刻队列里还剩哪些优先级**。
+            // 正确的性质是"每步取当前待结算项里优先级最高的那个"
+            //（不是"同一批内优先级非递减"—— 队列会在结算过程中被补充）。
+            state.ResolutionOrderLogInternal.Add(
+                $"{(int)next.Priority}/{string.Join(",", state.PendingLastWordsInternal
+                    .Select(pending => (int)pending.Priority)
+                    .OrderBy(priority => priority))}");
 
             // **闭环**：上一项结算过程中可能又召回了新的随从（例如店主/米乌的被动连带召唤），
             // 它们同样要触发"创造物进场"被动。重扫一次把它们补进队列，再继续按优先级取下一项。
@@ -5225,6 +5284,9 @@ public static class GameEngine
                     break;
                 case PendingEffectKind.CrestLeaderRestored:
                     ResolveCrestLeaderRestored(state, next.PlayerIndex, next.CrestId!);
+                    break;
+                case PendingEffectKind.CrestEvolvePlayedFollower:
+                    ResolveCrestEvolvePlayedFollower(state, next.PlayerIndex, next.Card!);
                     break;
                 default:
                     throw new InvalidOperationException(

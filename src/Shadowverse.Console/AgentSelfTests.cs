@@ -9738,6 +9738,124 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
     }
 
     /// <summary>
+    /// **5 档跨类优先级护栏**：同一批队列结算里，优先级必须**非递减**。
+    /// <para>
+    ///   0 随从自己的入场曲 ＞ 1 自己的纹章效果 ＞ 2 自己的其他随从的效果
+    ///   ＞ 3 对方主战者纹章效果 ＞ 4 对方随从效果
+    /// </para>
+    /// <para>
+    /// 做法：跑完整对局，读取队列结算日志（每批以 "|" 分隔），
+    /// 逐批断言优先级序号单调不减。日志覆盖**所有走队列的触发族**
+    /// （谢幕曲 / 创造物进场被动 / 三种纹章触发 / 使用随从时使其进化）。
+    /// </para>
+    /// </summary>
+    internal static void RunCrossCategoryPriorityTest()
+    {
+        var failures = new List<string>();
+        var batches = 0;
+        var batchesWithRest = 0;
+        var mixedPriorityBatches = 0;
+        var items = 0;
+
+        // **混合卡组**：必须让"同一批里出现多种优先级"真的发生，否则断言没有区分力
+        // （实测过：只用纹章卡组时每批优先级都相同，把排序改成 FIFO 也不会变红）。
+        //   斯洛士 / 安纳提玛 → 纹章触发（优先级 1）
+        //   渊底上校         → 【谢幕曲】（优先级 2 或 4）
+        CardDefinition[] deck =
+        [
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.SpinningWheelOfFortuneSloth), 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AshenAnathemaBanderst), 10),
+            .. Enumerable.Repeat(CardCatalog.Get(CardIds.AbyssalColonel), 20)
+        ];
+
+        foreach (var seed in Enumerable.Range(0, 60).Select(index => 94_000UL + (ulong)index))
+        {
+            var state = GameEngine.CreateGame(
+                new DeckDefinition("prio-a", deck),
+                new DeckDefinition("prio-b", deck),
+                seed);
+
+            for (var step = 0; step < 1200 && !state.IsGameOver; step++)
+            {
+                if (state.Phase == GamePhase.Mulligan)
+                {
+                    state = GameEngine.Apply(state, new MulliganAction([]));
+                    continue;
+                }
+
+                var legalActions = GameEngine.GetLegalActions(state);
+                if (legalActions.Count == 0)
+                {
+                    break;
+                }
+
+                var chosen = legalActions.OfType<PlayFollowerAction>().FirstOrDefault()
+                    ?? legalActions.OfType<SuperEvolveAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EvolveAction>().FirstOrDefault()
+                    ?? legalActions.OfType<PlaySpellAction>().FirstOrDefault()
+                    ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
+                    ?? legalActions[0];
+                state = GameEngine.Apply(state, chosen);
+            }
+
+            // 解析：每条记录形如 "选中优先级/剩余优先级列表"。
+            // 断言：选中的必须是"当时剩余项里最高的"（数值最小）。
+            foreach (var entry in state.ResolutionOrderLogInternal)
+            {
+                if (entry == "|")
+                {
+                    batches++;
+                    continue;
+                }
+
+                var slash = entry.IndexOf('/');
+                var picked = int.Parse(entry[..slash], CultureInfo.InvariantCulture);
+                var rest = entry[(slash + 1)..];
+                items++;
+
+                if (rest.Length == 0)
+                {
+                    continue;
+                }
+
+                var priorities = rest.Split(',')
+                    .Select(value => int.Parse(value, CultureInfo.InvariantCulture))
+                    .ToArray();
+                batchesWithRest++;
+                if (priorities.Distinct().Count() >= 2 || priorities[0] != picked)
+                {
+                    mixedPriorityBatches++;
+                }
+
+                var best = priorities.Min();
+                if (picked > best)
+                {
+                    failures.Add(
+                        $"5 档优先级被违反：本次选了优先级 {picked}，但当时队列里还有更高的 {best}" +
+                        $"（剩余 {string.Join(",", priorities)}）");
+                }
+            }
+        }
+
+        if (batchesWithRest == 0 || mixedPriorityBatches == 0)
+        {
+            failures.Add(
+                "没有产生「结算时队列里还压着别的优先级」的情形 —— 本条断言没有区分力" +
+                $"（有剩余的结算 {batchesWithRest} 次 ｜ 混合优先级 {mixedPriorityBatches} 次）");
+        }
+
+        if (failures.Count > 0)
+        {
+            ReportParkourFailures(failures.Take(5).ToList(), "5 档跨类优先级");
+        }
+
+        Console.WriteLine("Cross-category priority test passed.");
+        Console.WriteLine(
+            $"5 档优先级：验到 {batches} 批、{items} 项结算（其中 {batchesWithRest} 次结算时队列还有剩余，" +
+            $"{mixedPriorityBatches} 次属于多优先级并存）。");
+    }
+
+    /// <summary>
     /// **纹章顺序护栏**：同一优先级（自己的纹章效果）里有**多枚**纹章时，
     /// 必须按**获取的早晚**发动（先拿到的先发动）—— 设计者规则。
     /// <para>
