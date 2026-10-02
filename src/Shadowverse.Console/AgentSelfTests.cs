@@ -9767,13 +9767,30 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
             .. Enumerable.Repeat(CardCatalog.Get(CardIds.AncientHeavenbladePolalai), 14)
         ];
 
+        // 两组卡组：
+        //   ① 合成卡组 —— 专门触发已知的两条路径；
+        //   ② **宇宙鱼镜像** —— 用户导出的 20 局里出现 **37 处 0 防御** 的就是这副牌。
+        DeckDefinition[] firstDecks =
+        [
+            new DeckDefinition("neg-a", deck),
+            DeckCatalog.Create("DECK-004", "宇宙鱼 A")
+        ];
+        DeckDefinition[] secondDecks =
+        [
+            new DeckDefinition("neg-b", deck),
+            DeckCatalog.Create("DECK-004", "宇宙鱼 B")
+        ];
+
+        for (var deckSet = 0; deckSet < firstDecks.Length; deckSet++)
         foreach (var seed in Enumerable.Range(0, 40).Select(index => 71_000UL + (ulong)index))
         {
             var state = CompleteMulligan(GameEngine.CreateGame(
-                new DeckDefinition("neg-a", deck),
-                new DeckDefinition("neg-b", deck),
+                firstDecks[deckSet],
+                secondDecks[deckSet],
                 seed));
 
+            GameAction? lastAction = null;
+            string? lastCardId = null;
             for (var step = 0; step < 600 && !state.IsGameOver; step++)
             {
                 foreach (var player in state.Players)
@@ -9784,7 +9801,9 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                         {
                             failures.Add(
                                 $"防御 {follower.CurrentDefense} 的随从 {follower.Definition.Id}" +
-                                $"#{(follower.InstanceId)} 还留在战场上（超进化={follower.IsSuperEvolved}）");
+                                $"#{(follower.InstanceId)} 还留在战场上（超进化={follower.IsSuperEvolved}）" +
+                                $" ｜ 上一步动作={lastAction?.GetType().Name} 卡={lastCardId ?? "-"}" +
+                                $" ｜ 回合={state.TurnNumber}");
                         }
 
                         checkedFollower++;
@@ -9807,6 +9826,11 @@ internal static DeckDefinition CreateMatchDeck(string deckId, string playerLabel
                     ?? legalActions.OfType<EvolveAction>().FirstOrDefault()
                     ?? legalActions.OfType<EndTurnAction>().FirstOrDefault()
                     ?? legalActions[0];
+                lastAction = chosen;
+                lastCardId = chosen is PlayFollowerAction played
+                    ? state.Players[state.ActivePlayer].Hand
+                        .FirstOrDefault(card => card.InstanceId == played.CardInstanceId)?.Definition.Id
+                    : null;
                 state = GameEngine.Apply(state, chosen);
             }
 

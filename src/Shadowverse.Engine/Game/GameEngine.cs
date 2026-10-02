@@ -3782,6 +3782,7 @@ public static class GameEngine
                         foreach (var target in state.Players[OtherPlayer(ownerIndex)].BoardInternal.ToArray())
                         {
                             DealDamageToFollower(state, OtherPlayer(ownerIndex), target, effect.Amount);
+                            DestroyFollowerIfNeeded(state, OtherPlayer(ownerIndex), target);
                             if (state.IsGameOver)
                             {
                                 return;
@@ -4715,6 +4716,8 @@ public static class GameEngine
         foreach (var target in opponent.BoardInternal.ToArray())
         {
             DealDamageToFollower(state, OtherPlayer(state.ActivePlayer), target, kinds);
+            // 扣血后必须做"防御≤0 就破坏"的状态检查（同其余全体伤害路径）。
+            DestroyFollowerIfNeeded(state, OtherPlayer(state.ActivePlayer), target);
             if (state.IsGameOver)
             {
                 return;
@@ -4744,6 +4747,7 @@ public static class GameEngine
             }
 
             DealDamageToFollower(state, opponentIndex, target, damage);
+            DestroyFollowerIfNeeded(state, opponentIndex, target);
             if (state.IsGameOver)
             {
                 return;
@@ -5082,6 +5086,7 @@ public static class GameEngine
             else
             {
                 DealDamageToFollower(state, enemyIndex, enemyBoard[choice], damage);
+                DestroyFollowerIfNeeded(state, enemyIndex, enemyBoard[choice]);
             }
         }
     }

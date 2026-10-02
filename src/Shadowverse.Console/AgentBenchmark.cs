@@ -325,15 +325,18 @@ public static class AgentBenchmark
 
                         // **同时写进共享进度文件**，界面（另一个进程）每秒钟读一次显示出来 ——
                         // 用户要的是"命令行跑着的时候，界面上也能看见进度"。
+                        // 进度栏要显示**双方真实胜局**：镜像对局里"决定性牌局"恒为 0:0
+                        //（每一对都各赢一边），拿它显示会永远看不出谁领先。
+                        var wins = PartialWins(outcomes);
                         var perMatch = stopwatch.Elapsed.TotalSeconds / Math.Max(1, finished);
                         LiveProgress.Report(
                             "命令行批量对局",
                             finished,
                             options.MatchCount,
                             DisplayName(options.FirstAgent),
-                            firstBoth,
+                            wins.First,
                             DisplayName(options.SecondAgent),
-                            secondBoth,
+                            wins.Second,
                             stopwatch.Elapsed,
                             TimeSpan.FromSeconds(perMatch * (options.MatchCount - finished)));
 
@@ -525,6 +528,34 @@ public static class AgentBenchmark
     /// its halves are complete, so an interrupted run still reads honestly instead of showing a
     /// lopsided subset.
     /// </summary>
+    /// <summary>
+    /// 原始胜局（跨两个座位方向合并）。进度栏用它 —— 镜像对局里
+    /// <see cref="PartialTally"/> 的"决定性牌局"恒为 0:0，显示不出谁领先。
+    /// </summary>
+    private static (int First, int Second) PartialWins(Outcome[] outcomes)
+    {
+        var first = 0;
+        var second = 0;
+        foreach (var outcome in outcomes)
+        {
+            if (outcome is null)
+            {
+                continue;
+            }
+
+            if (outcome.Winner == outcome.FirstAgentSeat)
+            {
+                first++;
+            }
+            else
+            {
+                second++;
+            }
+        }
+
+        return (first, second);
+    }
+
     private static (int FirstBoth, int SecondBoth, int Split) PartialTally(
         Options options,
         Outcome[] outcomes,

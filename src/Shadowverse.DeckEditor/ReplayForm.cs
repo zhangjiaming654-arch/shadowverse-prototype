@@ -59,7 +59,7 @@ public sealed partial class ReplayForm : Form
         // 画到右边「人机对战」面板上（实测用户截图：进度文字盖住了右栏）。
         // 定宽 + AutoEllipsis，超长时以"…"收尾，绝不越界。
         AutoSize = false,
-        Width = 300,
+        Width = 360,
         Height = 34,
         AutoEllipsis = true,
         TextAlign = ContentAlignment.MiddleLeft,
@@ -612,9 +612,10 @@ public sealed partial class ReplayForm : Form
         _showingLiveProgress = true;
         _progressLabel.ForeColor = Color.FromArgb(130, 220, 160);
         // 前缀 ▶ 表示"这是另一个进程在跑"，跟本界面的生成区分开。
+        // 用 A/B 而不是牌手名：镜像对局两边同名，写了也分不出是谁，
+        // 反而把"几比几"挤到被省略号截掉。
         _progressLabel.Text =
-            $"▶ 命令行 {live.Done}/{live.Total} " +
-            $"{ShortAgentName(live.FirstName)} {live.FirstWins}胜 : {live.SecondWins}胜 {ShortAgentName(live.SecondName)}";
+            $"▶ 命令行 {live.Done}/{live.Total}　A {live.FirstWins}胜 : {live.SecondWins}胜 B";
     }
 
     /// <summary>
