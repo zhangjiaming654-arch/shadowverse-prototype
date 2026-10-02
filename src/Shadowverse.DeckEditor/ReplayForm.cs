@@ -55,7 +55,14 @@ public sealed partial class ReplayForm : Form
     private readonly Button _batchExportButton = new ReadableToolbarButton { Text = "批量导出 JSON", AutoSize = true, Enabled = false };
     private readonly Label _progressLabel = new()
     {
-        AutoSize = true,
+        // **必须限宽**：AutoSize 的标签在 WinForms 里不会自动裁剪，文本一长就直接
+        // 画到右边「人机对战」面板上（实测用户截图：进度文字盖住了右栏）。
+        // 定宽 + AutoEllipsis，超长时以"…"收尾，绝不越界。
+        AutoSize = false,
+        Width = 300,
+        Height = 34,
+        AutoEllipsis = true,
+        TextAlign = ContentAlignment.MiddleLeft,
         BackColor = Color.FromArgb(20, 35, 52),
         ForeColor = Color.White,
         Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold),
@@ -547,11 +554,27 @@ public sealed partial class ReplayForm : Form
         TimeSpan remaining)
     {
         var percent = total == 0 ? 100 : done * 100.0 / total;
-        var drawText = draws > 0 ? $"　平 {draws}" : string.Empty;
-        var remainText = done >= total ? string.Empty : $"　预计剩余 {DescribeDuration(remaining)}";
-        return $"生成中 {done}/{total}（{percent:F0}%）　" +
-               $"{firstAgent} {firstWins} 胜　:　{secondWins} 胜 {secondAgent}{drawText}　" +
-               $"已用 {DescribeDuration(elapsed)}{remainText}";
+        var drawText = draws > 0 ? $" 平{draws}" : string.Empty;
+        var remainText = done >= total ? string.Empty : $" 剩{DescribeDuration(remaining)}";
+        // 这一栏只有约 280px 可用，用短名并压缩措辞，否则会被省略号截掉关键数字。
+        return $"{done}/{total}（{percent:F0}%） {ShortAgentName(firstAgent)} {firstWins}胜 : " +
+               $"{secondWins}胜 {ShortAgentName(secondAgent)}{drawText} 用{DescribeDuration(elapsed)}{remainText}";
+    }
+
+    /// <summary>
+    /// 把「前瞻牌手 3.0（开发中）」这类长名字压成 <c>3.0</c>。
+    /// 进度那一栏只有约 280px，用全名会把关键数字挤出可视区。
+    /// 找不到版本号就退回原名（截断到 6 个字）。
+    /// </summary>
+    private static string ShortAgentName(string agent)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(agent, @"\d+\.\d+");
+        if (match.Success)
+        {
+            return match.Value;
+        }
+
+        return agent.Length <= 6 ? agent : agent[..6];
     }
 
     /// <summary>把时长写成"1分23秒"这种一眼能读的形式。</summary>
