@@ -432,33 +432,29 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
         var self = state.Players[perspectivePlayer];
         var opponent = state.Players[perspectivePlayer == 0 ? 1 : 0];
 
+        // 2026-10-02 由用户裁掉 8 项"历史补丁"（20 → 12 维）：
+        //   护符差 / 当前能量点差 / 能量点上限差 / 龙族虹卡场面
+        //   白吃数差 / 场面总攻击力差 / 已站住随从数差 / 场面宽度差
+        // 理由：它们或是某一代卡组的特例硬编码（"龙族虹卡"用的是收藏属性、与规则无关），
+        // 或长期权重为 0 白占维度；留着会在拟合时污染结果。
         return
         [
             self.Health - opponent.Health,
-            BoardValue(self.Board) - BoardValue(opponent.Board),
-            AmuletValue(self.Amulets) - AmuletValue(opponent.Amulets),
+            // 「场面差」与「纹章引擎价值」已删除（2026-10-02 用户裁定）：
+            // 两者都在给"我留下的东西值多少"估值，与下面的「回合结束威胁差」职责重叠，
+            // 分开写会互相污染。现在**统一由「回合结束威胁差」衡量**。
             CrestBurden(opponent.Crests) - CrestBurden(self.Crests),
             self.Hand.Count - opponent.Hand.Count,
             self.Deck.Count - opponent.Deck.Count,
-            self.CurrentPlayPoints - opponent.CurrentPlayPoints,
-            self.MaxPlayPoints - opponent.MaxPlayPoints,
             self.EvolutionPoints + self.SuperEvolutionPoints -
                 opponent.EvolutionPoints - opponent.SuperEvolutionPoints,
-            DragonRainbowBoardValue(self) - DragonRainbowBoardValue(opponent),
             EndOfOwnTurnThreat(self, opponent) - EndOfOwnTurnThreat(opponent, self),
             -OpponentReach(opponent),
-            // 以下四项专门刻画"场面交换"能力。原来的 BoardValue 只是把攻击力和防御力加总，
-            // 表达不了中速梦的核心问题："我能不能吃你的场面，你能不能吃我的。"
-            FreeKillAdvantage(self, opponent),
-            AttackAdvantage(self, opponent),
-            StandingAdvantage(state, self, opponent),
-            WidthAdvantage(self, opponent),
-            // ── 以下四项是 2026-10-02 补的"引擎类"特征 ──
+            // ── 2026-10-02 补的"引擎类"特征 ──
             // 起因：宇宙鱼（引擎型卡组）比中速梦差 10 个 BO10 分。查证发现评估函数
             // 对"引擎"几乎是瞎的：纹章只认一枚自伤纹章（其余恒为 0）、手牌与牌组只数张数、
             // 累计进化次数（瞬念召唤/解放奥义的充能进度）根本没有这一项。
             AccumulatedEvolutions(self) - AccumulatedEvolutions(opponent),
-            CrestEngineValue(self.Crests) - CrestEngineValue(opponent.Crests),
             HandThreat(self) - HandThreat(opponent),
             DeckSummonValue(self.Deck) - DeckSummonValue(opponent.Deck)
         ];
@@ -605,28 +601,14 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
     /// </summary>
     public static readonly double[] PositionWeights =
     [
+        // 2026-10-02 随特征表同步删到 12 项（用户裁定）。
         2.0,   // 生命差
-        0.7,   // 场面差
-        0.4,   // 护符差
         0.5,   // 对手纹章负担
         0.6,   // 手牌差
         0.15,  // 牌库差
-        0.05,  // 当前能量点差
-        0.45,  // 能量点上限差
         0.4,   // 进化点差
-        0.35,  // 龙族虹卡场面
         0.45,  // 回合结束威胁差
         OpponentReachWeight, // 对手可达伤害
-        // 以下四项是"场面交换"特征。实测（中速梦镜像 1500 局、闸门关、10 次推演）：
-        //   12 项手调 → 决定性牌局 292:91（76.2%）
-        //   16 项手调 → 272:102（72.7%）
-        //   16 项中速梦专精拟合 → 271:112（70.8%）
-        // 也就是说"加这些特征"和"把这些权重拟合得更准"都没有换来胜率，
-        // 所以默认权重先归零（等价于原来的 12 项），特征本身保留供以后用别的目标拟合。
-        0.0,   // 白吃数差（交换效率）
-        0.0,   // 场面总攻击力差
-        0.0,   // 已站住随从数差（节奏归属）
-        0.0,   // 场面宽度差
         // 以下四项是 2026-10-02 补的"引擎类"特征。
         // ⚠️ 这里用的是**手调值，不是拟合值** —— 实测拟合值明显更差，故意不采用：
         //   拟合（--fit-weights，宇宙鱼 200 局自对弈、15389 条样本，验证集 0.63960）：
@@ -637,7 +619,6 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
         // 与"在对局中赢下 1.0"不是同一个目标 —— 与项目既有记录一致
         // （第 620-625 行记的"中速梦专精拟合"同样没换来胜率）。
         0.30,  // 累计进化次数差（瞬念召唤/解放奥义的充能进度）
-        0.25,  // 自己的纹章引擎价值差
         0.10,  // 手牌威胁差
         0.15   // 牌组瞬念召唤价值差
     ];
@@ -702,30 +683,98 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
             .Sum(follower => 8.0 + (follower.Definition.Cost * 0.5));
     }
 
+    /// <summary>引擎随从/纹章按"预计还能活几个回合"折算成残值。可标定，初值 2。</summary>
+    private const double EngineLifespanTurns = 2.0;
+
+    /// <summary>
+    /// **回合结束时的局面价值 = 剩余场面 + 每回合产出 × 存活期。**
+    /// <para>
+    /// 这一项**吸收**了原来的「场面差」与「纹章引擎价值」（2026-10-02 用户裁定）：
+    /// 三者本来都在给"我留下的东西值多少"估值，分开写会互相污染。
+    /// </para>
+    /// <para>
+    /// 产出按**实际能打到的量**折算，而不是名义数字 ——
+    /// 「回合结束扫3」打在 5 个随从上和打在 1 个随从上，威胁当然不同；
+    /// 「光环召唤 3/3」和「召唤 1/1」也差 3 倍。这是用户要求的量化口径。
+    /// </para>
+    /// </summary>
     private static double EndOfOwnTurnThreat(PlayerState source, PlayerState target)
     {
+        // ① 剩余场面
+        var attack = source.Board.Sum(follower => follower.Attack);
+        var defence = source.Board.Sum(follower => follower.CurrentDefense);
+        var wardDefence = source.Board.Where(follower => follower.HasWard)
+            .Sum(follower => follower.CurrentDefense);
+        // 守护的价值**上限是它实际能挡住的伤害** —— 给 10 个守护随从也不能超过对手能打出的总量。
+        var wardValue = Math.Min(wardDefence, OpponentReach(target));
+        // 对手难以处理的随从（【灵气】不能被指定 /【威慑】）额外加成。
+        var sticky = source.Board.Count(follower => follower.HasAura || follower.HasIntimidate) * 6.0;
+
+        // ② 每回合产出：场上引擎随从 + 纹章，按同一套折算（纹章不再"只认一枚"）
+        var engine = source.Board.Sum(follower =>
+                PerTurnOutput(source, target, follower.IsEvolved
+                    ? follower.Definition.EvolvedEndOfOwnTurnEffects ?? []
+                    : follower.Definition.UnevolvedEndOfOwnTurnEffects ?? [])
+                + PerTurnOutput(source, target, follower.Definition.PassiveEffects ?? []))
+            + source.Crests.Sum(crest =>
+                PerTurnOutput(source, target, crest.Definition.StartOfOwnTurnEffects ?? [])
+                + PerTurnOutput(source, target, crest.Definition.EndOfOwnTurnEffects ?? [])
+                + PerTurnOutput(source, target, crest.Definition.PassiveEffects ?? []));
+
+        return attack + defence + wardValue + sticky + (engine * EngineLifespanTurns);
+    }
+
+    /// <summary>
+    /// 一组效果"每回合能产出多少" —— **按实际能打到的量折算**。
+    /// 「毁灭创造物γ：回合结束扫3」这种光环，对手不处理它就会被持续清场，
+    /// 所以它的价值 = 每回合真实产出 × 存活期，而不是一个拍出来的系数。
+    /// </summary>
+    private static double PerTurnOutput(
+        PlayerState source,
+        PlayerState target,
+        IReadOnlyList<CardEffect> effects)
+    {
         var value = 0.0;
-        foreach (var follower in source.Board)
+        foreach (var effect in effects)
         {
-            var effects = follower.IsEvolved
-                ? follower.Definition.EvolvedEndOfOwnTurnEffects ?? []
-                : follower.Definition.UnevolvedEndOfOwnTurnEffects ?? [];
-            foreach (var effect in effects)
+            value += effect.Kind switch
             {
-                value += effect.Kind switch
-                {
-                    CardEffectKind.DealDamageToUpToTwoRandomEnemyFollowers =>
-                        Math.Min(2, target.Board.Count) * effect.Amount * 0.45,
-                    CardEffectKind.RestoreOwnLeaderHealth =>
-                        Math.Min(effect.Amount, source.MaxHealth - source.Health) * 0.55,
-                    CardEffectKind.DealDamageToEnemyLeader =>
-                        Math.Min(effect.Amount, target.Health) * 0.9,
-                    _ => 0
-                };
-            }
+                // 扫场：只算真能打到的随从数（最多 5 个位置）。
+                CardEffectKind.DealDamageToAllEnemyFollowers =>
+                    effect.Amount * Math.Min(target.Board.Count, 5),
+                CardEffectKind.DealDamageToAllEnemyFollowersAndLeader =>
+                    (effect.Amount * Math.Min(target.Board.Count, 5)) + effect.Amount,
+                CardEffectKind.DealDamageToUpToTwoRandomEnemyFollowers =>
+                    Math.Min(2, target.Board.Count) * (double)effect.Amount,
+                // 分配伤害：上限是"对手场上防御总量能吃掉的"。
+                CardEffectKind.DistributeDamageAmongEnemyFollowersByEntryOrder =>
+                    Math.Min(effect.Amount, target.Board.Sum(follower => follower.CurrentDefense)),
+                // 召唤：按**召唤体的攻+防**算（3/3 与 1/1 差 3 倍）。
+                CardEffectKind.SummonFollower => SummonedBodyValue(effect) * effect.Amount,
+                // 打主战者 / 回血：按实际值，回血受"还缺多少血"封顶。
+                CardEffectKind.DealDamageToEnemyLeader =>
+                    Math.Min(effect.Amount, target.Health),
+                CardEffectKind.RestoreOwnLeaderHealth =>
+                    Math.Min(effect.Amount, source.MaxHealth - source.Health),
+                CardEffectKind.EvolveOtherFollowerEnteringWithPrintedCostAtLeast => 6.0,
+                CardEffectKind.EvolvePlayedFollowerOncePerTurn => 4.0,
+                _ => 0
+            };
         }
 
         return value;
+    }
+
+    /// <summary>被召唤出来的那个随从值多少（攻 + 防）。取不到就按 0。</summary>
+    private static double SummonedBodyValue(CardEffect effect)
+    {
+        if (effect.ReferencedCardId is null)
+        {
+            return 0;
+        }
+
+        var summoned = CardCatalog.Get(effect.ReferencedCardId);
+        return summoned.Attack + summoned.Defense;
     }
 
     private static int RarityBoardValue(CardRarity rarity) => rarity switch
