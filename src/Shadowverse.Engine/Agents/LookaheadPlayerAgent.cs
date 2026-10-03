@@ -897,12 +897,15 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         //     瓶颈是候选动作的有效区分度不够。"
         //   实测：改叶子实现 = 0% 决策改变；rollout 换真前瞻 = 0%；额外 PP 改 41% 决策却零效果。
         // 所以不再加评估特征，改成**换候选单位**（作者列的三个未证伪方向之一）。
-        // **S7 实测崩盘（3.0 = 2.0%，50 个 BO10 只赢 1 局），默认关闭。**
-        // 崩盘原因见 SimulateTurnUnderPlan 上方注释：空计划被判成"等于当前局面"
-        // 而不是"不可行"，于是搜索系统性选中"什么都不做"。
+        // ── S7 动作抽象：**两次实现都失败，已停用** ──
+        // 第 1 版（空计划=当前局面分）：3.0 = 2.0%，50 局只赢 1 局。
+        // 第 2 版（空计划=−∞ + 要求打完整回合）：3.0 = **0.0%**，且 `--effect-test` 从 59 项
+        //   掉到 48 项 —— **说明我引入的 bug 破坏了引擎状态**。
+        // 高度怀疑：`GameEngine.Apply` 会**原地修改**状态，而我把 `var simulation = state;`
+        // 直接拿去推演，于是**污染了真实对局**。（未最终确认。）
+        // 所以 S7 一律停用；要再试必须先确认 Apply 的语义并做深拷贝。
         // ResolveTurnPlan(state, observation.PerspectivePlayer);
-        // var planned = candidates.Where(action => PlanOf(action) == _turnPlan).ToArray();
-        // if (planned.Length > 0) { candidates = planned; }
+        // if (_turnPlanUsable) { ... }
 
         var evaluations = candidates
             .Select((action, originalIndex) => EvaluateAction(
@@ -1332,6 +1335,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
 
     private int _planTurn = -1;
     private bool _hasTurnPlan;
+    private bool _turnPlanUsable;
     private TurnPlan _turnPlan = TurnPlan.Develop;
 
     /// <summary>把一个单步动作归类到它所属的回合计划。</summary>
@@ -1370,15 +1374,30 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             }
         }
 
+        // 四条路线全部不可行（比如本回合根本没有可执行的动作）→ **不要限制候选**，
+        // 交回原有搜索。否则会重演"每回合直接过"的崩盘。
+        _turnPlanUsable = !double.IsNegativeInfinity(best);
         _turnPlan = bestPlan;
     }
 
-    /// <summary>只允许某一条计划地贪心打完本回合，返回回合结束时的局面分。</summary>
+    /// <summary>
+    /// 只允许某一条计划地贪心打完本回合，返回回合结束时的局面分。
+    /// <para>
+    /// **不可行要返回 −∞**。第一版在这里直接 `break` 然后返回"当前局面分"，
+    /// 于是"什么都不做"总能拿到一个不错的分数，而真打出去会因交换短期掉分 ——
+    /// 搜索系统性选中"这条路线什么都不做"，**3.0 崩到 2.0%（50 局只赢 1 局）**。
+    /// </para>
+    /// <para>
+    /// 所以现在有两条硬约束：① 至少要真的执行过一步该计划的动作；
+    /// ② **本回合必须真的结束**（回合数变化或对局结束），否则这条计划等于没打完。
+    /// </para>
+    /// </summary>
     private double SimulateTurnUnderPlan(GameState state, int perspectivePlayer, TurnPlan plan)
     {
         var simulation = state;
         var startTurn = state.TurnNumber;
-        for (var step = 0; step < 40; step++)
+        var progressed = false;
+        for (var step = 0; step < 60; step++)
         {
             if (simulation.IsGameOver ||
                 simulation.TurnNumber != startTurn ||
@@ -1400,9 +1419,20 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
                     EvaluatePosition(GameEngine.Apply(simulation, action), perspectivePlayer))
                 .First();
             simulation = GameEngine.Apply(simulation, next);
+            progressed = true;
         }
 
-        return EvaluatePosition(simulation, perspectivePlayer);
+        // ① 一步都没走出去 → 这条路线在这局面上不可行
+        if (!progressed)
+        {
+            return double.NegativeInfinity;
+        }
+
+        // ② 本回合没打完 → 不能拿"中途的局面"当这条计划的成绩
+        var turnFinished = simulation.IsGameOver || simulation.TurnNumber != startTurn;
+        return turnFinished
+            ? EvaluatePosition(simulation, perspectivePlayer)
+            : double.NegativeInfinity;
     }
     /// <summary>
     /// 白吃数差：我方能用某个随从击杀、且不会被反杀的目标个数，减去对手对我方能做到同样事情的个数。
