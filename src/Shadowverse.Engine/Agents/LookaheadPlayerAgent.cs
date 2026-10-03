@@ -890,6 +890,20 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             }
         }
 
+        // ── S7 动作抽象：把"这一回合走哪条路线"当成候选单位，而不是单步动作 ──
+        //
+        // 依据：AI-BRIEF-for-review.md §6 的机理诊断 ——
+        //   "搜索在现有候选集内的判断已经到位，一切让判断更准的手段都没有产出空间；
+        //     瓶颈是候选动作的有效区分度不够。"
+        //   实测：改叶子实现 = 0% 决策改变；rollout 换真前瞻 = 0%；额外 PP 改 41% 决策却零效果。
+        // 所以不再加评估特征，改成**换候选单位**（作者列的三个未证伪方向之一）。
+        // **S7 实测崩盘（3.0 = 2.0%，50 个 BO10 只赢 1 局），默认关闭。**
+        // 崩盘原因见 SimulateTurnUnderPlan 上方注释：空计划被判成"等于当前局面"
+        // 而不是"不可行"，于是搜索系统性选中"什么都不做"。
+        // ResolveTurnPlan(state, observation.PerspectivePlayer);
+        // var planned = candidates.Where(action => PlanOf(action) == _turnPlan).ToArray();
+        // if (planned.Length > 0) { candidates = planned; }
+
         var evaluations = candidates
             .Select((action, originalIndex) => EvaluateAction(
                 state,
@@ -1222,10 +1236,174 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             PendingValue(self, PendingHeal) - PendingValue(opponent, PendingHeal),
             PendingValue(self, PendingCards) - PendingValue(opponent, PendingCards),
             PendingValue(self, PendingDevelopment) - PendingValue(opponent, PendingDevelopment),
-            PendingValue(self, PendingResource) - PendingValue(opponent, PendingResource)
+            PendingValue(self, PendingResource) - PendingValue(opponent, PendingResource),
+
+            // ── 2026-10-03 新增两项（用户指定）──
+            // 「当回合策略」与「过牌价值」。前者管这一回合怎么花资源，后者管"还有多少没抽到的好牌"。
+            TurnStrategy(self, opponent) - TurnStrategy(opponent, self),
+            DrawValue(self, opponent) - DrawValue(opponent, self)
         ];
     }
 
+    /// <summary>
+    /// **当回合策略**：这一回合我"能不能吃掉对手的场面"。
+    /// <para>
+    /// 与「场面差」（**存量**：我有什么）不同，这里算的是**能力**：
+    /// 我可达的去除量 vs 对手的场内威胁。
+    /// 5 个 3/3 的存量高于 1 个 10/10，但打起来是被白吃 —— **存量分不出这件事，能力能**。
+    /// </para>
+    /// </summary>
+    private static double TurnStrategy(PlayerState self, PlayerState opponent)
+    {
+        // 我方可达去除量 = 场上随从攻击力 + 手牌里这一回合打得出的伤害（受当前能量点限制）。
+        var removal = self.Board.Sum(follower => (double)follower.Attack);
+        var handDamage = self.Hand
+            .Where(card => card.Definition.Cost <= self.CurrentPlayPoints)
+            .Sum(card => CardDamage(card.Definition));
+        // 对手场内威胁 = 攻 + 防：清不掉的话，它每个回合都是威胁。
+        var threat = opponent.Board.Sum(follower => (double)(follower.Attack + follower.CurrentDefense));
+        return (removal + handDamage) - threat;
+    }
+
+    /// <summary>
+    /// **过牌价值**：我还有多少好牌没抽到，以及我现在**需不需要**它们。
+    /// <para>
+    /// 过牌本身不是价值，它是"买彩票" —— 领先时过牌是浪费节奏，落后时才是翻盘点。
+    /// 所以乘一个**落后系数**：差值越负（越落后）越值钱，领先时趋近 0。
+    /// 这也顺便防住了"领先还狂过牌"这个典型 AI 病。
+    /// </para>
+    /// </summary>
+    private static double DrawValue(PlayerState self, PlayerState opponent)
+    {
+        if (self.Deck.Count == 0)
+        {
+            return 0.0;
+        }
+
+        // 牌库里未上手牌的**平均威胁** —— 抽到的期望质量。
+        var quality = self.Deck.Sum(card => CardDamage(card.Definition)) / self.Deck.Count;
+        // 落后系数：用场上攻击力差衡量，相对自己的生命归一化。
+        var deficit = opponent.Board.Sum(f => f.Attack) - self.Board.Sum(f => f.Attack);
+        var lag = Math.Clamp(deficit / (double)Math.Max(1, self.Health), 0.0, 1.0);
+        return quality * self.Hand.Count * lag;
+    }
+
+    /// <summary>一张牌能造成的伤害总量（用于"可达去除量"与"牌库质量"）。</summary>
+    private static double CardDamage(CardDefinition definition)
+    {
+        var total = 0.0;
+        if (definition.Effect is { } main)
+        {
+            total += DamageOf(main);
+        }
+
+        foreach (var effect in definition.FanfareEffects ?? [])
+        {
+            total += DamageOf(effect);
+        }
+
+        foreach (var effect in definition.SpellEffects ?? [])
+        {
+            total += DamageOf(effect);
+        }
+
+        return total;
+    }
+
+    private static double DamageOf(CardEffect effect) => effect.Kind switch
+    {
+        CardEffectKind.DealDamageToEnemyLeader => effect.Amount,
+        CardEffectKind.DealDamageToEnemyFollower => effect.Amount,
+        CardEffectKind.DealDamageToEnemyFollowerOrLeader => effect.Amount,
+        CardEffectKind.DealDamageToRandomEnemyFollower => effect.Amount,
+        CardEffectKind.DealDamageToAllEnemyFollowers => effect.Amount,
+        CardEffectKind.DealDamageToAllEnemyFollowersAndLeader => effect.Amount,
+        CardEffectKind.DealDamageToRandomEnemyFollowerAndLeader => effect.Amount,
+        _ => 0.0
+    };
+
+    // ───────────────────────── S7：回合计划 ─────────────────────────
+    //
+    // 单步动作之间的区分度不够（实测：近 40% 的局面只有 1 个合法动作；
+    // 额外 PP 改了 41% 的决策却零效果）。所以把**跨回合计划**提升为候选单位：
+    // 先对每条路线贪心打完这一回合、比较回合结束时的局面，选最好的一条，
+    // 然后这一回合内只在被选中的路线里挑动作。
+    private enum TurnPlan { Trade, Face, Develop, Draw }
+
+    private int _planTurn = -1;
+    private bool _hasTurnPlan;
+    private TurnPlan _turnPlan = TurnPlan.Develop;
+
+    /// <summary>把一个单步动作归类到它所属的回合计划。</summary>
+    private static TurnPlan PlanOf(GameAction action) => action switch
+    {
+        AttackFollowerAction => TurnPlan.Trade,
+        AttackLeaderAction => TurnPlan.Face,
+        PlayFollowerAction => TurnPlan.Develop,
+        EvolveAction => TurnPlan.Develop,
+        SuperEvolveAction => TurnPlan.Develop,
+        PlayAmuletAction => TurnPlan.Develop,
+        PlaySpellAction => TurnPlan.Draw,
+        _ => TurnPlan.Develop
+    };
+
+    /// <summary>本回合还没定过计划就定一次。计划只在回合开始时决定，回合内不再改。</summary>
+    private void ResolveTurnPlan(GameState state, int perspectivePlayer)
+    {
+        if (_hasTurnPlan && _planTurn == state.TurnNumber)
+        {
+            return;
+        }
+
+        _planTurn = state.TurnNumber;
+        _hasTurnPlan = true;
+
+        var best = double.NegativeInfinity;
+        var bestPlan = TurnPlan.Develop;
+        foreach (var plan in new[] { TurnPlan.Trade, TurnPlan.Face, TurnPlan.Develop, TurnPlan.Draw })
+        {
+            var value = SimulateTurnUnderPlan(state, perspectivePlayer, plan);
+            if (value > best)
+            {
+                best = value;
+                bestPlan = plan;
+            }
+        }
+
+        _turnPlan = bestPlan;
+    }
+
+    /// <summary>只允许某一条计划地贪心打完本回合，返回回合结束时的局面分。</summary>
+    private double SimulateTurnUnderPlan(GameState state, int perspectivePlayer, TurnPlan plan)
+    {
+        var simulation = state;
+        var startTurn = state.TurnNumber;
+        for (var step = 0; step < 40; step++)
+        {
+            if (simulation.IsGameOver ||
+                simulation.TurnNumber != startTurn ||
+                simulation.ActivePlayer != perspectivePlayer)
+            {
+                break;
+            }
+
+            var pool = GameEngine.GetLegalActions(simulation)
+                .Where(action => PlanOf(action) == plan)
+                .ToArray();
+            if (pool.Length == 0)
+            {
+                break;
+            }
+
+            var next = pool
+                .OrderByDescending(action =>
+                    EvaluatePosition(GameEngine.Apply(simulation, action), perspectivePlayer))
+                .First();
+            simulation = GameEngine.Apply(simulation, next);
+        }
+
+        return EvaluatePosition(simulation, perspectivePlayer);
+    }
     /// <summary>
     /// 白吃数差：我方能用某个随从击杀、且不会被反杀的目标个数，减去对手对我方能做到同样事情的个数。
     /// </summary>
@@ -1292,7 +1470,10 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         0.5,   // 待兑现回复
         0.4,   // 待兑现手牌
         0.4,   // 待兑现铺场/强化
-        0.5    // 待兑现资源
+        0.5,   // 待兑现资源
+        // 2026-10-03 新增两项（用户指定）。初值是粗估，**要用与 2.0 对战的胜率来调**。
+        0.5,   // 当回合策略（可达去除量 − 对手场内威胁）
+        0.3    // 过牌价值（牌库质量 × 手牌数 × 落后系数）
     ];
 
     /// <summary>Divides the weighted feature sum before the logistic squash.</summary>
