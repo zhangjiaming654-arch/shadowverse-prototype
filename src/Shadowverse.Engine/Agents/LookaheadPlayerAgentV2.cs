@@ -636,9 +636,36 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
             rawScore += features[index] * weights[index];
         }
 
+        // 可学习价值表（纹章 / 自己的手牌）。
+        // 关键点：**对手手牌是暗牌，不参与**；对手的纹章是公开信息，参与。
+        rawScore += LearnedValueOf(state, perspectivePlayer)
+                    - LearnedValueOf(state, perspectivePlayer == 0 ? 1 : 0);
+
         // The logistic conversion turns a readable material/health score into a stable
         // 0..1 short-horizon win-chance estimate, without claiming it is an exact full-game win rate.
         return 1.0 / (1.0 + Math.Exp(-rawScore / ScoreScale));
+    }
+
+    /// <summary>
+    /// 一方的"可学习价值"= 它持有的纹章价值之和 + 它**手牌**的卡价值之和。
+    /// 手牌只算自己那一方 —— 对手手牌看不到，算进去就是作弊。
+    /// </summary>
+    private static double LearnedValueOf(GameState state, int playerIndex)
+    {
+        LearnedValues.EnsureLoaded();
+        var player = state.Players[playerIndex];
+        var value = 0.0;
+        foreach (var crest in player.Crests)
+        {
+            value += LearnedValues.Crest(crest.Definition.Id);
+        }
+
+        foreach (var card in player.Hand)
+        {
+            value += LearnedValues.HandCard(card.Definition.Id);
+        }
+
+        return value;
     }
 
     private static int BoardValue(IReadOnlyList<FollowerInstance> board) => board.Sum(follower =>
