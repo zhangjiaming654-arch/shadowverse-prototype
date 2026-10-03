@@ -456,7 +456,11 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
             // 累计进化次数（瞬念召唤/解放奥义的充能进度）根本没有这一项。
             AccumulatedEvolutions(self) - AccumulatedEvolutions(opponent),
             HandThreat(self) - HandThreat(opponent),
-            DeckSummonValue(self.Deck) - DeckSummonValue(opponent.Deck)
+            DeckSummonValue(self.Deck) - DeckSummonValue(opponent.Deck),
+            // 「当回合策略」的核心之一：**交换能力**，而不是场面存量。
+            // 5 个 3/3 的"攻防之和"(30) 高于 1 个 10/10(20)，但打起来是被白吃 ——
+            // 存量分不出这件事，白吃数能。这就是把「场面差」删掉后丢掉的那一块。
+            FreeKillAdvantage(self, opponent)
         ];
     }
 
@@ -620,7 +624,13 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
         // （第 620-625 行记的"中速梦专精拟合"同样没换来胜率）。
         0.30,  // 累计进化次数差（瞬念召唤/解放奥义的充能进度）
         0.10,  // 手牌威胁差
-        0.15   // 牌组瞬念召唤价值差
+        0.15,  // 牌组瞬念召唤价值差
+        // 交换能力（白吃数差）—— **实测否决，权重归零**（特征保留待以后用别的目标拟合）。
+        // 实测（各 200 局，weight=0.60）：中速梦 62.0%→61.0%（BO10 60→60，**没恢复**）；
+        // 宇宙鱼 69.0%→66.0%（决定性 45:13→42:8）。
+        // 结论：「中速梦 BO10 从 80 掉到 60 是因为删了「场面差」」这一判断**不成立** ——
+        // 把交换能力加回来没能让它回升。中速梦掉分的真实原因仍未查清。
+        0.0
     ];
 
     /// <summary>Divides the weighted feature sum before the logistic squash.</summary>

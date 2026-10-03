@@ -6545,7 +6545,7 @@ internal static void RunFrozenLookaheadV2Test()
         // 2026-10-02 二次合并：删掉「场面差」与「纹章引擎价值」，两者并入「回合结束威胁差」。
         // **12 → 10 项。**
         2.0, 0.5, 0.6, 0.15, 0.4, 0.45, 1.0,
-        0.30, 0.10, 0.15
+        0.30, 0.10, 0.15, 0.0
     ];
 
     var actualWeights = LookaheadPlayerAgentV2.PositionWeights;
