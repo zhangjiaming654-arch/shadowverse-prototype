@@ -440,7 +440,10 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
         return
         [
             self.Health - opponent.Health,
-            // 「场面差」与「纹章引擎价值」已删除（2026-10-02 用户裁定）：
+            // 【单变量实验】把「场面差」单独加回来（其余 7 项保持删除），
+            // 验证中速梦 BO10 从 80 掉到 60 是否就是它造成的。
+            BoardValue(self.Board) - BoardValue(opponent.Board),
+            // 「纹章引擎价值」已删除（2026-10-02 用户裁定）：
             // 两者都在给"我留下的东西值多少"估值，与下面的「回合结束威胁差」职责重叠，
             // 分开写会互相污染。现在**统一由「回合结束威胁差」衡量**。
             CrestBurden(opponent.Crests) - CrestBurden(self.Crests),
@@ -607,6 +610,13 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
     [
         // 2026-10-02 随特征表同步删到 12 项（用户裁定）。
         2.0,   // 生命差
+        // 场面差 —— **实测：帮中速梦、害宇宙鱼，净收益为负，故归零**。
+        // 加回 0.7 后（各 200 局）：中速梦 62.0%→65.0%（BO10 60→65，**确实需要它**）；
+        // 但宇宙鱼 69.0%→**60.0%**（决定性 45:13→30:15，BO10 80→65）。
+        // 合起来：归零 (69,62) 优于加回 (60,65)。
+        // 这个矛盾是**单张权重表**的固有限制 —— 中速梦要它、宇宙鱼不要它。
+        // 出路：给 2.0 也加上 1.0 已有的**按对局切换权重**机制（--matchup-weights）。
+        0.0,   // 场面差
         0.5,   // 对手纹章负担
         0.6,   // 手牌差
         0.15,  // 牌库差
