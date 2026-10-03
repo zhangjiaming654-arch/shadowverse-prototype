@@ -1239,12 +1239,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
             PendingValue(self, PendingHeal) - PendingValue(opponent, PendingHeal),
             PendingValue(self, PendingCards) - PendingValue(opponent, PendingCards),
             PendingValue(self, PendingDevelopment) - PendingValue(opponent, PendingDevelopment),
-            PendingValue(self, PendingResource) - PendingValue(opponent, PendingResource),
-
-            // ── 2026-10-03 新增两项（用户指定）──
-            // 「当回合策略」与「过牌价值」。前者管这一回合怎么花资源，后者管"还有多少没抽到的好牌"。
-            TurnStrategy(self, opponent) - TurnStrategy(opponent, self),
-            DrawValue(self, opponent) - DrawValue(opponent, self)
+            PendingValue(self, PendingResource) - PendingValue(opponent, PendingResource)
         ];
     }
 
@@ -1500,10 +1495,7 @@ public sealed class LookaheadPlayerAgent : IStateAwarePlayerAgent
         0.5,   // 待兑现回复
         0.4,   // 待兑现手牌
         0.4,   // 待兑现铺场/强化
-        0.5,   // 待兑现资源
-        // 2026-10-03 新增两项（用户指定）。初值是粗估，**要用与 2.0 对战的胜率来调**。
-        0.5,   // 当回合策略（可达去除量 − 对手场内威胁）
-        0.3    // 过牌价值（牌库质量 × 手牌数 × 落后系数）
+        0.5    // 待兑现资源
     ];
 
     /// <summary>Divides the weighted feature sum before the logistic squash.</summary>

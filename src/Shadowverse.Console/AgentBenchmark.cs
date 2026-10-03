@@ -20,6 +20,12 @@ public enum AgentKind
     LookaheadV2,
 
     /// <summary>
+    /// **前瞻牌手 4.0** = 冻结的 2.0 + 「当回合策略」+「过牌价值」。
+    /// 2.0 保持冻结，4.0 是独立副本；参数按与 2.0 对战的胜率调。
+    /// </summary>
+    LookaheadV4,
+
+    /// <summary>
     /// The frozen 1.0 snapshot (10 rollouts, horizon 3, rail off). This is the opponent every
     /// 2.0 experiment is measured against, so the yardstick never drifts while the live
     /// <see cref="AgentKind.Lookahead"/> keeps changing.
@@ -47,6 +53,7 @@ public static class AgentBenchmark
         AgentKind.Baseline => "规则牌手·冻结基线",
         AgentKind.Lookahead => "前瞻牌手 3.0（开发中）",
         AgentKind.LookaheadV2 => "前瞻牌手 2.0（冻结）",
+        AgentKind.LookaheadV4 => "前瞻牌手 4.0（当回合策略+过牌价值）",
         AgentKind.LookaheadV1 => "前瞻牌手 1.0（冻结）",
         AgentKind.BaselineLookahead => "前瞻牌手·旧冻结基线",
         _ => kind.ToString()
@@ -59,6 +66,7 @@ public static class AgentBenchmark
         "baseline" or "old" or "b" => AgentKind.Baseline,
         "lookahead" or "lookahead-v3" or "lookaheadv3" or "v3" => AgentKind.Lookahead,
         "lookahead-v2" or "lookaheadv2" or "v2" => AgentKind.LookaheadV2,
+        "lookahead-v4" or "lookaheadv4" or "v4" => AgentKind.LookaheadV4,
         "lookahead-v1" or "lookaheadv1" or "v1" => AgentKind.LookaheadV1,
         "lookahead-baseline" or "lookaheadbase" or "v1base" => AgentKind.BaselineLookahead,
         _ => throw new ArgumentException(
@@ -1299,6 +1307,7 @@ public static class AgentBenchmark
                 deepRollouts: config.DeepRollouts,
                 treeUsesMeanFollowUp: config.TreeUsesMeanFollowUp),
             AgentKind.LookaheadV2 => new LookaheadPlayerAgentV2(seed, config.RolloutsPerAction),
+            AgentKind.LookaheadV4 => new LookaheadPlayerAgentV4(seed, config.RolloutsPerAction),
             AgentKind.LookaheadV1 => new LookaheadPlayerAgentV1(
                 config.RolloutsPerAction, config.FutureTurnHorizon, seed, rail),
             AgentKind.BaselineLookahead => new BaselineLookaheadPlayerAgent(
