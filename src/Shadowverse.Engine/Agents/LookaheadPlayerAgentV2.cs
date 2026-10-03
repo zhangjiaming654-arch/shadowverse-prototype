@@ -647,8 +647,14 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
     }
 
     /// <summary>
-    /// 一方的"可学习价值"= 它持有的纹章价值之和 + 它**手牌**的卡价值之和。
-    /// 手牌只算自己那一方 —— 对手手牌看不到，算进去就是作弊。
+    /// 一方的"可学习价值" = 纹章价值 + **手牌的净持有价值**。
+    /// <para>
+    /// 净持有价值 = <c>在手价值 × 使用窗口 − 打出价值</c>。
+    /// 需要**两个标量**才表达得出用法：正数该留、负数该出。
+    /// 只用在手价值（单标量）会让牌手**囤牌不出** —— 本项目踩过这个坑
+    /// （见 <c>DragonRainbowBoardValue</c> 注释：旧评估函数宁愿囤昂贵卡、也不肯花能量点）。
+    /// </para>
+    /// <para>手牌只算自己那一方 —— 对手手牌看不到，算进去就是作弊。</para>
     /// </summary>
     private static double LearnedValueOf(GameState state, int playerIndex)
     {
@@ -660,9 +666,14 @@ public sealed class LookaheadPlayerAgentV2 : IStateAwarePlayerAgent
             value += LearnedValues.Crest(crest.Definition.Id);
         }
 
+        var evolutionPoints = player.EvolutionPoints + player.SuperEvolutionPoints;
         foreach (var card in player.Hand)
         {
-            value += LearnedValues.HandCard(card.Definition.Id);
+            // 窗口关了（比如进化点用完）→ 在手价值归零，只剩"留着的代价"，
+            // 牌手于是会把这张牌打出去，而不是烂在手里。
+            var window = LearnedValues.HeldWindowFactor(card.Definition, evolutionPoints);
+            value += (LearnedValues.HandCard(card.Definition.Id) * window)
+                     - LearnedValues.PlayedCard(card.Definition.Id);
         }
 
         return value;

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using Shadowverse.Engine.Models;
 
 namespace Shadowverse.Engine.Agents;
 
@@ -38,7 +39,21 @@ public static class LearnedValues
         ["CREST-005"] = 24.0
     };
 
-    private static readonly Dictionary<string, double> _hand = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, double> _hand = new(StringComparer.Ordinal)
+    {
+        // ⚠️ 实测否决：曾设 BASE-079 = 12.0（留在手里的溢价），结果**明显更差** ——
+        //   宇宙鱼 64.0% → 58.0%，决定性牌局 38:13 → 25:15，BO10 80 → 55
+        //   （中速梦无变化，62%/60，符合"只有宇宙鱼吃这张表"）。
+        // 原因判断：+12 相对 ScoreScale=12 是极大的常数项，而且罪人在手里的回合很多，
+        //   **每个回合都加 12** 把其他特征全淹没了；同时窗口因子用"有进化点"判定，
+        //   而进化点几乎整局都有 → 窗口几乎恒开 → 确实变成了囤牌。
+        // 机制（双标量 + 窗口）保留在代码里，默认**全 0 关闭**；要重新启用必须先标定量级，
+        // 不能直接拍 12。当前最优配置是只挂 crestValue[CREST-005] = 24.0。
+        ["BASE-079"] = 0.0
+    };
+
+    /// <summary>打出价值 = "留着的代价"。罪人打出去实测只有 46% 胜率（等于没用），故为 0。</summary>
+    private static readonly Dictionary<string, double> _played = new(StringComparer.Ordinal);
 
     private static string? _loadedFrom;
     private static bool _ensured;
@@ -51,6 +66,36 @@ public static class LearnedValues
 
     public static double HandCard(string? cardId) =>
         cardId is not null && _hand.TryGetValue(cardId, out var value) ? value : 0.0;
+
+    public static double PlayedCard(string? cardId) =>
+        cardId is not null && _played.TryGetValue(cardId, out var value) ? value : 0.0;
+
+    /// <summary>
+    /// **使用窗口**：这张牌"留着才有、出了就没了"的溢价，现在还兑现得了吗？返回 0~1 的折扣。
+    /// <para>
+    /// 这是**防止囤牌的关键机制**。若在手价值是个常数，那么"留着"永远优于"出掉"，
+    /// 牌手会囤牌空过 —— 本项目已经踩过这个坑：<c>DragonRainbowBoardValue</c> 的注释记录了
+    /// 旧评估函数"宁愿囤昂贵卡、也不肯花能量点"。所以窗口一关，溢价必须归零。
+    /// </para>
+    /// <para>
+    /// **窗口从卡面规则算，不靠学**：数据管"这张牌值多少"，规则管"什么时候它才有用"。
+    /// </para>
+    /// </summary>
+    public static double HeldWindowFactor(CardDefinition card, int evolutionPoints)
+    {
+        var hasEvolutionPayoff =
+            (card.OnEvolveEffects?.Count ?? 0) > 0 || (card.EvolutionEffects?.Count ?? 0) > 0;
+        if (hasEvolutionPayoff)
+        {
+            // 窗口 = 我方还进化得起它。进化点用完 →【进化时】收益永远拿不到 → 溢价归零，
+            // 牌手于是会老老实实把它打出去，而不是烂在手里。
+            return evolutionPoints > 0 ? 1.0 : 0.0;
+        }
+
+        // 【奥义】类：【解放奥义】的槽会自己涨，窗口一直开着（等到满槽才兑现），不做折扣。
+        // 普通牌：留着没有额外溢价。
+        return 0.0;
+    }
 
     /// <summary>
     /// 首次访问时尝试加载 <see cref="DefaultPath"/>。

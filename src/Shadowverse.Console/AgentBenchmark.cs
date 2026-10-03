@@ -314,6 +314,27 @@ public static class AgentBenchmark
                 }
 
                 var finished = Interlocked.Increment(ref completedCount);
+
+                // **每局都写共享进度文件**（打印仍按 progressEvery 走）。
+                // 之前把写文件和打印绑在同一个 tick 上，于是界面在两次 tick 之间
+                // 会因为"超过过期阈值"把进度隐藏起来，表现为**一会看得到一会看不到**。
+                // 写文件很便宜，每局一次即可。
+                lock (progressGate)
+                {
+                    var wins = PartialWins(outcomes);
+                    var perMatch = stopwatch.Elapsed.TotalSeconds / Math.Max(1, finished);
+                    LiveProgress.Report(
+                        "命令行批量对局",
+                        finished,
+                        options.MatchCount,
+                        DisplayName(options.FirstAgent),
+                        wins.First,
+                        DisplayName(options.SecondAgent),
+                        wins.Second,
+                        stopwatch.Elapsed,
+                        TimeSpan.FromSeconds(perMatch * (options.MatchCount - finished)));
+                }
+
                 if (finished % progressEvery == 0)
                 {
                     lock (progressGate)
@@ -322,23 +343,6 @@ public static class AgentBenchmark
                         Console.WriteLine(
                             $"  进度 {finished}/{options.MatchCount} ｜ 已用 {stopwatch.Elapsed.TotalSeconds:F0} 秒 ｜ " +
                             $"决定性牌局 {firstBoth}:{secondBoth}（各赢一边 {split}）");
-
-                        // **同时写进共享进度文件**，界面（另一个进程）每秒钟读一次显示出来 ——
-                        // 用户要的是"命令行跑着的时候，界面上也能看见进度"。
-                        // 进度栏要显示**双方真实胜局**：镜像对局里"决定性牌局"恒为 0:0
-                        //（每一对都各赢一边），拿它显示会永远看不出谁领先。
-                        var wins = PartialWins(outcomes);
-                        var perMatch = stopwatch.Elapsed.TotalSeconds / Math.Max(1, finished);
-                        LiveProgress.Report(
-                            "命令行批量对局",
-                            finished,
-                            options.MatchCount,
-                            DisplayName(options.FirstAgent),
-                            wins.First,
-                            DisplayName(options.SecondAgent),
-                            wins.Second,
-                            stopwatch.Elapsed,
-                            TimeSpan.FromSeconds(perMatch * (options.MatchCount - finished)));
 
                         // BO10 是用户的主要评判口径，所以进度里直接给累计得分，不用等跑完。
                         var bo10 = PartialBo10Tally(options, outcomes, normalCount);

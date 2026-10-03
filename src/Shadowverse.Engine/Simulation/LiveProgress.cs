@@ -89,8 +89,16 @@ public static class LiveProgress
         }
     }
 
-    /// <summary>进度超过这个时长没更新，就认为那一侧已经不在跑了（进程被关掉等）。</summary>
-    public static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// 进度超过这个时长没更新，就认为那一侧已经不在跑了（进程被关掉等）。
+    /// <para>
+    /// 取 30 秒。**这里踩过一次**：原来取 10 秒，而命令行最初只在"每 N 局"的 tick 上写文件，
+    /// 两次 tick 之间可能几十秒 → 界面判定过期 → 把进度隐藏 → 下次 tick 又显示。
+    /// 用户看到的现象是"**一会看得到一会看不到**"。
+    /// </para>
+    /// <para>现在命令行**每局都写文件**，30 秒足够容纳最慢的一局。</para>
+    /// </summary>
+    public static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(30);
 
     /// <summary>读当前进度；没有在跑、或已经过期就返回 null。</summary>
     public static Snapshot? Read()
