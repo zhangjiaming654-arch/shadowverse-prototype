@@ -671,18 +671,47 @@ public sealed class LookaheadPlayerAgentV4 : IStateAwarePlayerAgent
         return (removal + handDamage) - threat;
     }
 
-    /// <summary>还有多少没抽到的好牌 × 我现在需不需要它们（落后系数防"领先还狂过牌"）。</summary>
+    /// <summary>
+    /// **过牌价值**（用户 2026-10-03 更正口径）。
+    /// <para>
+    /// 这是一个**权衡**信号 —— 判断"现在该不该过牌"，而**不是**"牌库质量如何"。
+    /// 第一版实现成 `牌库伤害均值 × 手牌数 × 落后系数`，实测**单调有害**（DV=0→56%、0.3→50%、1.0→46%）：
+    /// 那个公式等于在奖励"我落后、手牌多、牌库里有伤害"，**鼓励消极拖延**，
+    /// 而拖延会损害场面交换 —— 正是用户指出的那个机理。
+    /// </para>
+    /// <para>三种"可以过牌"的局面：</para>
+    /// <list type="number">
+    ///   <item>**解不干净**：手牌+场面的去除量 &lt; 对手场面威胁 → 值得过牌找解牌</item>
+    ///   <item>**对手压力小**：对手场攻相对我的生命很低 → 不急着解场，可以先过牌为后续做准备</item>
+    ///   <item>**我压不动**：我的场攻相对对手生命很低 → 硬打没意义，过牌换个思路</item>
+    /// </list>
+    /// <para>反过来"能解干净 + 对手在压我 + 我在压他"时，过牌就是浪费节奏，值趋近 0。</para>
+    /// </summary>
     private static double DrawValue(PlayerState self, PlayerState opponent)
     {
-        if (self.Deck.Count == 0)
-        {
-            return 0.0;
-        }
+        // ① 解场缺口：解不干净的那部分越大，越值得找解牌。
+        var removal = self.Board.Sum(f => (double)f.Attack)
+                      + self.Hand
+                          .Where(card => card.Definition.Cost <= self.CurrentPlayPoints)
+                          .Sum(card => CardDamage(card.Definition));
+        var threat = opponent.Board.Sum(f => (double)(f.Attack + f.CurrentDefense));
+        var gap = Math.Max(0.0, threat - removal);
 
-        var quality = self.Deck.Sum(card => CardDamage(card.Definition)) / self.Deck.Count;
-        var deficit = opponent.Board.Sum(f => f.Attack) - self.Board.Sum(f => f.Attack);
-        var lag = Math.Clamp(deficit / (double)Math.Max(1, self.Health), 0.0, 1.0);
-        return quality * self.Hand.Count * lag;
+        // ② 对手压力小：对手场攻打不动我 → 有喘息空间。
+        var incoming = opponent.Board.Sum(f => (double)f.Attack);
+        var safety = Math.Clamp(
+            (self.Health - (incoming * 2.0)) / Math.Max(1.0, self.Health),
+            0.0,
+            1.0);
+
+        // ③ 我压不动：我的场攻打不动对手 → 硬推没意义。
+        var outgoing = self.Board.Sum(f => (double)f.Attack);
+        var stuckness = Math.Clamp(
+            (opponent.Health - (outgoing * 2.0)) / Math.Max(1.0, opponent.Health),
+            0.0,
+            1.0);
+
+        return gap + (safety * 6.0) + (stuckness * 6.0);
     }
 
     private static double CardDamage(CardDefinition definition)
