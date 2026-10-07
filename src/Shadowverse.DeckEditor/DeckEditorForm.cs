@@ -26,6 +26,7 @@ public sealed class DeckEditorForm : Form
     public DeckEditorForm()
     {
         Text = "影之诗原型 - 卡组编辑器";
+        BackColor = SvTheme.Void;
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(960, 720);
         Size = new Size(1120, 820);
@@ -33,6 +34,10 @@ public sealed class DeckEditorForm : Form
         BuildLayout();
         RefreshCatalogGrid();
         LoadSavedDecks(null);
+
+        // 《影之诗：超凡世界》风格：背景贴图 + 深色控件
+        SvTheme.AttachBackdrop(this);
+        SvTheme.ApplyTo(this);
     }
 
     private void BuildLayout()
@@ -86,9 +91,9 @@ public sealed class DeckEditorForm : Form
             Dock = DockStyle.Fill,
             WrapContents = true
         };
-        var newDeckButton = new Button { Text = "新建卡组", AutoSize = true };
-        var saveButton = new Button { Text = "保存卡组", AutoSize = true };
-        var replayButton = new Button { Text = "对局回放", AutoSize = true };
+        var newDeckButton = new SvButton { Text = "新建卡组", AutoSize = true };
+        var saveButton = new SvButton { Text = "保存卡组", AutoSize = true, Primary = true };
+        var replayButton = new SvButton { Text = "对局回放", AutoSize = true };
         newDeckButton.Click += (_, _) => StartNewDeck();
         saveButton.Click += (_, _) => SaveDeck();
         replayButton.Click += (_, _) =>
@@ -155,7 +160,7 @@ public sealed class DeckEditorForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(0, 0, 0, 5)
         };
-        var clearButton = new Button { Text = "清除筛选", AutoSize = true };
+        var clearButton = new SvButton { Text = "清除筛选", AutoSize = true };
         clearButton.Click += (_, _) => ClearCatalogFilters();
 
         _professionFilter.Items.AddRange(

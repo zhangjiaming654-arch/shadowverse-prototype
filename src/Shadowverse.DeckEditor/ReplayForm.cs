@@ -16,11 +16,11 @@ namespace Shadowverse.DeckEditor;
 /// </summary>
 public sealed partial class ReplayForm : Form
 {
-    private static readonly Color BoardBackground = Color.FromArgb(26, 42, 61);
-    private static readonly Color SurfaceBackground = Color.FromArgb(36, 55, 76);
-    private static readonly Color FollowerColor = Color.FromArgb(50, 104, 156);
-    private static readonly Color SpellColor = Color.FromArgb(102, 75, 151);
-    private static readonly Color AmuletColor = Color.FromArgb(152, 119, 45);
+    private static readonly Color BoardBackground = SvTheme.Void;
+    private static readonly Color SurfaceBackground = SvTheme.Panel;
+    private static readonly Color FollowerColor = SvTheme.FollowerColor;
+    private static readonly Color SpellColor = SvTheme.SpellColor;
+    private static readonly Color AmuletColor = SvTheme.AmuletColor;
 
     private readonly ComboBox _firstDeck = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
     private readonly ComboBox _secondDeck = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
@@ -171,6 +171,21 @@ public sealed partial class ReplayForm : Form
         FormClosed += (_, _) => _autoPlayTimer.Stop();
 
         ShowEmptyState();
+    }
+
+    /// <summary>
+    /// 在 Load 时套《影之诗：超凡世界》主题。
+    /// <para>
+    /// 放在 OnLoad 而不是构造函数里：此时 <c>BuildLayout</c> / <c>BuildHumanPlayPanel</c>
+    /// 已经把控件树建完，递归套用才覆盖得全。背景必须做成窗体自己的
+    /// <c>BackgroundImage</c>（见 <see cref="SvTheme.AttachBackdrop"/> 里记的那个坑）。
+    /// </para>
+    /// </summary>
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        SvTheme.AttachBackdrop(this, 0.30f);
+        SvTheme.ApplyTo(this);
     }
 
     private void BuildLayout()

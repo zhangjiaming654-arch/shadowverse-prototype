@@ -1,8 +1,13 @@
+using System.Drawing.Drawing2D;
+
 namespace Shadowverse.DeckEditor;
 
 /// <summary>
 /// A compact 1-to-7-cost plus 8+ histogram for the deck editor. Values are copy
 /// counts, not unique card counts, so the chart always adds up to the deck size.
+/// <para>
+/// 配色走 <see cref="SvTheme"/>（深底 + 金色描边 + 青色渐变柱），背景透明以便窗体的贴图透上来。
+/// </para>
 /// </summary>
 public sealed class ManaCurveChart : Control
 {
@@ -10,11 +15,14 @@ public sealed class ManaCurveChart : Control
 
     public ManaCurveChart()
     {
+        SetStyle(ControlStyles.SupportsTransparentBackColor, true);
         DoubleBuffered = true;
         Height = 142;
         MinimumSize = new Size(420, 142);
         Margin = new Padding(0, 4, 0, 0);
-        BackColor = Color.White;
+        BackColor = Color.Transparent;
+        ForeColor = SvTheme.Text;
+        Font = new Font("Microsoft YaHei UI", 9f);
     }
 
     public void SetCounts(IEnumerable<KeyValuePair<int, int>> counts)
@@ -28,20 +36,26 @@ public sealed class ManaCurveChart : Control
 
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
-        base.OnPaint(eventArgs);
-
         var graphics = eventArgs.Graphics;
-        var bounds = ClientRectangle;
-        graphics.Clear(BackColor);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-        using var borderPen = new Pen(Color.LightSteelBlue);
-        using var axisPen = new Pen(Color.SlateGray);
-        using var barBrush = new SolidBrush(Color.FromArgb(72, 120, 190));
-        using var textBrush = new SolidBrush(ForeColor);
-        using var mutedBrush = new SolidBrush(Color.DimGray);
+        var bounds = ClientRectangle;
+        if (BackColor != Color.Transparent)
+        {
+            graphics.Clear(BackColor);
+        }
+
+        using var borderPen = new Pen(Color.FromArgb(120, SvTheme.Gold));
+        using var axisPen = new Pen(Color.FromArgb(150, SvTheme.CyanDim));
+        using var textBrush = new SolidBrush(SvTheme.Text);
+        using var mutedBrush = new SolidBrush(SvTheme.TextDim);
 
         graphics.DrawRectangle(borderPen, 0, 0, Math.Max(0, bounds.Width - 1), Math.Max(0, bounds.Height - 1));
-        graphics.DrawString("费用曲线（张数）", Font, textBrush, 8, 6);
+        using (var titleBrush = new SolidBrush(SvTheme.GoldLit))
+        {
+            graphics.DrawString("费用曲线（张数）", Font, titleBrush, 8, 6);
+        }
 
         var costs = Enumerable.Range(1, 8).ToArray();
         var maximumCount = Math.Max(1, costs.Max(cost => _counts.GetValueOrDefault(cost)));
@@ -56,6 +70,7 @@ public sealed class ManaCurveChart : Control
         var barWidth = Math.Max(8, Math.Min(34, slotWidth - 12));
 
         graphics.DrawLine(axisPen, left, baseline, bounds.Width - right, baseline);
+
         foreach (var (cost, index) in costs.Select((cost, index) => (cost, index)))
         {
             var count = _counts.GetValueOrDefault(cost);
@@ -66,8 +81,17 @@ public sealed class ManaCurveChart : Control
 
             if (barHeight > 0)
             {
-                graphics.FillRectangle(barBrush, barX, barY, barWidth, barHeight);
-                graphics.DrawRectangle(axisPen, barX, barY, barWidth, barHeight);
+                // 青色渐变柱：上亮下暗，比纯色更有"魔力"质感。
+                var barBounds = new Rectangle(barX, barY, barWidth, barHeight);
+                using var barBrush = new LinearGradientBrush(
+                    barBounds,
+                    SvTheme.Cyan,
+                    SvTheme.CyanDim,
+                    LinearGradientMode.Vertical);
+                graphics.FillRectangle(barBrush, barBounds);
+
+                using var barEdge = new Pen(Color.FromArgb(190, SvTheme.Cyan));
+                graphics.DrawRectangle(barEdge, barX, barY, barWidth, barHeight);
             }
 
             DrawCentered(graphics, count.ToString(), Font, count == 0 ? mutedBrush : textBrush, centerX, barY - Font.Height - 2);

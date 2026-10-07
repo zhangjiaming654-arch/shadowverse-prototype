@@ -8,4 +8,11 @@
   <ItemGroup>
     <ProjectReference Include="..\Shadowverse.Engine\Shadowverse.Engine.csproj" />
   </ItemGroup>
+
+  <!-- 《影之诗：超凡世界》风格的贴图素材（由 image-gen 生成）。
+       必须随生成目录一起输出，否则运行时找不到、界面会回退成纯色。 -->
+  <ItemGroup>
+    <None Include="Assets\**\*.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
