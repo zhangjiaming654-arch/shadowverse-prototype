@@ -40,8 +40,13 @@ public static class HumanActionResolver
     /// <summary>这个动作是否要求指定某个敌方随从为目标。</summary>
     public static bool TargetsFollower(GameAction action, int followerInstanceId) => action switch
     {
-        PlaySpellAction spell => spell.Target is EnemyFollowerTarget target
-                                 && target.FollowerInstanceId == followerInstanceId,
+        PlaySpellAction spell => spell.Target switch
+        {
+            EnemyFollowerTarget target => target.FollowerInstanceId == followerInstanceId,
+            FollowerTarget target => target.FollowerInstanceId == followerInstanceId,
+            AmuletTarget target => target.AmuletInstanceId == followerInstanceId,
+            _ => false
+        },
         PlayFollowerAction play => play.EnemyFollowerTargetInstanceIds?.Contains(followerInstanceId) == true,
         EvolveAction evolve => evolve.EnemyFollowerTargetInstanceId == followerInstanceId,
         SuperEvolveAction super => super.EnemyFollowerTargetInstanceId == followerInstanceId,
@@ -51,7 +56,7 @@ public static class HumanActionResolver
     /// <summary>这个动作是否要指定<b>某个</b>敌方随从为目标（具体是哪个由选择决定）。</summary>
     public static bool TargetsAnyFollower(GameAction action) => action switch
     {
-        PlaySpellAction spell => spell.Target is EnemyFollowerTarget,
+        PlaySpellAction spell => spell.Target is EnemyFollowerTarget or FollowerTarget or AmuletTarget,
         PlayFollowerAction play => play.EnemyFollowerTargetInstanceIds is { Count: > 0 },
         EvolveAction evolve => evolve.EnemyFollowerTargetInstanceId is not null,
         SuperEvolveAction super => super.EnemyFollowerTargetInstanceId is not null,
@@ -157,6 +162,28 @@ public static class HumanActionResolver
         return candidates;
     }
 
+    /// <summary>点击自己场上的护符：只返回这张护符的合法启动动作。</summary>
+    public static IReadOnlyList<GameAction> StartAbility(IReadOnlyList<GameAction> legalActions, int amuletInstanceId) =>
+        legalActions.OfType<UseStartAbilityAction>().Where(action => action.AmuletInstanceId == amuletInstanceId)
+            .Distinct().Cast<GameAction>().ToArray();
+
+    /// <summary>启动不可用时显示已知原因；是否可用仍由合法动作清单决定。</summary>
+    public static string? StartAbilityBlockReason(GameObservation observation, IReadOnlyList<GameAction> legalActions, int amuletInstanceId)
+    {
+        var amulet = observation.Self.Amulets?.FirstOrDefault(a => a.InstanceId == amuletInstanceId);
+        if (amulet is null) return "护符已不在场上";
+        var start = CardCatalog.Get(amulet.CardId).StartAbility;
+        if (start is null) return "这张护符没有启动能力";
+        if (observation.Phase != GamePhase.Main || observation.ActivePlayer != observation.PerspectivePlayer)
+            return "现在不是你的行动回合";
+        if (StartAbility(legalActions, amuletInstanceId).Count > 0) return null;
+        if (amulet.StartAbilityUsedThisTurn) return "本回合已启动";
+        if (observation.Self.CurrentPlayPoints < start.Cost) return $"PP 不足（需要 {start.Cost}）";
+        if (observation.OwnHand.Count == 0 && start.Effects.Any(e => e.Kind == CardEffectKind.TransformOwnHandCardIntoRandomOpponentDeckCopy))
+            return "没有可选择的手牌";
+        return "当前不可启动";
+    }
+
     /// <summary>右键自己的随从：进化 / 超进化的所有变体（可能带目标或模式选择，交给菜单）。</summary>
     public static IReadOnlyList<GameAction> Evolve(
         IReadOnlyList<GameAction> legalActions,
@@ -192,6 +219,20 @@ public static class HumanActionResolver
     /// <summary>不需要拖拽、直接给按钮的动作。这些留在常驻按钮上。</summary>
     public static IReadOnlyList<GameAction> Direct(IReadOnlyList<GameAction> legalActions) =>
         legalActions.Where(action => action is UseExtraPlayPointAction or EndTurnAction).ToList();
+
+    /// <summary>点击手牌选择出牌；保留这张牌的全部合法形式与目标。</summary>
+    public static IReadOnlyList<GameAction> ClickHand(IReadOnlyList<GameAction> legalActions, int cardInstanceId) =>
+        legalActions.Where(a => PlayedCardOf(a) == cardInstanceId).ToArray();
+
+    /// <summary>Enemy drops require an exact legal target; own-board drops may begin a guided play.</summary>
+    public static IReadOnlyList<GameAction> DropHand(GameObservation observation, IReadOnlyList<GameAction> legalActions,
+        int cardInstanceId, HumanTarget? target)
+    {
+        var plays = ClickHand(legalActions, cardInstanceId);
+        if (target is null) return plays;
+        var exact = plays.Where(a => HumanTargetSelection.Targets(observation, a, HumanTargetRole.Effect).Contains(target)).ToArray();
+        return exact.Length > 0 || target.Zone != HumanTargetZone.OwnBoard ? exact : plays;
+    }
 
     // ───────────────────────────── 模式（【模式】卡牌）─────────────────────────────
 
@@ -232,9 +273,9 @@ public static class HumanActionResolver
     {
         var definition = observation.OwnHand
             .FirstOrDefault(card => card.InstanceId == cardInstanceId)?.Definition;
-        var payload = definition?.SpellEffects?
-            .FirstOrDefault(effect => effect.Kind == CardEffectKind.ParkourChoiceOrAllModes)
-            ?.ReferencedCardId;
+        var payload = (definition?.Effect?.Kind == CardEffectKind.ParkourChoiceOrAllModes
+            ? definition.Effect : definition?.SpellEffects?
+                .FirstOrDefault(effect => effect.Kind == CardEffectKind.ParkourChoiceOrAllModes))?.ReferencedCardId;
         if (payload is null)
         {
             return null;

@@ -1120,13 +1120,14 @@ public static class AgentBenchmark
             return 1.0;
         }
 
-        var chiSquare = Math.Pow(Math.Abs(firstOnly - secondOnly) - 1.0, 2) / discordant;
+        var correctedDifference = Math.Max(0.0, Math.Abs(firstOnly - secondOnly) - 1.0);
+        var chiSquare = correctedDifference * correctedDifference / discordant;
         // The chi-square tail with one degree of freedom is exactly erfc(sqrt(x / 2)).
         return chiSquare <= 0 ? 1.0 : ComplementaryErrorFunction(Math.Sqrt(chiSquare / 2.0));
     }
 
     /// <summary>
-    /// Complementary error function. Abramowitz &amp; Stegun 7.1.26, accurate to about 1.5e-7,
+    /// Complementary error function. Rational approximation, accurate to about 1.5e-7,
     /// which is far finer than any p-value decision this benchmark makes. It is written out here
     /// rather than taken from the framework so the harness stays independent of the runtime's
     /// math surface.
@@ -1141,7 +1142,7 @@ public static class AgentBenchmark
             polynomial = (polynomial * t) + ErfcCoefficients[index];
         }
 
-        var value = t * Math.Exp((-z * z) - 1.26551223 + polynomial);
+        var value = t * Math.Exp((-z * z) - 1.26551223 + (t * polynomial));
         return x >= 0 ? value : 2.0 - value;
     }
 

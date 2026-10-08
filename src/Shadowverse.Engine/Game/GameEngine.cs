@@ -144,6 +144,8 @@ public static class GameEngine
                     ? "-"
                     : $"c{amulet.Crystallized.Cost}x{amulet.Crystallized.Countdown}")
                 .Append(';');
+            if (amulet.Definition.StartAbility is not null)
+                builder.Append('S').Append(amulet.StartAbilityUsedOnOwnTurnInternal).Append(';');
             AppendCardFingerprint(builder, amulet.Card);
         }
 
@@ -448,32 +450,6 @@ public static class GameEngine
                 actions.AddRange(GetSpellActions(state, card));
             }
 
-            // 【启动】：自己场上护符的启动能力，1回合仅限1次（记在护符实例上）。
-            foreach (var amulet in active.AmuletsInternal)
-            {
-                if (amulet.Definition.StartAbility is not { } start ||
-                    amulet.StartAbilityUsedOnOwnTurnInternal == active.OwnTurnNumber ||
-                    start.Cost > active.CurrentPlayPoints)
-                {
-                    continue;
-                }
-
-                // "选择自己的1张手牌"：每张合法手牌各给一个动作；没有需要手牌的启动能力时给一个无目标动作。
-                var needsHandTarget = start.Effects.Any(effect =>
-                    effect.Kind == CardEffectKind.TransformOwnHandCardIntoRandomOpponentDeckCopy);
-                if (needsHandTarget)
-                {
-                    foreach (var handCard in active.HandInternal)
-                    {
-                        actions.Add(new UseStartAbilityAction(amulet.InstanceId, handCard.InstanceId));
-                    }
-                }
-                else
-                {
-                    actions.Add(new UseStartAbilityAction(amulet.InstanceId));
-                }
-            }
-
             // 【融合】：1回合仅限1次。生成 1～3 张素材的组合 —— "没有指定数量时可融合任意数量"，
             // 但真正会用到的阈值只到"费用合计3或以上"/"种类为2"，所以上限取 3 就够，
             // 而且能把组合数压住（9 张手牌的 C(9,3)=84，可接受）。
@@ -502,6 +478,33 @@ public static class GameEngine
                 actions.Add(new PlayCrystallizeAction(card.InstanceId));
             }
         }
+
+        // 【启动】：自己场上护符的启动能力，1回合仅限1次（记在护符实例上）。
+        foreach (var amulet in active.AmuletsInternal)
+        {
+            if (amulet.Definition.StartAbility is not { } start ||
+                amulet.StartAbilityUsedOnOwnTurnInternal == active.OwnTurnNumber ||
+                start.Cost > active.CurrentPlayPoints)
+            {
+                continue;
+            }
+
+            // "选择自己的1张手牌"：每张合法手牌各给一个动作；没有需要手牌的启动能力时给一个无目标动作。
+            var needsHandTarget = start.Effects.Any(effect =>
+                effect.Kind == CardEffectKind.TransformOwnHandCardIntoRandomOpponentDeckCopy);
+            if (needsHandTarget)
+            {
+                foreach (var handCard in active.HandInternal)
+                {
+                    actions.Add(new UseStartAbilityAction(amulet.InstanceId, handCard.InstanceId));
+                }
+            }
+            else
+            {
+                actions.Add(new UseStartAbilityAction(amulet.InstanceId));
+            }
+        }
+
 
         if (CanEvolve(state))
         {
@@ -690,8 +693,13 @@ public static class GameEngine
     {
         // A single-target 【入场曲】 such as 猫咪走绳师's: one option per legal enemy follower, and
         // an option without a target when none can be chosen.
-        if (effects.Any(effect => effect.Kind == CardEffectKind.DealDamageToEnemyFollower ||
-                                   effect.Kind == CardEffectKind.DestroyEnemyFollower))
+        var conditionalDamage = effects.Any(effect => effect.Kind is
+            CardEffectKind.DealDamageToEnemyFollowerIfDeckHasNoDuplicates or
+            CardEffectKind.DealDamageToEnemyFollowerAndHealOwnLeaderIfDeckHasNoDuplicates)
+            && DeckHasNoDuplicates(state.Players[state.ActivePlayer]);
+        if (conditionalDamage || effects.Any(effect => effect.Kind == CardEffectKind.DealDamageToEnemyFollower ||
+                                                       effect.Kind == CardEffectKind.DestroyEnemyFollower ||
+                                                        effect.Kind == CardEffectKind.GrantWardToEnemyFollower))
         {
             // 单目标【入场曲】：每个合法敌方随从一个选项，外加一个"选不了目标"的空选项。
             // 「破坏对手1个随从」（铸铁亲信）和"对1个随从造成伤害"共用同一套目标生成。
@@ -1191,10 +1199,7 @@ public static class GameEngine
                 case CardEffectKind.DealDamageToEnemyFollowerIfDeckHasNoDuplicates:
                     if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
                     {
-                        ApplyDamageToSelectedEnemyFollowers(
-                            state,
-                            action.EnemyFollowerTargetInstanceIds,
-                            effect.Amount);
+                        ApplyConditionalSingleTargetDamage(state, action.EnemyFollowerTargetInstanceIds, effect.Amount);
                     }
 
                     break;
@@ -1230,7 +1235,7 @@ public static class GameEngine
                 case CardEffectKind.DealDamageToEnemyFollowerAndHealOwnLeaderIfDeckHasNoDuplicates:
                     if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
                     {
-                        ApplyDamageToSelectedEnemyFollowers(state, action.EnemyFollowerTargetInstanceIds, effect.Amount);
+                        ApplyConditionalSingleTargetDamage(state, action.EnemyFollowerTargetInstanceIds, effect.Amount);
                         RestoreLeaderHealth(state, state.ActivePlayer, effect.Amount);
                     }
 
@@ -1482,6 +1487,33 @@ public static class GameEngine
     /// What the player actually pays for a card in hand: its printed (or enhanced) cost minus the
     /// reductions the copy accumulated in hand. The reduction itself is unbounded, the paid cost is not.
     /// </summary>
+    public static HandCardReadout GetHandCardReadout(PlayerState player, CardInstance card)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(card);
+        var cost = GetCardCost(card, player.CurrentPlayPoints);
+        var form = GetResolvedEnhance(card.Definition, player.CurrentPlayPoints) is null
+            ? HandPlayForm.Normal : HandPlayForm.Enhance;
+        if (player.CurrentPlayPoints < cost)
+        {
+            var accelerate = card.Definition.Accelerate;
+            var crystallize = card.Definition.Crystallize;
+            if (accelerate is not null && accelerate.Cost <= player.CurrentPlayPoints)
+            { cost = accelerate.Cost; form = HandPlayForm.Accelerate; }
+            if (crystallize is not null && crystallize.Cost <= player.CurrentPlayPoints &&
+                (form != HandPlayForm.Accelerate || crystallize.Cost > cost))
+            { cost = crystallize.Cost; form = HandPlayForm.Crystallize; }
+        }
+        var definition = card.Definition;
+        int? oath = definition.OathEffects is { Count: > 0 } ? definition.OathGaugeThreshold : null;
+        int? super = definition.SuperOathEffects is { Count: > 0 } ||
+            GetSpellEffects(definition).Any(e => e.Kind == CardEffectKind.DealDamageToAllEnemyFollowersAndLeaderWithSuperOathUpgrade)
+            ? 15 : null;
+        int? gauge = oath is not null || super is not null
+            ? GetOathGauge(player, card) : null;
+        return new(cost, form, gauge, oath, super);
+    }
+
     private static int GetCardCost(CardInstance card, int currentPlayPoints) =>
         Math.Max(0, GetPlayCost(card.Definition, currentPlayPoints) - card.CostReduction - card.TemporaryCostReduction);
 
@@ -1689,13 +1721,12 @@ public static class GameEngine
 
         if (effects.Any(effect => effect.Kind == CardEffectKind.DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates))
         {
-            // 白牙燐敛：要选1个对手随从（牌组无重复时改为破坏全部，但**目标仍是必须选的**）。
+            // 无重复时整条能力替换为全体破坏，不再选择目标；范围效果包含光环和潜伏。
+            if (DeckHasNoDuplicates(state.Players[state.ActivePlayer])) return [null];
             var destroyTargets = state.Players[OtherPlayer(state.ActivePlayer)].Board
                 .Where(follower => !follower.HasAura && !follower.HasStealth)
                 .ToArray();
-            return destroyTargets.Length == 0
-                ? [(SpellTarget?)null]
-                : destroyTargets.Select(follower => (SpellTarget?)new FollowerTarget(follower.InstanceId)).ToArray();
+            return destroyTargets.Select(follower => (SpellTarget?)new EnemyFollowerTarget(follower.InstanceId)).ToArray();
         }
 
         if (effects.Any(effect => effect.Kind == CardEffectKind.TransformInto))
@@ -1775,6 +1806,10 @@ public static class GameEngine
             throw new InvalidOperationException($"Spell {card.Definition.Id} has no resolvable effect.");
         }
 
+        if (effects.Any(effect => effect.Kind == CardEffectKind.DestroyEnemyFollowerOrAllIfDeckHasNoDuplicates) &&
+            !GetSpellTargetOptions(state, effects).Any(target => Equals(target, action.Target)))
+            throw new InvalidOperationException("White Fang must use its current single-target or targetless all-destroy form.");
+
         active.CurrentPlayPoints -= playCost;
         active.HandInternal.Remove(card);
 
@@ -1843,6 +1878,7 @@ public static class GameEngine
                     // 「若自己的牌组中没有重复卡牌，则改为破坏对手的所有随从」——条件的判据是**牌组**。
                     if (DeckHasNoDuplicates(state.Players[state.ActivePlayer]))
                     {
+                        EnsureSpellHasNoTarget(action);
                         foreach (var target in state.Players[OtherPlayer(state.ActivePlayer)].BoardInternal.ToArray())
                         {
                             DestroyFollower(state, OtherPlayer(state.ActivePlayer), target);
@@ -1852,10 +1888,8 @@ public static class GameEngine
                             }
                         }
                     }
-                    else if (action.Target is EnemyFollowerTarget)
+                    else
                     {
-                        // 只有真的选了目标才破坏；场上没有合法目标时这条效果**安静地什么都不做**，
-                        // 不该抛"requires selecting an enemy follower"把整局打断（白牙燐敛）。
                         DestroyEnemyFollower(state, action.Target);
                     }
 
@@ -2395,12 +2429,13 @@ public static class GameEngine
 
     /// <summary>
     /// 【奥义】槽 = 现在的回合数 + 在手牌中时自己的随从的进化次数。
-    /// The engine approximates the second term with "this player's evolutions this battle", because it
-    /// does not track when a specific card entered the hand.
+    /// The second term counts only evolutions since this specific card entered the hand.
     /// </summary>
     private static int OathGauge(GameState state, int playerIndex, CardInstance card) =>
-        state.Players[playerIndex].OwnTurnNumber +
-        (state.Players[playerIndex].OwnFollowersEvolvedThisBattle - card.HandEntryEvolvedCountInternal);
+        GetOathGauge(state.Players[playerIndex], card);
+
+    private static int GetOathGauge(PlayerState player, CardInstance card) =>
+        player.OwnTurnNumber + player.OwnFollowersEvolvedThisBattle - card.HandEntryEvolvedCount;
 
     /// <summary>
     /// 【奥义】/【解放奥义】 on play: resolves the matching ability list when the gauge clears its threshold.
@@ -4725,6 +4760,16 @@ public static class GameEngine
         }
     }
 
+    private static void ApplyConditionalSingleTargetDamage(GameState state, IReadOnlyList<int>? targets, int damage)
+    {
+        var selectable = state.Players[OtherPlayer(state.ActivePlayer)].Board
+            .Where(follower => !follower.HasAura && !follower.HasStealth).ToArray();
+        if (selectable.Length == 0 && targets is not { Count: > 0 }) return;
+        if (targets is not { Count: 1 } || !selectable.Any(follower => follower.InstanceId == targets[0]))
+            throw new InvalidOperationException("This Fanfare requires selecting one selectable enemy follower.");
+        ApplyTargetedFollowerDamage(state, targets[0], damage);
+    }
+
     /// <summary>「对被选中的对手随从各造成N点伤害」。</summary>
     private static void ApplyDamageToSelectedEnemyFollowers(
         GameState state,
@@ -4923,16 +4968,12 @@ public static class GameEngine
     /// <summary>「使对手的1个随从获得【守护】」。</summary>
     private static void GrantWardToEnemyFollower(GameState state, IReadOnlyList<int>? targetInstanceIds)
     {
-        if (targetInstanceIds is not { Count: > 0 })
-        {
-            return;
-        }
-
-        var opponent = state.Players[OtherPlayer(state.ActivePlayer)];
-        var target = opponent.BoardInternal.FirstOrDefault(candidate =>
-            candidate.InstanceId == targetInstanceIds[0])
-            ?? throw new InvalidOperationException("The chosen follower is not on the opponent's board.");
-        target.GrantedKeywords |= CardKeyword.Ward;
+        var selectable = state.Players[OtherPlayer(state.ActivePlayer)].Board
+            .Where(follower => !follower.HasAura && !follower.HasStealth).ToArray();
+        if (selectable.Length == 0 && targetInstanceIds is not { Count: > 0 }) return;
+        if (targetInstanceIds is not { Count: 1 } || !selectable.Any(follower => follower.InstanceId == targetInstanceIds[0]))
+            throw new InvalidOperationException("This Fanfare requires selecting one selectable enemy follower.");
+        selectable.Single(follower => follower.InstanceId == targetInstanceIds[0]).GrantedKeywords |= CardKeyword.Ward;
     }
 
     /// <summary>「对对手的战场上的随机N个随从造成M点伤害」：同一个随从不会被重复选中。</summary>
@@ -5823,11 +5864,13 @@ public static class GameEngine
                 amulet.InstanceId,
                 amulet.Definition.Id,
                 amulet.Definition.Name,
-                amulet.Countdown)).ToArray(),
+                amulet.Countdown,
+                amulet.StartAbilityUsedOnOwnTurnInternal == player.OwnTurnNumber)).ToArray(),
             player.Crests.Select(crest => new VisibleCrest(
                 crest.Definition.Id,
                 crest.Definition.Name,
-                crest.Definition.EffectText)).ToArray(),
+                crest.Definition.EffectText,
+                crest.Countdown)).ToArray(),
             player.RevealedCardIds.ToArray());
     }
 

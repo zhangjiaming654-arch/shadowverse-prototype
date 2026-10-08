@@ -60,6 +60,7 @@ public static class MachineReplay
             first = initialState.StartingPlayer,
             win = winner,
             z = new[] { final.Players[0].Health, final.Players[1].Health },
+            init = new[] { PlayerSnapshot(initialState.Players[0]), PlayerSnapshot(initialState.Players[1]) },
             i = CardMap(initialState, steps),
             e = steps.Select(ToEvent).ToArray(),
             snap = steps.Select(ToSnapshot).ToArray()
@@ -143,6 +144,10 @@ public static class MachineReplay
             PlaySpellAction action => [step.BeforeState.TurnNumber, step.ActingPlayer, "S", CardId(before, action.CardInstanceId), action.CardInstanceId, SpellTargetCode(action.Target), action.OwnHandCardTargetInstanceIds],
             EvolveAction action => [step.BeforeState.TurnNumber, step.ActingPlayer, "E", action.FollowerInstanceId, action.ModeChoiceIndex, action.OwnHandCardTargetInstanceIds, action.EnemyFollowerTargetInstanceId],
             SuperEvolveAction action => [step.BeforeState.TurnNumber, step.ActingPlayer, "U", action.FollowerInstanceId, action.OtherFollowerTargetInstanceId, action.ModeChoiceIndex, action.OwnHandCardTargetInstanceIds, action.EnemyFollowerTargetInstanceId],
+            UseStartAbilityAction action => [step.BeforeState.TurnNumber, step.ActingPlayer, "Z", action.AmuletInstanceId,
+                action.HandCardTargetInstanceId,
+                before.Hand.FirstOrDefault(c => c.InstanceId == action.HandCardTargetInstanceId)?.Definition.Id,
+                step.AfterState.Players[step.ActingPlayer].Hand.FirstOrDefault(c => c.InstanceId == action.HandCardTargetInstanceId)?.Definition.Id],
             UseExtraPlayPointAction => [step.BeforeState.TurnNumber, step.ActingPlayer, "P"],
             AttackLeaderAction action => [step.BeforeState.TurnNumber, step.ActingPlayer, "L", action.AttackerInstanceId],
             AttackFollowerAction action => [step.BeforeState.TurnNumber, step.ActingPlayer, "B", action.AttackerInstanceId, action.DefenderInstanceId],
@@ -172,7 +177,8 @@ public static class MachineReplay
     ///              手牌数, 牌库数, 墓地数,
     ///              战场 [[实例, 攻, 当前防, 最大防, 进化状态, 关键词], …],
     ///              护符 [[实例, 吟唱剩余], …],
-    ///              纹章 [纹章号, …]]
+    ///              纹章 [纹章号, …], 手牌 [[实例, 永久减费, 临时减费, 进手进化计数, 当前费用, 形态, 奥义槽], …],
+    ///              自己回合数, 本局进化次数]。新增项只追加，保留 R2 原有位置。
     /// </summary>
     private static object?[] ToSnapshot(MatchStep step) =>
     [
@@ -207,6 +213,15 @@ public static class MachineReplay
             amulet.InstanceId,
             amulet.Countdown
         }).ToArray(),
-        player.Crests.Select(crest => crest.Definition.Id).ToArray()
+        player.Crests.Select(crest => crest.Definition.Id).ToArray(),
+        player.Hand.Select(card => new object?[]
+        {
+            card.InstanceId, card.CostReduction, card.TemporaryCostReduction, card.HandEntryEvolvedCount,
+            GameEngine.GetHandCardReadout(player, card).Cost,
+            GameEngine.GetHandCardReadout(player, card).Form.ToString(),
+            GameEngine.GetHandCardReadout(player, card).OathGauge
+        }).ToArray(),
+        player.OwnTurnNumber,
+        player.OwnFollowersEvolvedThisBattle
     ];
 }

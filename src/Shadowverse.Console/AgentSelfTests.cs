@@ -14,7 +14,7 @@ namespace Shadowverse.ConsoleApp;
 /// 全部自检（--effect-test 跑的就是这里）。共 101 个函数，
 /// 由调用图闭包从 33 个 Run*Test 入口算出来的，所以它和 ConsoleTools 的职责边界是机械划分的、不是拍脑袋。
 /// </summary>
-internal static class AgentSelfTests
+internal static partial class AgentSelfTests
 {
 internal static void RunSmokeTest(string firstDeckId, string secondDeckId)
 {
@@ -750,6 +750,10 @@ private static void CollectGestureReach(
     {
         foreach (var card in observation.OwnHand)
         {
+            Take("点击手牌→画面点选目标", HumanActionResolver.ClickHand(legalActions, card.InstanceId));
+            Take("手牌精确拖到主战者", HumanActionResolver.DropHand(observation, legalActions, card.InstanceId, new(HumanTargetZone.EnemyLeader)));
+            foreach (var targetId in observation.Opponent.Board.Select(f => f.InstanceId).Concat((observation.Opponent.Amulets ?? []).Select(a => a.InstanceId)))
+                Take("手牌精确拖到敌方卡牌", HumanActionResolver.DropHand(observation, legalActions, card.InstanceId, new(HumanTargetZone.EnemyBoard, targetId)));
             // 拖到己方场上（不指定目标）—— 这是最常见的出牌动作
             Take("手牌→己方场上", HumanActionResolver.FromHand(legalActions, card.InstanceId));
             // 拖到敌方主战者上
@@ -764,6 +768,9 @@ private static void CollectGestureReach(
                     HumanActionResolver.FromHand(legalActions, card.InstanceId, enemy.InstanceId));
             }
         }
+
+        foreach (var amulet in observation.Self.Amulets ?? [])
+            Take("点击护符启动", HumanActionResolver.StartAbility(legalActions, amulet.InstanceId));
 
         foreach (var follower in observation.Self.Board)
         {

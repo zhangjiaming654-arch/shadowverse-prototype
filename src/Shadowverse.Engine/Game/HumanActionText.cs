@@ -53,6 +53,10 @@ public static class HumanActionText
                 CardCatalog.Get(follower.CardId).Name)
             : $"#{instanceId}";
 
+        string AmuletName(int instanceId) => observation.Self.Amulets?.FirstOrDefault(a => a.InstanceId == instanceId) is { } amulet
+            ? Numbered(observation.Self.Amulets.Where(a => a.CardId == amulet.CardId).ToList(),
+                a => a.InstanceId == instanceId, amulet.Name) : $"#{instanceId}";
+
         return action switch
         {
             MulliganAction mulligan => mulligan.ReplaceInstanceIds.Count == 0
@@ -61,7 +65,9 @@ public static class HumanActionText
             PlayFollowerAction play =>
                 $"打出随从 {CardName(play.CardInstanceId)}" + ModeSuffix(play) + DetailSuffix(play),
             PlayAmuletAction amulet => $"打出护符 {CardName(amulet.CardInstanceId)}",
-            PlaySpellAction spell => $"打出法术 {CardName(spell.CardInstanceId)}" + DetailSuffix(spell),
+            UseStartAbilityAction start => $"启动 {AmuletName(start.AmuletInstanceId)}" +
+                (start.HandCardTargetInstanceId is int handId ? $"（选择手牌：{CardName(handId)}）" : ""),
+            PlaySpellAction spell => $"打出法术 {CardName(spell.CardInstanceId)}" + ModeSuffix(spell) + DetailSuffix(spell),
             PlayCrystallizeAction crystallize => $"结晶 {CardName(crystallize.CardInstanceId)}",
             PlayAccelerateAction accelerate => $"加速 {CardName(accelerate.CardInstanceId)}",
             EvolveAction evolve =>
@@ -98,33 +104,36 @@ public static class HumanActionText
                     parts.Add("指定对方主战者");
                     break;
                 case PlaySpellAction { Target: EnemyFollowerTarget target }:
-                    parts.Add($"指定 {OpponentFollowerName(target.FollowerInstanceId)}");
+                    parts.Add("指定 " + HumanTargetText.Name(observation, new(HumanTargetZone.EnemyBoard, target.FollowerInstanceId)));
+                    break;
+                case PlaySpellAction { Target: FollowerTarget or AmuletTarget }:
+                    parts.Add("指定 " + HumanTargetText.Name(observation, HumanTargetSelection.Targets(observation, candidate, HumanTargetRole.Effect).Single()));
                     break;
             }
 
             if (candidate is PlayFollowerAction { EnemyFollowerTargetInstanceIds: { Count: > 0 } enemyIds })
             {
-                parts.Add("指定 " + string.Join("、", enemyIds.Select(OpponentFollowerName)));
+                parts.Add("指定 " + string.Join("、", enemyIds.Select(id => HumanTargetText.Name(observation, new(HumanTargetZone.EnemyBoard, id)))));
             }
 
             if (candidate is EvolveAction { EnemyFollowerTargetInstanceId: int evolveTargetId })
             {
-                parts.Add($"指定 {OpponentFollowerName(evolveTargetId)}");
+                parts.Add("指定 " + HumanTargetText.Name(observation, HumanTargetSelection.Targets(observation, candidate, HumanTargetRole.Effect).Single()));
             }
 
             if (candidate is SuperEvolveAction { EnemyFollowerTargetInstanceId: int superTargetId })
             {
-                parts.Add($"指定 {OpponentFollowerName(superTargetId)}");
+                parts.Add("指定 " + HumanTargetText.Name(observation, HumanTargetSelection.Targets(observation, candidate, HumanTargetRole.Effect).Single()));
             }
 
             if (candidate is SuperEvolveAction { OtherFollowerTargetInstanceId: int allyId })
             {
-                parts.Add($"指定己方的 {FollowerName(allyId)}");
+                parts.Add("一同进化：" + HumanTargetText.Name(observation, new(HumanTargetZone.OwnBoard, allyId)));
             }
 
             if (candidate is PlayFollowerAction { HandCardTargetInstanceId: int handTargetId })
             {
-                parts.Add($"弃掉手牌的 {CardName(handTargetId)}");
+                parts.Add($"放回牌组：{CardName(handTargetId)}");
             }
 
             if (OwnHandTargets(candidate) is { Count: > 0 } ownHandIds)
@@ -209,6 +218,9 @@ public static class HumanActionText
             EvolveAction evolve => $"进化 {TheirName(evolve.FollowerInstanceId)}" + TheirEvolveDetail(evolve),
             SuperEvolveAction superEvolve =>
                 $"超进化 {TheirName(superEvolve.FollowerInstanceId)}" + TheirEvolveDetail(superEvolve),
+            UseStartAbilityAction start => "启动 " +
+                (observation.Opponent.Amulets?.FirstOrDefault(a => a.InstanceId == start.AmuletInstanceId)?.Name ?? "护符") +
+                (start.HandCardTargetInstanceId is not null ? "（选择一张手牌，未公开）" : ""),
             EndTurnAction => "结束回合",
             UseExtraPlayPointAction => "使用额外 PP",
             MulliganAction => "换牌",

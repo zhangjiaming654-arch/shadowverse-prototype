@@ -3,7 +3,7 @@ namespace Shadowverse.DeckEditor;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
 
@@ -20,7 +20,7 @@ internal static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, eventArgs) => ReportFailure(eventArgs.Exception);
 
-        Application.Run(new DeckEditorForm());
+        Application.Run(args.Contains("--replay", StringComparer.OrdinalIgnoreCase) ? new ReplayForm() : new DeckEditorForm());
     }
 
     private static void ReportFailure(Exception exception)

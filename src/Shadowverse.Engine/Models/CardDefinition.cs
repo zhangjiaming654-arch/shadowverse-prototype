@@ -758,8 +758,7 @@ public sealed record CardDefinition(
     /// <summary>
     /// 【奥义】: resolved when the card is <b>played</b> and the owner's oath gauge is at least
     /// <see cref="OathGaugeThreshold"/>. Official glossary: gauge = current turn number + the number of
-    /// times this player's followers evolved while the card sat in hand; approximated here as that
-    /// player's evolutions this battle (the engine does not track per-card hand tenure).
+    /// times this player's followers evolved while this specific card was in hand (tracked from its entry).
     /// </summary>
     IReadOnlyList<CardEffect>? OathEffects = null,
     /// <summary>The gauge value <see cref="OathEffects"/> needs: 10 for 【奥义】, 15 for 【解放奥义】.</summary>

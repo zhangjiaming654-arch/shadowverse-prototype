@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Shadowverse.Engine.Agents;
 using Shadowverse.Engine.Cards;
 using Shadowverse.Engine.Decks;
@@ -50,15 +50,15 @@ public sealed partial class ReplayForm
     /// <summary>行动记录最多保留多少步。再多就得滚，而滚起来就没法"一眼看到刚才发生了什么"。</summary>
     private const int ActionLogLines = 40;
 
-    private readonly Panel _humanPanel = new()
+    private readonly Panel _humanPanel = new SvPanel()
     {
         Dock = DockStyle.Right,
-        Width = 340,
+        Width = 310,
         BackColor = Color.FromArgb(24, 34, 46),
         Padding = new Padding(8)
     };
 
-    private readonly Button _humanPlayButton = new() { Dock = DockStyle.Top, Height = 34, Text = "开始人机对战" };
+    private readonly Button _humanPlayButton = new SvButton() { Dock = DockStyle.Top, Height = 34, Text = "开始人机对战" };
     private readonly Label _humanStatus = new()
     {
         Dock = DockStyle.Top,
@@ -110,12 +110,13 @@ public sealed partial class ReplayForm
     private readonly Label _agentLegend = new()
     {
         Dock = DockStyle.Top,
-        Height = 74,
+        Height = 88,
         ForeColor = Color.FromArgb(150, 172, 196),
         Font = new Font("Consolas", 8F),
         Text =
             "3.0 视野循环{1,3} × 60 推演（活的）\r\n" +
             "2.0 冻结：视野循环{1,3} × 60\r\n" +
+            "1.0 20次配置：视野 3 × 20\r\n" +
             "1.0 冻结：视野 3 × 10 推演\r\n" +
             "旧基线 本会话之前的老快照\r\n" +
             "冻结版本忽略推演下拉框"
@@ -129,7 +130,7 @@ public sealed partial class ReplayForm
         AutoScroll = true
     };
 
-    private readonly Panel _thinkingPanel = new()
+    private readonly Panel _thinkingPanel = new SvPanel()
     {
         Dock = DockStyle.Bottom,
         Height = 190,
@@ -176,7 +177,7 @@ public sealed partial class ReplayForm
     private IPlayerAgent? _opponentAgentInstance;
     private bool _opponentSupportsThinking;
 
-    private readonly Panel _logPanel = new()
+    private readonly Panel _logPanel = new SvPanel()
     {
         Dock = DockStyle.Bottom,
         Height = 150,
@@ -275,6 +276,8 @@ public sealed partial class ReplayForm
 
         StyleToolbarButton(_humanPlayButton, isPrimary: true);
         _humanPlayButton.Click += (_, _) => StartHumanMatch();
+        StyleToolbarButton(_humanReplayExportButton, isPrimary: true);
+        _humanReplayExportButton.Click += (_, _) => ExportCurrentMachineReplay();
 
         _thinkingPanel.Controls.Add(_thinkingBody);
         _thinkingPanel.Controls.Add(_thinkingTitle);
@@ -282,6 +285,8 @@ public sealed partial class ReplayForm
         _logPanel.Controls.Add(_logTitle);
 
         _humanPanel.Controls.Add(_humanActions);
+        InitializeSelectionFooter();
+        _humanPanel.Controls.Add(_selectionFooter);
         // 顺序有讲究：WinForms 的 Dock 布局是"后加进去的先排"。
         // Fill 必须最先加（最后排、吃掉剩下的空间），Bottom 要排在 Fill 之后、各个 Top 之前。
         // 想要"思考在上、记录在下"，就得反着加：先 log 再 thinking。
@@ -292,6 +297,7 @@ public sealed partial class ReplayForm
         // 纹章区紧贴状态栏下方；没有纹章时高度为 0，不占版面。
         _humanPanel.Controls.Add(_crestZone);
         _humanPanel.Controls.Add(_agentLegend);
+        _humanPanel.Controls.Add(_humanReplayExportButton);
         _humanPanel.Controls.Add(_humanPlayButton);
         _humanPanel.Controls.Add(title);
         Controls.Add(_humanPanel);
@@ -302,6 +308,11 @@ public sealed partial class ReplayForm
 
     private void CancelHumanMatch()
     {
+        _liveMatchRunning = false;
+        AbortHeldDrag(false);
+        Interlocked.Exchange(ref _livePresentationWaiter, null)?.TrySetCanceled();
+        CancelPlayAnimation();
+        CloseTargetSelection();
         _humanChoice?.TrySetCanceled();
         _humanChoice = null;
         _pendingActions = null;
@@ -336,22 +347,32 @@ public sealed partial class ReplayForm
                 seed);
 
             var steps = new List<MatchStep>();
+            _currentReplay = null;
+            _humanReplaySavedPath = null;
+            _cardToolTip.SetToolTip(_humanReplayExportButton, "导出当前对局；结束时也会自动保存 JSON。");
+            _liveReplayTemplate = new ReplayMatch(_matches.Count + 1, seed, myDeck.ToString(), opponentDeck.ToString(),
+                "真人", AgentSummary(opponentAgent, rollouts), initial, [], -1);
+            SetExportAvailability(false);
+            _matchSelector.Enabled = false;
+            _newMatchButton.Enabled = false;
             lock (_liveGate)
             {
                 _liveSteps = steps;
             }
 
+            CancelPlayAnimation();
             // 把实时对局接到现有回放上：_initialState + 不断增长的 _steps 就是回放的数据结构。
             _initialState = initial;
             _steps = steps;
             _currentStepIndex = -1;
+            SetSettingsVisible(false);
             _liveMatchRunning = true;
             _mulliganMarks.Clear();
             _humanShowAllActions = false;
             _modeSelection = null;
             _opponentDecisions.Clear();
             _humanPlayButton.Enabled = false;
-            _humanOpponentSummary = $"{opponentAgent}（{rollouts} 次推演）";
+            _humanOpponentSummary = AgentSummary(opponentAgent, rollouts);
             _humanStatus.Text = $"对手：{_humanOpponentSummary}\n对局进行中…";
             ClearHumanActions();
             UpdatePlayback();
@@ -370,6 +391,10 @@ public sealed partial class ReplayForm
                 try
                 {
                     var result = MatchRunner.PlayToEnd(initial, human, opponent, onStep: AppendLiveStep);
+                    MatchStep[] completedSteps;
+                    lock (_liveGate) completedSteps = steps.ToArray();
+                    var completed = _liveReplayTemplate! with { Steps = completedSteps, Winner = result.Winner };
+                    var saved = SaveHumanReplay(completed);
                     RunOnUi(() =>
                     {
                         _liveMatchRunning = false;
@@ -378,9 +403,13 @@ public sealed partial class ReplayForm
                         _humanPlayButton.Enabled = true;
                         _humanHint.Text = string.Empty;
                         ClearHumanActions();
-                        _humanStatus.Text = result.Winner == 0
-                            ? "你赢了。"
-                            : $"你输了（Player {result.Winner + 1} 获胜）。";
+                        RegisterHumanReplay(completed);
+                        _humanReplaySavedPath = saved.Path;
+                        _cardToolTip.SetToolTip(_humanReplayExportButton, saved.Path is { } savedPath
+                            ? $"本局已自动保存：\n{savedPath}\n点击可另存一份。" : "点击导出本局 JSON。");
+                        _humanStatus.Text = (result.Winner == 0 ? "你赢了。" : $"你输了（Player {result.Winner + 1} 获胜）。") +
+                            (saved.Path is not null ? "\n本局 JSON 已自动保存。\n可点击“导出本局 JSON”另存一份。" : $"\n自动保存失败：{saved.Error}\n仍可使用“导出本局 JSON”。");
+                        UpdatePlayback();
                     });
                 }
                 catch (Exception exception)
@@ -393,7 +422,9 @@ public sealed partial class ReplayForm
                         _humanPlayButton.Enabled = true;
                         _humanHint.Text = string.Empty;
                         ClearHumanActions();
-                        _humanStatus.Text = "对局中断：" + exception.Message;
+                        _matchSelector.Enabled = _matches.Count > 0;
+                        _newMatchButton.Enabled = true;
+                        _humanStatus.Text = "对局中断：" + exception.Message + "\n已完成步骤仍可导出 JSON。";
                     });
                 }
             });
@@ -402,6 +433,8 @@ public sealed partial class ReplayForm
         {
             _liveMatchRunning = false;
             _humanPlayButton.Enabled = true;
+            _matchSelector.Enabled = _matches.Count > 0;
+            _newMatchButton.Enabled = true;
             MessageBox.Show(exception.Message, "无法开始对局", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -457,6 +490,7 @@ public sealed partial class ReplayForm
         IReadOnlyList<GameAction> legalActions,
         TaskCompletionSource<GameAction> completion)
     {
+        CloseTargetSelection();
         _pendingObservation = observation;
         _pendingActions = legalActions;
         _humanShowAllActions = false;
@@ -473,10 +507,10 @@ public sealed partial class ReplayForm
             _humanStatus.Text =
                 $"对手：{_humanOpponentSummary}\n你的回合（第 {observation.TurnNumber} 回合） ｜ {DescribeOwnState(observation)}";
             _humanHint.Text =
-                "拖动自己的手牌到己方场上出牌；\n" +
-                "拖动自己的随从到敌方随从 / 主战者上 → 攻击，\n或指定【进化时】的目标；\n" +
-                "拖到己方另一个随从上 → 超进化时带动它；\n" +
-                "点一下自己的随从 → 菜单里选【进化】/【超进化】。";
+                "点击手牌选择出牌，再点发光目标；\n" +
+                "确认前可换目标、取消（Esc）；\n" +
+                "拖随从攻击，点击随从选择进化；\n" +
+                "点击护符【启动】，右键手牌融合。";
         }
 
         RefreshCrestZone(observation);
@@ -499,6 +533,18 @@ public sealed partial class ReplayForm
     {
         if (_pendingActions is not { } actions || _pendingObservation is not { } observation)
         {
+            return;
+        }
+
+        if (_targetSelection is not null)
+        {
+            BuildTargetChoices();
+            return;
+        }
+
+        if (_inspectedCardDetail is not null)
+        {
+            BuildInspectionChoices();
             return;
         }
 
@@ -549,14 +595,17 @@ public sealed partial class ReplayForm
         foreach (var action in actions)
         {
             var button = CreateHumanButton(DescribeAction(observation, action), primary: false);
-            button.Click += (_, _) => CommitHumanAction(action);
+            button.Height = Math.Max(44, TextRenderer.MeasureText(button.Text, button.Font,
+                new Size(button.Width - 16, int.MaxValue), TextFormatFlags.WordBreak).Height + 14);
+            button.AutoEllipsis = false;
+            button.Click += (_, _) => BeginAmbiguityResolution([action]);
             _humanActions.Controls.Add(button);
         }
     }
 
     private Button CreateHumanButton(string text, bool primary)
     {
-        var button = new Button
+        var button = new SvButton
         {
             Text = text,
             Width = Math.Max(180, _humanActions.ClientSize.Width - 24),
@@ -564,7 +613,8 @@ public sealed partial class ReplayForm
             TextAlign = ContentAlignment.MiddleLeft,
             FlatStyle = FlatStyle.Flat,
             BackColor = primary ? Color.FromArgb(64, 116, 88) : Color.FromArgb(46, 66, 88),
-            ForeColor = Color.White
+            ForeColor = Color.White,
+            Primary = primary
         };
         return button;
     }
@@ -590,6 +640,7 @@ public sealed partial class ReplayForm
 
     private void CommitHumanAction(GameAction action)
     {
+        CloseTargetSelection();
         _pendingActions = null;
         _pendingObservation = null;
         _modeSelection = null;
@@ -641,15 +692,7 @@ public sealed partial class ReplayForm
             button.Click += (_, _) =>
             {
                 _modeSelection = null;
-                if (sameMode.Count == 1)
-                {
-                    CommitHumanAction(sameMode[0]);
-                    return;
-                }
-
-                // 选完模式还有多个变体（例如同一模式下还要选目标），交给通用菜单。
-                RefreshActionButtons();
-                ShowActionMenu(sameMode);
+                BeginAmbiguityResolution(sameMode);
             };
             _humanActions.Controls.Add(button);
         }
@@ -658,6 +701,7 @@ public sealed partial class ReplayForm
         cancel.Click += (_, _) =>
         {
             _modeSelection = null;
+            SetTargetLayout(false);
             _humanHint.Text = string.Empty;
             RefreshActionButtons();
         };
@@ -670,20 +714,26 @@ public sealed partial class ReplayForm
     /// </summary>
     private void BeginAmbiguityResolution(IReadOnlyList<GameAction> candidates)
     {
-        if (candidates.Count == 1)
-        {
-            CommitHumanAction(candidates[0]);
-            return;
-        }
+        if (_pendingObservation is not { } observation || candidates.Count == 0) return;
+        CloseTargetSelection();
 
         if (HumanActionResolver.IsModeOnlyChoice(candidates))
         {
             _modeSelection = candidates;
+            SetTargetLayout(true);
             _humanHint.Text = "这张牌要选一个【模式】发动，在右边选。";
             RefreshActionButtons();
             return;
         }
 
+        if (candidates.Select(HumanTargetSelection.FamilyKey).Distinct().Count() == 1 &&
+            candidates.Any(a => HumanTargetSelection.HasTargets(observation, a)))
+        {
+            BeginTargetSelection(candidates);
+            return;
+        }
+
+        if (candidates.Count == 1) { CommitHumanAction(candidates[0]); return; }
         ShowActionMenu(candidates);
     }
 
@@ -816,10 +866,20 @@ public sealed partial class ReplayForm
 
         foreach (Panel slot in _selfBoard.Controls.OfType<Panel>())
         {
-            if (slot.Tag is not FollowerInstance follower)
+            if (slot.Tag is AmuletInstance amulet)
             {
+                if (amulet.Definition.StartAbility is not null && _pendingObservation is { } observation)
+                {
+                    var reason = HumanActionResolver.StartAbilityBlockReason(observation, actions, amulet.InstanceId);
+                    SetCornerBadge(slot, "StartBadge", reason is null ? "◈ 启动" : reason == "本回合已启动" ? "本回合已用" : "启动不可用",
+                        reason is null ? SvTheme.CyanDim : Color.FromArgb(65, 70, 80), rightAligned: false);
+                    var badge = slot.Controls.OfType<Label>().Single(label => label.Name == "StartBadge");
+                    badge.Cursor = reason is null ? Cursors.Hand : Cursors.Help;
+                    _cardToolTip.SetToolTip(badge, reason ?? "点击启动，选择要变身的手牌。");
+                }
                 continue;
             }
+            if (slot.Tag is not FollowerInstance follower) continue;
 
             var canAttack = actions.Any(action => action switch
             {
@@ -852,40 +912,34 @@ public sealed partial class ReplayForm
     {
         var existing = host.Controls.OfType<Label>().FirstOrDefault(label => label.Name == name);
 
-        if (text is null)
-        {
-            if (existing is not null)
-            {
-                host.Controls.Remove(existing);
-                existing.Dispose();
-            }
-
-            return;
-        }
-
         if (existing is not null)
         {
-            existing.Text = text;
+            existing.Text = text ?? "";
+            existing.BackColor = backColor;
+            existing.Visible = text is not null;
+            PositionBoardBadge(host, existing, rightAligned);
             return;
         }
 
-        const int width = 62;
+        var width = (int)((name == "StartBadge" ? 84 : 62) * host.DeviceDpi / 96f);
         var badge = new Label
         {
             Name = name,
             Dock = DockStyle.None,
             Location = new Point(rightAligned ? Math.Max(0, host.ClientSize.Width - width) : 0, 0),
-            Size = new Size(width, 15),
+            Size = new Size(width, (int)(18 * host.DeviceDpi / 96f)),
             Anchor = rightAligned
                 ? AnchorStyles.Top | AnchorStyles.Right
                 : AnchorStyles.Top | AnchorStyles.Left,
-            Text = text,
+            Text = text ?? "",
+            Visible = text is not null,
             BackColor = backColor,
             ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 7F, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleCenter
         };
         host.Controls.Add(badge);
+        PositionBoardBadge(host, badge, rightAligned);
         badge.BringToFront();
     }
 
@@ -900,8 +954,7 @@ public sealed partial class ReplayForm
             tile,
             cardInstanceId,
             isHandCard: true,
-            onTap: () => _humanHint.Text =
-                "出牌要靠拖动：把牌拖到己方场上打出；需要指定目标的牌，拖到敌方随从/主战者上。");
+            onTap: () => SelectHandToPlay(cardInstanceId));
     }
 
     /// <summary>
@@ -943,29 +996,8 @@ public sealed partial class ReplayForm
                     return item;
                 }
 
-                // 只有一个变体：点这一项就是它。
-                if (variants.Count == 1)
-                {
-                    var captured = variants[0];
-                    item.Click += (_, _) => CommitHumanAction(captured);
-                    return item;
-                }
-
-                // 多个变体：只在模式上不同就交给专门的选模式界面，否则展开成二级菜单。
-                if (HumanActionResolver.IsModeOnlyChoice(variants))
-                {
-                    item.Click += (_, _) => BeginAmbiguityResolution(variants);
-                    return item;
-                }
-
-                foreach (var variant in variants)
-                {
-                    var child = new ToolStripMenuItem(DescribeAction(observation, variant));
-                    var captured = variant;
-                    child.Click += (_, _) => CommitHumanAction(captured);
-                    item.DropDownItems.Add(child);
-                }
-
+                // 目标与模式在画面上选择，进化菜单只选择行动形式。
+                item.Click += (_, _) => BeginAmbiguityResolution(variants);
                 return item;
             }
         }
@@ -974,9 +1006,41 @@ public sealed partial class ReplayForm
         BeginDragGestures(slot, followerInstanceId, isHandCard: false, onTap: OpenEvolveMenu);
         AttachMouseUpDeep(slot, (_, args) =>
         {
-            if (args.Button == MouseButtons.Right)
+            if (args.Button == MouseButtons.Right && _targetSelection is null)
             {
                 OpenEvolveMenu();
+            }
+        });
+    }
+
+    private void AttachAmuletStart(Panel slot, int amuletInstanceId)
+    {
+        AttachMouseUpDeep(slot, (_, args) =>
+        {
+            if (_targetSelection is null && args.Button is MouseButtons.Left or MouseButtons.Right)
+                OpenAmuletStartMenu(amuletInstanceId);
+        });
+    }
+
+    private void OpenAmuletStartMenu(int amuletInstanceId)
+    {
+        if (!_liveMatchRunning || _pendingActions is not { } actions || _pendingObservation is not { } observation) return;
+        var reason = HumanActionResolver.StartAbilityBlockReason(observation, actions, amuletInstanceId);
+        var candidates = HumanActionResolver.StartAbility(actions, amuletInstanceId);
+        if (reason is not null) _humanHint.Text = reason;
+        else _humanHint.Text = "选择要用于启动的手牌；关闭菜单可取消。";
+        ShowMenu(menu =>
+        {
+            if (candidates.Count == 0)
+            {
+                menu.Items.Add(new ToolStripMenuItem($"启动（{reason}）") { Enabled = false });
+                return;
+            }
+            foreach (var action in candidates)
+            {
+                var item = new ToolStripMenuItem(DescribeAction(observation, action));
+                item.Click += (_, _) => CommitHumanAction(action);
+                menu.Items.Add(item);
             }
         });
     }
@@ -1005,12 +1069,22 @@ public sealed partial class ReplayForm
 
         ShowMenu(menu =>
         {
-            foreach (var candidate in candidates)
+            foreach (var group in candidates.GroupBy(HumanTargetSelection.FamilyKey))
             {
-                var item = new ToolStripMenuItem(DescribeAction(observation, candidate));
-                var captured = candidate;
-                item.Click += (_, _) => CommitHumanAction(captured);
-                menu.Items.Add(item);
+                var variants = group.ToArray();
+                if (variants.Length > 1 && variants.Any(a => HumanTargetSelection.HasTargets(observation, a)))
+                {
+                    var item = new ToolStripMenuItem(HumanTargetText.Title(observation, variants[0]) + " · 选择目标");
+                    item.Click += (_, _) => BeginAmbiguityResolution(variants);
+                    menu.Items.Add(item);
+                }
+                else
+                    foreach (var candidate in variants)
+                    {
+                        var item = new ToolStripMenuItem(DescribeAction(observation, candidate));
+                        item.Click += (_, _) => BeginAmbiguityResolution([candidate]);
+                        menu.Items.Add(item);
+                    }
             }
         });
     }
@@ -1044,7 +1118,7 @@ public sealed partial class ReplayForm
         var menu = new ContextMenuStrip { ShowImageMargin = false };
         _actionMenu = menu;
         build(menu);
-        menu.Show(this, PointToClient(Cursor.Position));
+        if (Visible && IsHandleCreated) menu.Show(this, PointToClient(Cursor.Position));
     }
 
     private void BeginDragGestures(Panel tile, int instanceId, bool isHandCard, Action? onTap = null)
@@ -1058,18 +1132,28 @@ public sealed partial class ReplayForm
 
         void Down(object? sender, MouseEventArgs args)
         {
+            if (args.Button == MouseButtons.Right && _dragSource is not null) { AbortHeldDrag(); return; }
             // 【融合】选素材期间，左键属于"点选素材"，不再触发出牌拖拽。
             if (args.Button != MouseButtons.Left || _pendingActions is null ||
-                _fusionCardInstanceId is not null)
+                _fusionCardInstanceId is not null || _targetSelection is not null)
             {
                 return;
             }
 
+            AbortHeldDrag(false);
             _dragSource = tile;
+            _dragSourceColor = tile.BackColor;
+            _dragSourceBorder = tile.BorderStyle;
             _dragInstanceId = instanceId;
             _dragIsHandCard = isHandCard;
             _dragStartScreen = ScreenPoint(sender, args);
             _dragActive = false;
+            if (isHandCard)
+            {
+                _cardToolTip.Hide(tile);
+                PickUpHeldCard(tile, _dragStartScreen);
+                if (Visible && tile.IsHandleCreated && tile.Visible) tile.Capture = true;
+            }
         }
 
         void Move(object? sender, MouseEventArgs args)
@@ -1090,10 +1174,10 @@ public sealed partial class ReplayForm
 
                 _dragActive = true;
                 _cardToolTip.Hide(tile);
-                LiftDragSource();
+                if (!isHandCard) LiftDragSource();
                 // 鼠标捕获放在 tile 上：捕获之后 MouseMove/MouseUp 全部由 tile 收到，
                 // 光标移出控件也不会丢事件。
-                tile.Capture = true;
+                if (Visible && tile.IsHandleCreated && tile.Visible) tile.Capture = true;
             }
 
             UpdateDrag(screenPoint);
@@ -1106,10 +1190,11 @@ public sealed partial class ReplayForm
                 return;
             }
 
-            tile.Capture = false;
             var dropPoint = ScreenPoint(sender, args);
             var wasActive = _dragActive;
+            if (wasActive) UpdateDrag(dropPoint);
             FinishDrag();
+            if (tile.Capture) tile.Capture = false;
             if (wasActive)
             {
                 ResolveDrop(dropPoint);
@@ -1118,10 +1203,24 @@ public sealed partial class ReplayForm
 
             // 没拖动 = 就是点了一下。场上的随从借这一下打开进化菜单，
             // 这样不知道有右键的人也能操作。
+            RemoveHeldCard();
             onTap?.Invoke();
         }
 
         AttachToTile(tile, Down, Move, Up);
+        tile.MouseCaptureChanged += (_, _) =>
+        {
+            // Defer loss cleanup so a normal MouseUp can finish even if WinForms releases capture first.
+            if (_dragSource != tile || tile.Capture || !Visible || !IsHandleCreated || IsDisposed) return;
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    if (!IsDisposed && _dragSource == tile && !tile.Capture) AbortHeldDrag();
+                });
+            }
+            catch (InvalidOperationException) { AbortHeldDrag(false); }
+        };
     }
 
     /// <summary>
@@ -1148,7 +1247,7 @@ public sealed partial class ReplayForm
 
         foreach (Control child in tile.Controls)
         {
-            AttachToTile(child, down, move, up);
+            if (child is not SvAbilityStrip) AttachToTile(child, down, move, up);
         }
     }
 
@@ -1175,7 +1274,8 @@ public sealed partial class ReplayForm
         var hit = HitTestHuman(screenPoint);
         var valid = DragCandidates(actions, hit).Count > 0;
 
-        HighlightDropTarget(hit, valid);
+        if (_dragIsHandCard) MoveHeldCard(screenPoint, hit, valid);
+        else HighlightDropTarget(hit, valid);
         UpdateDragArrow(hit);
         _actionLabel.Text = DescribeDragIntent(hit, valid);
         if (_dragSource is { } source)
@@ -1196,11 +1296,12 @@ public sealed partial class ReplayForm
     {
         if (_dragIsHandCard)
         {
-            return HumanActionResolver.FromHand(
-                actions,
-                _dragInstanceId,
-                hit.Zone == HumanZone.OpponentBoard ? hit.InstanceId : null,
-                hit.Zone == HumanZone.OpponentLeader);
+            if (hit.Zone is not (HumanZone.OwnBoard or HumanZone.OpponentBoard or HumanZone.OpponentLeader)) return [];
+            if (hit.Zone == HumanZone.OpponentBoard && hit.InstanceId is null) return [];
+            if (_pendingObservation is not { } observation) return [];
+            HumanTarget? target = hit.Zone == HumanZone.OpponentLeader ? new(HumanTargetZone.EnemyLeader) :
+                hit.InstanceId is int id ? new(hit.Zone == HumanZone.OwnBoard ? HumanTargetZone.OwnBoard : HumanTargetZone.EnemyBoard, id) : null;
+            return HumanActionResolver.DropHand(observation, actions, _dragInstanceId, target);
         }
 
         return HumanActionResolver.FromFollower(
@@ -1263,6 +1364,7 @@ public sealed partial class ReplayForm
         var target = hit.Zone switch
         {
             HumanZone.OpponentBoard when hit.InstanceId is not null => ControlOfSlot(_opponentBoard, hit.InstanceId.Value),
+            HumanZone.OwnBoard when hit.InstanceId is not null => ControlOfSlot(_selfBoard, hit.InstanceId.Value),
             HumanZone.OpponentLeader => _opponentLeaderLabel.Parent as Panel,
             _ => null
         };
@@ -1277,13 +1379,16 @@ public sealed partial class ReplayForm
         _highlightedColor = target.BackColor;
         _highlightedBorder = target.BorderStyle;
         target.BackColor = valid ? Color.FromArgb(88, 122, 74) : Color.FromArgb(120, 60, 60);
+        foreach (var face in target.Controls.OfType<SvCardFace>()) face.SetTargetState(valid ? 1 : 5);
+        if (target is SvLeaderFrame leader) leader.SetTargetState(valid ? 1 : 5);
     }
 
     private static Panel? ControlOfSlot(TableLayoutPanel board, int followerInstanceId)
     {
         foreach (Panel control in board.Controls.OfType<Panel>())
         {
-            if (control.Tag is FollowerInstance follower && follower.InstanceId == followerInstanceId)
+            if (control.Tag is FollowerInstance follower && follower.InstanceId == followerInstanceId ||
+                control.Tag is AmuletInstance amulet && amulet.InstanceId == followerInstanceId)
             {
                 return control;
             }
@@ -1298,6 +1403,8 @@ public sealed partial class ReplayForm
         {
             control.BackColor = _highlightedColor;
             control.BorderStyle = _highlightedBorder;
+            foreach (var face in control.Controls.OfType<SvCardFace>()) face.SetTargetState(0);
+            if (control is SvLeaderFrame leader) leader.SetTargetState(0);
         }
 
         _highlighted = null;
@@ -1372,6 +1479,7 @@ public sealed partial class ReplayForm
 
         if (candidates.Count == 0)
         {
+            ReturnHeldCard();
             if (_dragIsHandCard)
             {
                 // 分成两种情况说清楚：是"放错地方了"还是"这张牌现在根本打不出"。
@@ -1379,7 +1487,7 @@ public sealed partial class ReplayForm
                 var playableSomewhere = actions.Any(action =>
                     HumanActionResolver.PlayedCardOf(action) == _dragInstanceId);
                 _humanHint.Text = playableSomewhere
-                    ? "这张牌不能放在那里。拖到己方场上，或拖到敌方随从 / 主战者上指定目标。"
+                    ? "该落点不是合法目标。可先拖到己方战场，再点选发光目标。"
                     : "这张牌现在打不出（费用不够，或没有合法目标）。";
             }
             else
@@ -1391,10 +1499,24 @@ public sealed partial class ReplayForm
         }
 
         _humanHint.Text = string.Empty;
+        if (TryCommitHeldDrop(candidates, hit)) return;
+        // Complex choices retain guided selection. No rule, mode, or additional target is guessed.
+        ReturnHeldCard();
 
         // 同一个手势可能对应多个合法变体（选模式 / 从手牌再选一张牌 / 多个目标）。
         // 不猜：只在模式上不同就进专门的选模式界面，其余弹通用菜单。
-        BeginAmbiguityResolution(candidates);
+        if (candidates.Count == 1 && _pendingObservation is { } observation && HumanTargetSelection.HasTargets(observation, candidates[0]))
+        {
+            var pool = _dragIsHandCard ? HumanActionResolver.ClickHand(actions, _dragInstanceId) : HumanActionResolver.Evolve(actions, _dragInstanceId);
+            BeginTargetSelection(pool.Where(a => HumanTargetSelection.FamilyKey(a) == HumanTargetSelection.FamilyKey(candidates[0])).ToArray());
+        }
+        else BeginAmbiguityResolution(candidates);
+        if (_targetSelection is not null)
+        {
+            if (hit.Zone == HumanZone.OpponentLeader) PickTarget(new(HumanTargetZone.EnemyLeader));
+            else if (hit.InstanceId is int id && hit.Zone is HumanZone.OwnBoard or HumanZone.OpponentBoard)
+                PickTarget(new(hit.Zone == HumanZone.OwnBoard ? HumanTargetZone.OwnBoard : HumanTargetZone.EnemyBoard, id));
+        }
     }
 
     // ───────────────────────────── 落点命中判定 ─────────────────────────────
@@ -1405,8 +1527,8 @@ public sealed partial class ReplayForm
     /// </summary>
     private HumanHit HitTestHuman(Point screenPoint)
     {
-        var formPoint = PointToClient(screenPoint);
-        var deepest = DeepestControlAt(formPoint) ?? this;
+        // Start beneath the visual overlay; native and synthetic gestures use the same control geometry.
+        var deepest = DeepestBattleControlAt(screenPoint) ?? this;
 
         for (Control? control = deepest; control is not null; control = control.Parent)
         {
@@ -1467,9 +1589,11 @@ public sealed partial class ReplayForm
         return null;
     }
 
-    private Control? DeepestControlAt(Point formPoint)
+    private Control? DeepestBattleControlAt(Point screenPoint)
     {
-        return DeepestChild(this, formPoint);
+        if (_battleLayout is not { } battle) return null;
+        var point = battle.PointToClient(screenPoint);
+        return battle.ClientRectangle.Contains(point) ? DeepestChild(battle, point) ?? battle : null;
 
         Control? DeepestChild(Control parent, Point parentPoint)
         {
@@ -1487,7 +1611,9 @@ public sealed partial class ReplayForm
                     continue;
                 }
 
+                // Controls enumerate from front to back. The first hit is the visible top card.
                 found = DeepestChild(child, local) ?? child;
+                break;
             }
 
             return found;
@@ -1520,17 +1646,12 @@ public sealed partial class ReplayForm
     // ───────────────────────────── 每步之后重挂交互 ─────────────────────────────
 
     /// <summary>
-    /// 回放每渲染一次，卡牌格子都是新造的，所以要重新把点击/拖拽挂上去。
+    /// 新出现的格子挂一次点击/拖拽；复用的格子保留原有处理器。
     /// 这个方法由 <see cref="UpdatePlayback"/> 在实时对局中调用，**绝对不能回头再调 UpdatePlayback**，
     /// 否则递归。
     /// </summary>
-    private void RefreshHumanInteraction(bool tilesAreFresh = false)
+    private void RefreshHumanInteraction()
     {
-        // 每次重画造出来的都是全新的格子，旧的"已挂处理器"记录一并丢掉。
-        if (tilesAreFresh)
-        {
-            _interactionAttached.Clear();
-        }
 
         // 等真人决定时不允许翻页：否则看到的是旧的场面，拖拽却按最新一手结算，会出意外。
         // **这一步必须排在 UpdateOpponentThinking 之前** —— 思考面板是按 _currentStepIndex
@@ -1592,7 +1713,16 @@ public sealed partial class ReplayForm
             {
                 AttachFollowerDrag(slot, follower.InstanceId);
             }
+            else if (slot.Tag is AmuletInstance amulet && _interactionAttached.Add(slot))
+            {
+                AttachAmuletStart(slot, amulet.InstanceId);
+            }
         }
+        AttachTargetClicks();
+        ApplyTargetHighlights();
+        if (_targetSelection is { } selection)
+            _actionLabel.Text = selection.StageCount == 0 ? "查看卡牌能力 · 确认使用或 Esc 返回" :
+                selection.IsComplete ? "目标已选好 · 请确认发动" : $"选择目标 {selection.StageIndex + 1}/{selection.StageCount} · 金色表示已选 · Esc 取消";
     }
 
     /// <summary>读出对手牌手"刚刚那一次"的决策。只有前瞻牌手有；规则牌手不搜索，没有估值。</summary>
@@ -1703,11 +1833,29 @@ public sealed partial class ReplayForm
             }
         }
 
-        RunOnUi(() =>
+        // Acknowledge presentation before asking either agent for its next action.
+        // Only the match worker waits; the UI thread remains free to paint and accept input.
+        var presented = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Interlocked.Exchange(ref _livePresentationWaiter, presented)?.TrySetCanceled();
+        var scheduled = RunOnUi(() =>
         {
-            _currentStepIndex = count - 1;
-            UpdatePlayback();
+            try
+            {
+                if (!_liveMatchRunning) { presented.TrySetCanceled(); return; }
+                _currentStepIndex = count - 1;
+                SetExportAvailability(count > 0);
+                PlayVisualStep(step, presented);
+            }
+            catch (Exception exception)
+            {
+                CancelPlayAnimation();
+                presented.TrySetException(exception);
+                ReportUiFailure(exception);
+            }
         });
+        if (!scheduled) presented.TrySetCanceled();
+        try { presented.Task.GetAwaiter().GetResult(); }
+        finally { Interlocked.CompareExchange(ref _livePresentationWaiter, null, presented); }
     }
 
     /// <summary>
@@ -1810,8 +1958,11 @@ public sealed partial class ReplayForm
             lines.Add("对手纹章：" + string.Join("　", theirs.Select(crest => $"◆{crest.Name}")));
         }
 
-        _crestZone.Text = string.Join("\n", lines);
-        _crestZone.Height = lines.Count == 0 ? 0 : (22 * lines.Count) + 6;
+        // Public crest zones remain visible beside both leaders during replay too.
+        _selfCrests.SetCrests(observation.PerspectivePlayer == 0 ? mine : theirs);
+        _opponentCrests.SetCrests(observation.PerspectivePlayer == 0 ? theirs : mine);
+        _crestZone.Text = string.Empty;
+        _crestZone.Height = 0;
 
         var tips = mine.Select(crest => $"【你的】{crest.Name}：{crest.EffectText}")
             .Concat(theirs.Select(crest => $"【对手】{crest.Name}：{crest.EffectText}"))
@@ -1896,7 +2047,7 @@ public sealed partial class ReplayForm
     {
         void OnUp(object? sender, MouseEventArgs args)
         {
-            if (args.Button == MouseButtons.Right)
+            if (args.Button == MouseButtons.Right && _targetSelection is null)
             {
                 OpenFusionButtons(tile, cardInstanceId);
             }
@@ -1930,6 +2081,7 @@ public sealed partial class ReplayForm
 
     private void OpenFusionButtons(Panel tile, int cardInstanceId)
     {
+        CloseTargetSelection();
         CloseFusionUi();
 
         if (_pendingActions is not { } actions)

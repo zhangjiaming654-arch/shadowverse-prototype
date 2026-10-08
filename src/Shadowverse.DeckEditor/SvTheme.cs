@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 
@@ -22,19 +22,19 @@ internal static class SvTheme
     public static readonly Color Void = Color.FromArgb(10, 13, 24);
 
     /// <summary>面板底色（深蓝紫）。</summary>
-    public static readonly Color Panel = Color.FromArgb(22, 28, 48);
+    public static readonly Color Panel = Color.FromArgb(19, 29, 43);
 
     /// <summary>面板高亮层（悬停/选中）。</summary>
-    public static readonly Color PanelLit = Color.FromArgb(32, 42, 70);
+    public static readonly Color PanelLit = Color.FromArgb(29, 48, 65);
 
     /// <summary>金色描边（主装饰色）。</summary>
-    public static readonly Color Gold = Color.FromArgb(201, 162, 39);
+    public static readonly Color Gold = Color.FromArgb(170, 151, 112);
 
     /// <summary>金色亮部（高光/悬停）。</summary>
-    public static readonly Color GoldLit = Color.FromArgb(240, 214, 122);
+    public static readonly Color GoldLit = Color.FromArgb(232, 216, 175);
 
     /// <summary>青色主色（魔法光效）。</summary>
-    public static readonly Color Cyan = Color.FromArgb(53, 214, 232);
+    public static readonly Color Cyan = Color.FromArgb(89, 203, 230);
 
     /// <summary>青色暗部。</summary>
     public static readonly Color CyanDim = Color.FromArgb(30, 127, 150);
@@ -83,7 +83,8 @@ internal static class SvTheme
                 // 从字节流加载，避免 Image.FromFile 长期占用文件句柄导致无法覆盖。
                 var bytes = File.ReadAllBytes(path);
                 using var stream = new MemoryStream(bytes);
-                image = Image.FromStream(stream);
+                using var decoded = Image.FromStream(stream);
+                image = new Bitmap(decoded);
             }
         }
         catch (Exception)
@@ -107,6 +108,7 @@ internal static class SvTheme
             return path;
         }
 
+        radius = Math.Min(radius, Math.Max(1, Math.Min(bounds.Width, bounds.Height) / 2));
         var d = radius * 2;
         path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
         path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
@@ -182,21 +184,23 @@ internal static class SvTheme
     /// </para>
     /// <para>压暗与暗角在合成时一次画进图里，避免运行时每帧计算。</para>
     /// </summary>
-    public static void AttachBackdrop(Form form, float dim = 0.30f)
+    public static void AttachBackdrop(Form form, float dim = 0.18f, string asset = "bg_archive_v2.png")
     {
         form.BackColor = Void;
-        var composed = ComposeBackdrop(1600, 1000, dim);
+        var composed = ComposeBackdrop(1920, 1080, dim, asset);
         if (composed is not null)
         {
+            var previous = form.BackgroundImage;
             form.BackgroundImage = composed;
+            previous?.Dispose();
             form.BackgroundImageLayout = ImageLayout.Stretch;
         }
     }
 
     /// <summary>合成"贴图 + 压暗 + 上下暗角"的一张底图；缺贴图时返回 null。</summary>
-    private static Bitmap? ComposeBackdrop(int width, int height, float dim)
+    private static Bitmap? ComposeBackdrop(int width, int height, float dim, string asset)
     {
-        var texture = Texture("bg_main.png");
+        var texture = Texture(asset) ?? Texture("bg_main.png");
         if (texture is null)
         {
             return null;
@@ -219,7 +223,7 @@ internal static class SvTheme
         {
             InterpolationColors = new ColorBlend(3)
             {
-                Colors = [Color.FromArgb(150, 0, 0, 0), Color.FromArgb(0, 0, 0, 0), Color.FromArgb(150, 0, 0, 0)],
+                Colors = [Color.FromArgb(70, 0, 0, 0), Color.FromArgb(0, 0, 0, 0), Color.FromArgb(70, 0, 0, 0)],
                 Positions = [0f, 0.5f, 1f]
             }
         };
@@ -231,6 +235,13 @@ internal static class SvTheme
     public static void StyleGrid(DataGridView grid)
     {
         grid.BackgroundColor = Panel;
+        grid.RowTemplate.Height = 32;
+        grid.ColumnHeadersHeight = 34;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        grid.DefaultCellStyle.Padding = new Padding(5, 0, 5, 0);
+        grid.DefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9f);
+        grid.CellPainting -= PaintGridButton;
+        grid.CellPainting += PaintGridButton;
         grid.BorderStyle = BorderStyle.None;
         grid.GridColor = Color.FromArgb(48, 60, 92);
         grid.EnableHeadersVisualStyles = false;
@@ -251,6 +262,38 @@ internal static class SvTheme
         grid.RowHeadersDefaultCellStyle.ForeColor = TextDim;
     }
 
+    private static void PaintGridButton(object? sender, DataGridViewCellPaintingEventArgs e)
+    {
+        if (sender is not DataGridView grid || e.RowIndex < 0 || e.ColumnIndex < 0 ||
+            grid.Columns[e.ColumnIndex] is not DataGridViewButtonColumn) return;
+        e.PaintBackground(e.ClipBounds, true);
+        var bounds = Rectangle.Inflate(e.CellBounds, -5, -5);
+        if (bounds.Width > 0 && bounds.Height > 0)
+        {
+            using var fill = new SolidBrush(PanelLit);
+            using var edge = new Pen(Color.FromArgb(100, Cyan));
+            e.Graphics!.FillRectangle(fill, bounds);
+            e.Graphics.DrawRectangle(edge, bounds);
+            TextRenderer.DrawText(e.Graphics, e.FormattedValue?.ToString() ?? "", grid.Font, bounds, Text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+        e.Handled = true;
+    }
+
+    internal static Control Frame(Control content, string title)
+    {
+        var frame = new SvPanel { Dock = DockStyle.Fill, Padding = new Padding(12), Margin = new Padding(5), CornerRadius = 6, GlassOpacity = 158 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = Color.Transparent };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(new Label { Text = title, Dock = DockStyle.Fill, ForeColor = GoldLit,
+            Font = new Font("Microsoft YaHei UI", 10, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        content.Dock = DockStyle.Fill;
+        layout.Controls.Add(content, 0, 1);
+        frame.Controls.Add(layout);
+        return frame;
+    }
+
     /// <summary>深色输入类控件（文本框 / 下拉框）。</summary>
     public static void StyleInput(Control control)
     {
@@ -261,13 +304,30 @@ internal static class SvTheme
         if (control is ComboBox combo)
         {
             combo.FlatStyle = FlatStyle.Flat;
+            combo.DrawMode = DrawMode.OwnerDrawFixed;
+            combo.ItemHeight = Math.Max(20, combo.Font.Height + 5);
+            combo.DrawItem -= DrawComboItem;
+            combo.DrawItem += DrawComboItem;
         }
+    }
+
+    private static void DrawComboItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox combo) return;
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        using var background = new SolidBrush(selected ? PanelLit : Panel);
+        e.Graphics.FillRectangle(background, e.Bounds);
+        var text = e.Index >= 0 && e.Index < combo.Items.Count ? combo.GetItemText(combo.Items[e.Index]) : combo.Text;
+        TextRenderer.DrawText(e.Graphics, text, combo.Font, Rectangle.Inflate(e.Bounds, -3, 0),
+            combo.Enabled ? Text : TextDim, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
     /// <summary>统一的正文标签样式。</summary>
     public static void StyleLabel(Label label, bool primary = false)
     {
-        label.ForeColor = primary ? GoldLit : Text;
+        if (primary || label.ForeColor == SystemColors.ControlText || label.ForeColor == Color.Black)
+            label.ForeColor = primary ? GoldLit : Text;
         label.BackColor = Color.Transparent;
     }
 
@@ -280,7 +340,7 @@ internal static class SvTheme
         switch (root)
         {
             // 自绘控件自己会画，别动它们的背景
-            case SvPanel or SvButton or SvOrnament or SvBackdrop:
+            case SvPanel or SvButton or SvOrnament or SvBackdrop or SvCardFace or SvLibraryCard or SvHeading:
                 break;
             case DataGridView grid:
                 StyleGrid(grid);
@@ -288,7 +348,7 @@ internal static class SvTheme
             case Label label:
                 StyleLabel(label);
                 break;
-            case TextBox or ComboBox:
+            case TextBox or ComboBox or NumericUpDown:
                 StyleInput(root);
                 break;
             case Form form:
@@ -357,7 +417,7 @@ internal sealed class SvBackdrop : Control
             LinearGradientMode.Vertical);
         var blend = new ColorBlend(3)
         {
-            Colors = [Color.FromArgb(150, 0, 0, 0), Color.FromArgb(0, 0, 0, 0), Color.FromArgb(150, 0, 0, 0)],
+            Colors = [Color.FromArgb(70, 0, 0, 0), Color.FromArgb(0, 0, 0, 0), Color.FromArgb(70, 0, 0, 0)],
             Positions = [0f, 0.5f, 1f]
         };
         vignette.InterpolationColors = blend;
@@ -376,10 +436,13 @@ internal class SvPanel : Panel
             ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.UserPaint |
-            ControlStyles.ResizeRedraw,
+            ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor,
             true);
-        BackColor = SvTheme.Panel;
+        BackColor = Color.Transparent;
     }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int GlassOpacity { get; set; } = 205;
 
     /// <summary>圆角半径。</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -395,29 +458,18 @@ internal class SvPanel : Panel
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
+        if (Width < 3 || Height < 3) return;
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
         using var path = SvTheme.RoundedRect(bounds, CornerRadius);
 
-        // 底色
-        using (var fill = new SolidBrush(Lit ? SvTheme.PanelLit : SvTheme.Panel))
-        {
+        // Paint the parent's scene first, then tint it like smoked glass.
+        base.OnPaintBackground(e);
+        using (var fill = new SolidBrush(Color.FromArgb(Math.Clamp(GlassOpacity, 0, 255), Lit ? SvTheme.PanelLit : SvTheme.Panel)))
             g.FillPath(fill, path);
-        }
-
-        // 玻璃贴图（裁到圆角内）
-        var texture = SvTheme.Texture("panel_glass.png");
-        if (texture is not null)
-        {
-            var saved = g.Save();
-            g.SetClip(path);
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            SvTheme.DrawCover(g, texture, bounds);
-            using var veil = new SolidBrush(Color.FromArgb(Lit ? 120 : 165, SvTheme.Panel));
-            g.FillRectangle(veil, bounds);
-            g.Restore(saved);
-        }
+        using (var sheen = new LinearGradientBrush(bounds, Color.FromArgb(28, SvTheme.GoldLit), Color.Transparent, LinearGradientMode.Vertical))
+            g.FillPath(sheen, path);
 
         if (ShowEdge)
         {
@@ -430,7 +482,7 @@ internal class SvPanel : Panel
 /// 按钮：贴图底 + 悬停发光 + 按下位移。
 /// 用法与普通 Button 一致（Text / Click 都能用），只是改成自绘。
 /// </summary>
-internal sealed class SvButton : Button
+internal class SvButton : Button
 {
     private bool _hover;
     private bool _pressed;
@@ -497,7 +549,7 @@ internal sealed class SvButton : Button
 
         var accent = Danger ? SvTheme.Danger : Primary ? SvTheme.Cyan : SvTheme.CyanDim;
         var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
-        const int radius = 8;
+        const int radius = 5;
 
         if (_hover && Enabled)
         {

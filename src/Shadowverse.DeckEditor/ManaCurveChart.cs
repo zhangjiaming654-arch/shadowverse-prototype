@@ -18,7 +18,7 @@ public sealed class ManaCurveChart : Control
         SetStyle(ControlStyles.SupportsTransparentBackColor, true);
         DoubleBuffered = true;
         Height = 142;
-        MinimumSize = new Size(420, 142);
+        MinimumSize = new Size(280, 142);
         Margin = new Padding(0, 4, 0, 0);
         BackColor = Color.Transparent;
         ForeColor = SvTheme.Text;

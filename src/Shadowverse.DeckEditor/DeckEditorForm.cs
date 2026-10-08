@@ -1,4 +1,4 @@
-using Shadowverse.Engine.Cards;
+﻿using Shadowverse.Engine.Cards;
 using Shadowverse.Engine.Decks;
 using Shadowverse.Engine.Models;
 
@@ -19,6 +19,11 @@ public sealed class DeckEditorForm : Form
     private readonly ComboBox _keywordFilter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 95 };
     private readonly DataGridView _deckGrid = CreateDeckGrid();
     private readonly DataGridView _catalogGrid = CreateCatalogGrid();
+    private readonly FlowLayoutPanel _cardGallery = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = SvTheme.Panel, Padding = new Padding(3) };
+    private readonly Label _catalogCount = new() { AutoSize = true, ForeColor = SvTheme.TextDim, Padding = new Padding(8, 8, 0, 0) };
+    private readonly TextBox _cardDetail = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.Vertical, TabStop = false,
+        Text = "将鼠标停在卡牌上查看完整能力。单击卡牌加入卡组。" };
     private readonly List<DeckCardEntry> _entries = [];
     private string? _editingDeckId;
     private bool _isLoading;
@@ -28,8 +33,10 @@ public sealed class DeckEditorForm : Form
         Text = "影之诗原型 - 卡组编辑器";
         BackColor = SvTheme.Void;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(960, 720);
-        Size = new Size(1120, 820);
+        MinimumSize = new Size(1120, 760);
+        Size = new Size(1340, 900);
+        Font = new Font("Microsoft YaHei UI", 9f);
+        DoubleBuffered = true;
 
         BuildLayout();
         RefreshCatalogGrid();
@@ -38,6 +45,7 @@ public sealed class DeckEditorForm : Form
         // 《影之诗：超凡世界》风格：背景贴图 + 深色控件
         SvTheme.AttachBackdrop(this);
         SvTheme.ApplyTo(this);
+        RefreshDeckStatistics();
     }
 
     private void BuildLayout()
@@ -47,15 +55,20 @@ public sealed class DeckEditorForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 3,
-            Padding = new Padding(10)
+            Padding = new Padding(18, 12, 18, 12),
+            BackColor = Color.Transparent
         };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-
-        root.Controls.Add(CreateTopSection(), 0, 0);
-        root.Controls.Add(CreateDeckSection(), 0, 1);
-        root.Controls.Add(CreateCatalogSection(), 0, 2);
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.Controls.Add(new SvHeading("卡组编成", "选择卡牌 · 调整构筑 · 准备对战"), 0, 0);
+        root.Controls.Add(CreateTopSection(), 0, 1);
+        var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, BackColor = Color.Transparent };
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        body.Controls.Add(CreateDeckSection(), 0, 0);
+        body.Controls.Add(CreateCatalogSection(), 1, 0);
+        root.Controls.Add(body, 0, 2);
         Controls.Add(root);
 
         _savedDecks.SelectedIndexChanged += (_, _) => LoadSelectedDeck();
@@ -73,66 +86,56 @@ public sealed class DeckEditorForm : Form
 
     private Control CreateTopSection()
     {
-        var top = new TableLayoutPanel
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 3,
-            Padding = new Padding(0, 0, 0, 8)
-        };
-        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        top.RowStyles.Add(new RowStyle(SizeType.Absolute, 146));
-
-        var controls = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            WrapContents = true
-        };
-        var newDeckButton = new SvButton { Text = "新建卡组", AutoSize = true };
-        var saveButton = new SvButton { Text = "保存卡组", AutoSize = true, Primary = true };
-        var replayButton = new SvButton { Text = "对局回放", AutoSize = true };
+        var controls = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true,
+            Padding = new Padding(0, 10, 0, 10), Margin = new Padding(0), BackColor = Color.Transparent };
+        var newDeckButton = new SvButton { Text = "新建卡组", Size = new Size(100, 34) };
+        var saveButton = new SvButton { Text = "保存卡组", Size = new Size(100, 34), Primary = true };
+        var replayButton = new SvButton { Text = "对局回放  →", Size = new Size(128, 34) };
         newDeckButton.Click += (_, _) => StartNewDeck();
         saveButton.Click += (_, _) => SaveDeck();
-        replayButton.Click += (_, _) =>
-        {
-            using var replay = new ReplayForm();
-            replay.ShowDialog(this);
-        };
-
-        controls.Controls.AddRange(
-        [
-            new Label { Text = "已保存卡组：", AutoSize = true, Padding = new Padding(0, 7, 0, 0) },
-            _savedDecks,
-            newDeckButton,
-            saveButton,
-            replayButton,
-            new Label { Text = "卡组名称：", AutoSize = true, Padding = new Padding(12, 7, 0, 0) },
-            _deckName,
-            _cardCount
-        ]);
-
-        var statistics = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            WrapContents = true
-        };
-        statistics.Controls.Add(_deckSummary);
-
-        top.Controls.Add(controls, 0, 0);
-        top.Controls.Add(statistics, 0, 1);
-        top.Controls.Add(_costCurve, 0, 2);
-        return top;
+        replayButton.Click += (_, _) => { using var replay = new ReplayForm(); replay.ShowDialog(this); };
+        _savedDecks.Width = 230;
+        _deckName.Width = 220;
+        _savedDecks.Margin = _deckName.Margin = new Padding(3, 7, 14, 3);
+        controls.Controls.AddRange([
+            new Label { Text = "已保存卡组", AutoSize = true, Padding = new Padding(0, 10, 0, 0) }, _savedDecks,
+            new Label { Text = "卡组名称", AutoSize = true, Padding = new Padding(0, 10, 0, 0) }, _deckName,
+            newDeckButton, saveButton, replayButton]);
+        return controls;
     }
 
     private Control CreateDeckSection()
     {
-        return CreateSection(
-            "当前卡组（可直接编辑“张数”，或点击每行的 ＋／－ 按钮）",
-            _deckGrid);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 154));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _cardCount.Dock = DockStyle.Fill;
+        _cardCount.Font = new Font("Microsoft YaHei UI", 12, FontStyle.Bold);
+        _cardCount.Padding = new Padding(0, 4, 0, 0);
+        layout.Controls.Add(_cardCount, 0, 0);
+        layout.Controls.Add(_deckSummary, 0, 1);
+        layout.Controls.Add(_costCurve, 0, 2);
+        layout.Controls.Add(_deckGrid, 0, 3);
+        foreach (var name in new[] { "Id", "Profession", "Type", "Effect" }) _deckGrid.Columns[name]!.Visible = false;
+        _deckGrid.Columns["Name"]!.FillWeight = 35;
+        _deckGrid.Columns["Name"]!.MinimumWidth = 105;
+        _deckGrid.Columns["Cost"]!.FillWeight = 10;
+        _deckGrid.Columns["Rarity"]!.FillWeight = 12;
+        _deckGrid.Columns["Body"]!.FillWeight = 12;
+        _deckGrid.Columns["Count"]!.FillWeight = 10;
+        _deckGrid.Columns["Decrease"]!.FillWeight = 9;
+        _deckGrid.Columns["Increase"]!.FillWeight = 9;
+        _deckGrid.Columns["Decrease"]!.HeaderText = "－";
+        _deckGrid.Columns["Increase"]!.HeaderText = "＋";
+        foreach (var name in new[] { "Cost", "Rarity", "Body", "Count" }) _deckGrid.Columns[name]!.MinimumWidth = 44;
+        _deckGrid.Columns["Decrease"]!.MinimumWidth = 30;
+        _deckGrid.Columns["Increase"]!.MinimumWidth = 30;
+        _deckGrid.CellMouseEnter += (_, e) => {
+            if (e.RowIndex >= 0 && _deckGrid.Rows[e.RowIndex].Cells["Id"].Value is string id) ShowCardDetail(CardCatalog.Get(id));
+        };
+        return SvTheme.Frame(layout, "当前卡组    /    编辑张数或使用 ＋／－");
     }
 
     private Control CreateCatalogSection()
@@ -141,16 +144,18 @@ public sealed class DeckEditorForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
-            Margin = new Padding(0, 5, 0, 5)
+            RowCount = 4,
+            Margin = new Padding(0)
         };
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 98));
 
         var title = new Label
         {
-            Text = "卡牌库（仅显示可直接组入卡组的卡；单击任意卡牌即可加入 1 张）",
+            Text = "单击卡牌加入 1 张 · 悬停查看完整能力",
+            ForeColor = SvTheme.TextDim,
             AutoSize = true,
             Padding = new Padding(0, 0, 0, 4)
         };
@@ -160,7 +165,13 @@ public sealed class DeckEditorForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(0, 0, 0, 5)
         };
-        var clearButton = new SvButton { Text = "清除筛选", AutoSize = true };
+        var clearButton = new SvButton { Text = "重置", Size = new Size(70, 30) };
+        var viewButton = new SvButton { Text = "列表视图", Size = new Size(96, 30) };
+        viewButton.Click += (_, _) => {
+            _catalogGrid.Visible = !_catalogGrid.Visible;
+            _cardGallery.Visible = !_catalogGrid.Visible;
+            viewButton.Text = _catalogGrid.Visible ? "卡牌视图" : "列表视图";
+        };
         clearButton.Click += (_, _) => ClearCatalogFilters();
 
         _professionFilter.Items.AddRange(
@@ -184,27 +195,28 @@ public sealed class DeckEditorForm : Form
         _costFilter.SelectedIndex = 0;
         _keywordFilter.SelectedIndex = 0;
 
-        filters.Controls.AddRange(
-        [
-            new Label { Text = "搜索：", AutoSize = true, Padding = new Padding(0, 7, 0, 0) },
-            _catalogSearch,
-            new Label { Text = "职业：", AutoSize = true, Padding = new Padding(10, 7, 0, 0) },
-            _professionFilter,
-            new Label { Text = "稀有度：", AutoSize = true, Padding = new Padding(10, 7, 0, 0) },
-            _rarityFilter,
-            new Label { Text = "类型：", AutoSize = true, Padding = new Padding(10, 7, 0, 0) },
-            _typeFilter,
-            new Label { Text = "费用：", AutoSize = true, Padding = new Padding(10, 7, 0, 0) },
-            _costFilter,
-            new Label { Text = "关键词：", AutoSize = true, Padding = new Padding(10, 7, 0, 0) },
-            _keywordFilter,
-            clearButton
-        ]);
+        Control FilterField(string label, Control input)
+        {
+            var field = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 8, 0) };
+            field.Controls.Add(new Label { Text = label, AutoSize = true, Padding = new Padding(0, 7, 0, 0) });
+            field.Controls.Add(input);
+            return field;
+        }
+        filters.Controls.AddRange([
+            FilterField("搜索：", _catalogSearch), FilterField("职业：", _professionFilter),
+            FilterField("稀有度：", _rarityFilter), FilterField("类型：", _typeFilter),
+            FilterField("费用：", _costFilter), FilterField("关键词：", _keywordFilter),
+            clearButton, viewButton, _catalogCount]);
 
         panel.Controls.Add(title, 0, 0);
         panel.Controls.Add(filters, 0, 1);
-        panel.Controls.Add(_catalogGrid, 0, 2);
-        return panel;
+        var collection = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 0, 8) };
+        _catalogGrid.Visible = false;
+        collection.Controls.Add(_catalogGrid);
+        collection.Controls.Add(_cardGallery);
+        panel.Controls.Add(collection, 0, 2);
+        panel.Controls.Add(SvTheme.Frame(_cardDetail, "卡牌详情"), 0, 3);
+        return SvTheme.Frame(panel, "卡牌库");
     }
 
     private static Control CreateSection(string title, DataGridView grid)
@@ -380,8 +392,14 @@ public sealed class DeckEditorForm : Form
             MatchesCost(card, costFilter) &&
             MatchesKeyword(card, keywordFilter));
 
+        var filtered = cards.ToArray();
+        _catalogCount.Text = $"{filtered.Length} 张卡牌";
+        _cardGallery.SuspendLayout();
+        var previous = _cardGallery.Controls.Cast<Control>().ToArray();
+        _cardGallery.Controls.Clear();
+        foreach (var old in previous) old.Dispose();
         _catalogGrid.Rows.Clear();
-        foreach (var card in cards)
+        foreach (var card in filtered)
         {
             _catalogGrid.Rows.Add(
                 card.Id,
@@ -392,7 +410,23 @@ public sealed class DeckEditorForm : Form
                 $"{card.Cost}费",
                 CardBody(card),
                 EffectDescription(card));
+            var accent = card.Rarity switch { CardRarity.Rainbow => Color.FromArgb(174, 151, 220),
+                CardRarity.Gold => SvTheme.GoldLit, CardRarity.Silver => Color.FromArgb(183, 204, 220), _ => Color.FromArgb(158, 126, 99) };
+            var tile = new SvLibraryCard(card.Name, card.Cost, CardProfessionName(card.Profession), CardRarityName(card.Rarity),
+                $"{CardTypeName(card.Type)}  {CardBody(card)}", EffectDescription(card), accent);
+            tile.Size = new Size((int)(152 * DeviceDpi / 96f), (int)(190 * DeviceDpi / 96f));
+            tile.Click += (_, _) => AddCard(card.Id);
+            tile.MouseEnter += (_, _) => ShowCardDetail(card);
+            tile.GotFocus += (_, _) => ShowCardDetail(card);
+            _cardGallery.Controls.Add(tile);
         }
+        if (filtered.Length == 0) _cardGallery.Controls.Add(new Label { Text = "没有匹配的卡牌，请调整筛选条件。", AutoSize = true, ForeColor = SvTheme.TextDim, Padding = new Padding(12) });
+        _cardGallery.ResumeLayout();
+    }
+
+    private void ShowCardDetail(CardDefinition card)
+    {
+        _cardDetail.Text = $"{card.Name}  ·  {card.Cost}费  ·  {CardProfessionName(card.Profession)}  ·  {CardRarityName(card.Rarity)}\r\n{EffectDescription(card)}";
     }
 
     private void ClearCatalogFilters()
@@ -636,7 +670,7 @@ public sealed class DeckEditorForm : Form
         _cardCount.Text = currentCount == DeckDefinition.RequiredCardCount
             ? $"当前张数：{currentCount}/{DeckDefinition.RequiredCardCount}（可保存）"
             : $"当前张数：{currentCount}/{DeckDefinition.RequiredCardCount}（还差 {DeckDefinition.RequiredCardCount - currentCount} 张）";
-        _cardCount.ForeColor = currentCount == DeckDefinition.RequiredCardCount ? Color.ForestGreen : Color.DarkOrange;
+        _cardCount.ForeColor = currentCount == DeckDefinition.RequiredCardCount ? SvTheme.Cyan : SvTheme.GoldLit;
 
         var followers = _entries.Where(entry => CardCatalog.Get(entry.CardId).Type == CardType.Follower).Sum(entry => entry.Count);
         var spells = _entries.Where(entry => CardCatalog.Get(entry.CardId).Type == CardType.Spell).Sum(entry => entry.Count);

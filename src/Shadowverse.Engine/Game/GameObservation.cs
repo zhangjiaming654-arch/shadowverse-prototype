@@ -20,9 +20,10 @@ public sealed record VisibleAmulet(
     int InstanceId,
     string CardId,
     string Name,
-    int? Countdown);
+    int? Countdown,
+    bool StartAbilityUsedThisTurn = false);
 
-public sealed record VisibleCrest(string Id, string Name, string EffectText);
+public sealed record VisibleCrest(string Id, string Name, string EffectText, int? Countdown = null);
 
 public sealed record PlayerView(
     int Health,
